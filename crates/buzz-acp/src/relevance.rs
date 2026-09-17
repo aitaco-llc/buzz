@@ -68,8 +68,33 @@ const CACHE_CAP: usize = 512;
 /// prompt turns a 200ms gate into a multi-second one.
 const MAX_CONTENT_CHARS: usize = 2_000;
 
+/// Cap on how much of the agent's system prompt goes into the gate prompt.
+///
+/// Measured: passing 6000 characters of persona prefilled ~1745 tokens on every
+/// call, every agent, every message — an order of magnitude more than the
+/// decision needs, and enough to overload a small local endpoint when a whole
+/// team gates the same broadcast at once.
+///
+/// A persona's identity lives in its opening — "You are X, owner of Y" — and
+/// that is all a relevance decision requires. The rest is craft instructions
+/// for doing the work, which the gate is deciding whether to start.
+const MAX_PURPOSE_CHARS: usize = 1_200;
+
+/// Default wall-clock budget for one verdict.
+///
+/// Measured against a local `rebrand ml serve` (gemma-3-4b, RX 7900 XTX): a
+/// single warm request answers in ~200ms, but a whole team gating the same
+/// broadcast does not run in parallel. Five concurrent requests came back at
+/// 1039/2010/2999/3983/4010ms — a ~1s staircase, i.e. the endpoint serialized
+/// them despite `max_batch=8`. So the budget has to absorb roughly one second
+/// per agent sharing the endpoint, not one request's latency.
+///
+/// 8s covers a team of six with headroom. It is a ceiling, not a target: a
+/// verdict that arrives in 200ms still returns in 200ms. Too low is the
+/// expensive failure — every timeout fails open and wakes the agent, which is
+/// the outcome the gate exists to avoid.
 fn default_timeout_ms() -> u64 {
-    1_500
+    8_000
 }
 
 /// What to do when the gate cannot produce a verdict.
@@ -166,7 +191,14 @@ impl RelevanceGate {
             }
         };
 
-        debug!(rule = %rule_name, verdict, "relevance gate verdict");
+        // Log the text alongside the verdict: with no `reason` field this is
+        // the only way to audit a gate that is declining the wrong things.
+        debug!(
+            rule = %rule_name,
+            verdict,
+            content = %content.chars().take(120).collect::<String>(),
+            "relevance gate verdict"
+        );
         verdict
     }
 
@@ -187,7 +219,10 @@ impl RelevanceGate {
         let body = serde_json::json!({
             "model": cfg.model,
             "temperature": 0,
-            "max_tokens": 120,
+            // Just the verdict. Asking for a reason string measured 44 output
+            // tokens against 5, and decode is the dominant cost at this size —
+            // the content that justifies a verdict is already in the log line.
+            "max_tokens": 12,
             "messages": [
                 { "role": "system", "content": self.system_prompt() },
                 { "role": "user", "content": format!("Message:\n{truncated}") },
@@ -201,11 +236,8 @@ impl RelevanceGate {
                     "name": "relevance",
                     "schema": {
                         "type": "object",
-                        "properties": {
-                            "act": { "type": "boolean" },
-                            "reason": { "type": "string" }
-                        },
-                        "required": ["act", "reason"]
+                        "properties": { "act": { "type": "boolean" } },
+                        "required": ["act"]
                     }
                 }
             }
@@ -231,6 +263,16 @@ impl RelevanceGate {
             ));
         }
 
+        // A local engine at capacity can answer 200 with a plain-text body
+        // rather than a 429. Name it as load, so an operator reading the warning
+        // reaches for batch size instead of debugging the model's JSON.
+        let looks_like_backpressure = !text.trim_start().starts_with('{')
+            && text.len() < 200
+            && (text.contains("capacity") || text.contains("try again"));
+        if looks_like_backpressure {
+            return Err(format!("endpoint at capacity: {}", text.trim()));
+        }
+
         let json: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
         let message = json
             .pointer("/choices/0/message/content")
@@ -242,18 +284,27 @@ impl RelevanceGate {
 
     fn system_prompt(&self) -> String {
         format!(
-            "You decide whether a chat message requires a specific agent to act. \
-             Reply ONLY with JSON: {{\"act\": <bool>, \"reason\": \"<short>\"}}.\n\n\
-             The agent you are deciding for is described below. Answer `true` when \
-             the message asks this agent to do something, concerns its own area of \
-             responsibility, is addressed to the whole team (\"everyone\", \"all of \
-             you\", \"each of you\"), or is a direct question it is best placed to \
-             answer. Answer `false` for chatter, for work that belongs to a \
-             different specialty, and for messages that need nobody.\n\n\
-             When it is genuinely borderline, answer `true`: a missed request \
-             stalls a person, while an unnecessary wake costs one quiet turn.\n\n\
+            "You decide whether one specific agent should be woken to handle a chat \
+             message. Reply ONLY with JSON: {{\"act\": <bool>}}.\n\n\
+             Answer TRUE only when at least one of these holds:\n\
+             - the message asks for work that falls in this agent's stated area\n\
+             - the message reports a problem in something this agent owns\n\
+             - the message is addressed to the whole team (\"everyone\", \"all of \
+             you\", \"each of you\") and asks for something to be done\n\
+             - the message names this agent, or names a thing this agent owns\n\n\
+             Answer FALSE for everything else, including:\n\
+             - social talk: greetings, sport, weather, food, weekend plans, jokes\n\
+             - status chatter and thinking aloud that asks for nothing\n\
+             - work that plainly belongs to a different specialty\n\
+             - questions about the world rather than about this team's work\n\n\
+             Being a generalist, a researcher, or a first point of contact is NOT \
+             a reason to answer true about small talk. If the message would not \
+             appear in this agent's work log, answer false.\n\n\
              --- THE AGENT ---\n{}",
-            self.purpose.chars().take(6_000).collect::<String>()
+            self.purpose
+                .chars()
+                .take(MAX_PURPOSE_CHARS)
+                .collect::<String>()
         )
     }
 }
@@ -335,7 +386,7 @@ mod tests {
         let cfg: RelevanceConfig =
             serde_json::from_str(r#"{"endpoint":"http://x/v1","model":"m"}"#).unwrap();
         assert_eq!(cfg.on_error, OnError::Wake);
-        assert_eq!(cfg.timeout_ms, 1_500);
+        assert_eq!(cfg.timeout_ms, 8_000);
     }
 
     #[test]
@@ -345,5 +396,25 @@ mod tests {
         assert_ne!(a, cache_key("m2", "rule", "hello"));
         assert_ne!(a, cache_key("m1", "other", "hello"));
         assert_ne!(a, cache_key("m1", "rule", "goodbye"));
+    }
+}
+
+#[cfg(test)]
+mod load_tests {
+    use super::*;
+
+    #[test]
+    fn purpose_is_capped_so_a_team_gating_one_broadcast_does_not_overload_the_endpoint() {
+        // Regression: 6000 chars of persona measured ~1745 prefill tokens per
+        // call. Six agents gating one broadcast at --max-batch-size 2 pushed a
+        // local engine to "server at capacity", and every agent woke.
+        let long = "x".repeat(20_000);
+        let gate = RelevanceGate::new(Some(long), None).unwrap();
+        let prompt = gate.system_prompt();
+        assert!(
+            prompt.len() < MAX_PURPOSE_CHARS + 1_200,
+            "gate prompt too large: {}",
+            prompt.len()
+        );
     }
 }

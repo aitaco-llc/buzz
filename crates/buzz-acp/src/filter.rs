@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tracing::{debug, error, warn};
+use tracing::{error, info, warn};
 
 /// Errors that can occur during filter expression evaluation.
 #[derive(Debug, thiserror::Error)]
@@ -471,10 +471,14 @@ pub async fn match_event(
         // "silent". See `crate::relevance`.
         if let (Some(cfg), Some(gate)) = (&rule.relevance, gate) {
             if !gate.wants(cfg, &rule.name, &event.content).await {
-                debug!(
+                // INFO, not DEBUG: this is the only record that the gate saved
+                // a turn. Without it an operator cannot distinguish "gate
+                // declined" from "never heard it", and those are different
+                // bugs with the same symptom — a silent agent.
+                info!(
                     rule = %rule.name,
                     rule_index = index,
-                    "relevance gate declined — trying next rule"
+                    "relevance gate declined — not waking the agent"
                 );
                 continue;
             }
