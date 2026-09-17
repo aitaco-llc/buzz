@@ -40,6 +40,31 @@ struct BuzzAgeRestrictionSessionTests {
     #expect(!BuzzAgeRestrictionSession.isRestricted(containerURL: missing))
   }
 
+  @Test func `Restriction cannot begin between the access check and delivery`() throws {
+    let url = try directory()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let session = BuzzAgeRestrictionSession()
+    var delivered = false
+    #expect(BuzzAgeRestrictionSession.handoffIfAllowed(containerURL: url) {
+      #expect(throws: (any Error).self) { try session.restrict(containerURL: url) }
+      delivered = true
+    })
+    #expect(delivered)
+    try session.restrict(containerURL: url)
+    #expect(!BuzzAgeRestrictionSession.handoffIfAllowed(containerURL: url) {
+      Issue.record("A confirmed restriction must suppress ordinary content")
+    })
+    session.release()
+  }
+
+  @Test func `Handoff delivers when restriction storage is unavailable`() {
+    var deliveries = 0
+    #expect(BuzzAgeRestrictionSession.handoffIfAllowed(containerURL: nil) { deliveries += 1 })
+    let missing = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    #expect(BuzzAgeRestrictionSession.handoffIfAllowed(containerURL: missing) { deliveries += 1 })
+    #expect(deliveries == 2)
+  }
+
   #if os(macOS)
     @Test(.timeLimit(.minutes(1))) func processExitReleasesAuthorityWithoutCleanup() throws {
       let url = try directory()

@@ -25,9 +25,7 @@ struct BuzzNotificationHandoffTests {
         content,
         restrictedFallback: "Open Buzz to view this message.",
         handoffIfAllowed: { deliver in
-          guard !BuzzAgeRestrictionSession.isRestricted(containerURL: directory) else { return false }
-          deliver()
-          return true
+          BuzzAgeRestrictionSession.handoffIfAllowed(containerURL: directory, deliver: deliver)
         },
         cleanup: {
           // Neither the Intents callback nor its timer needs to fire for delivery.

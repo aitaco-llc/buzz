@@ -39,15 +39,29 @@ public final class BuzzAgeRestrictionSession {
   /// A missing file, inaccessible container, or unknown OS error means allowed.
   /// A shared nonblocking probe conflicts only with a live exclusive holder.
   public static func isRestricted(containerURL: URL?) -> Bool {
-    guard let containerURL else { return false }
-    let opened = open(containerURL.appendingPathComponent(fileName).path, O_RDONLY)
-    guard opened >= 0 else { return false }
+    !handoffIfAllowed(containerURL: containerURL, deliver: {})
+  }
+
+  /// Holds shared authority through synchronous delivery, so confirmed
+  /// restriction cannot finish its purge between the check and the handoff.
+  /// Unknown storage failures still deliver normally.
+  public static func handoffIfAllowed(containerURL: URL?, deliver: () -> Void) -> Bool {
+    guard let containerURL else { deliver(); return true }
+    let path = containerURL.appendingPathComponent(fileName).path
+    var opened = open(path, O_RDONLY)
+    if opened < 0 && errno == ENOENT {
+      opened = open(path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+    }
+    guard opened >= 0 else { deliver(); return true }
     defer { close(opened) }
     if flock(opened, LOCK_SH | LOCK_NB) == 0 {
-      flock(opened, LOCK_UN)
-      return false
+      defer { flock(opened, LOCK_UN) }
+      deliver()
+      return true
     }
-    return errno == EWOULDBLOCK || errno == EAGAIN
+    if errno == EWOULDBLOCK || errno == EAGAIN { return false }
+    deliver()
+    return true
   }
 
   private static func posixError() -> POSIXError {

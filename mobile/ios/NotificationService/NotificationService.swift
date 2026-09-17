@@ -108,9 +108,8 @@ final class NotificationService: UNNotificationServiceExtension {
       content,
       restrictedFallback: restrictedFallbackContent ?? Self.restrictedFallback(from: content),
       handoffIfAllowed: { deliver in
-        guard !isAgeRestricted() else { return false }
-        deliver()
-        return true
+        BuzzAgeRestrictionSession.handoffIfAllowed(
+          containerURL: ageRestrictionContainerURL, deliver: deliver)
       }
     ) { [self] in
       // The service deadline cannot wait for Intents cleanup. The safe content
@@ -126,11 +125,14 @@ final class NotificationService: UNNotificationServiceExtension {
     }
   }
 
-  private func isAgeRestricted() -> Bool {
-    let container = appGroupIdentifier.flatMap {
+  private var ageRestrictionContainerURL: URL? {
+    appGroupIdentifier.flatMap {
       FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: $0)
     }
-    return BuzzAgeRestrictionSession.isRestricted(containerURL: container)
+  }
+
+  private func isAgeRestricted() -> Bool {
+    BuzzAgeRestrictionSession.isRestricted(containerURL: ageRestrictionContainerURL)
   }
 
   private static func restrictedFallback(
