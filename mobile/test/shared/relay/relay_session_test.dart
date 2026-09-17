@@ -121,9 +121,11 @@ void main() {
       age.setState(AgeSignalState.allowed);
       await Future<void>.delayed(Duration.zero);
       expect(sockets, hasLength(2));
-      await session.queryRelay(const [
+      final reconnectQuery = session.queryRelay(const [
         NostrFilter(kinds: [1]),
       ]);
+      await session.reconnect();
+      expect(await reconnectQuery, isEmpty);
       expect(httpCalls, 2);
       session.debugDispose();
       await expectLater(

@@ -125,6 +125,7 @@ class RelaySessionNotifier extends Notifier<SessionState> {
   bool _paused = false;
   bool _hasConnectedOnce = false;
   int _connectionGeneration = 0;
+  int _contextGeneration = 0;
   final Map<Object, String> _visibleChannelsByOwner = {};
   final Map<Object, Future<void> Function()> _beforePauseCallbacks = {};
   bool _socketConnected = false;
@@ -160,7 +161,7 @@ class RelaySessionNotifier extends Notifier<SessionState> {
     if (_disposed || _ageRestricted) {
       throw StateError('Relay session is unavailable');
     }
-    final generation = _connectionGeneration;
+    final generation = _contextGeneration;
     final config = ref.read(relayConfigProvider);
     final url = Uri.parse(config.baseUrl).resolve('/query').toString();
     final bodyBytes = utf8.encode(
@@ -182,7 +183,7 @@ class RelaySessionNotifier extends Notifier<SessionState> {
       body: bodyBytes,
       timeout: timeout,
     );
-    if (_disposed || _ageRestricted || generation != _connectionGeneration) {
+    if (_disposed || _ageRestricted || generation != _contextGeneration) {
       throw StateError('Relay query belongs to a retired session');
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -968,6 +969,7 @@ class RelaySessionNotifier extends Notifier<SessionState> {
 
   void _dispose() {
     _disposed = true;
+    _contextGeneration++;
     _beforePauseCallbacks.clear();
     _connectionGeneration++;
     _reconnectTimer?.cancel();
