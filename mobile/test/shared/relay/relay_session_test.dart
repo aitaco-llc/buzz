@@ -20,7 +20,13 @@ void main() {
       final age = _MutableAgeNotifier();
       final sockets = <_ControlledRelaySocket>[];
       final keychain = nostr.Keys.generate();
+      var httpCalls = 0;
+      final pendingResponse = Completer<http.Response>();
       final session = RelaySessionNotifier(
+        httpClient: http_testing.MockClient((_) {
+          httpCalls++;
+          return pendingResponse.future;
+        }),
         socketFactory:
             ({
               required wsUrl,
@@ -76,6 +82,12 @@ void main() {
         isNot(ObserverConnectionState.idle),
       );
 
+      final pendingQuery = session.queryRelay(const [
+        NostrFilter(kinds: [1]),
+      ]);
+      final retiredQuery = expectLater(pendingQuery, throwsStateError);
+      await Future<void>.delayed(Duration.zero);
+      expect(httpCalls, 1);
       age.setState(AgeSignalState.restricted);
       await Future<void>.delayed(Duration.zero);
       expect(sockets.single.disposeCalls, 1);
@@ -87,6 +99,15 @@ void main() {
         container.read(observerRelayProvider).connection,
         ObserverConnectionState.idle,
       );
+      await expectLater(
+        session.queryRelay(const [
+          NostrFilter(kinds: [1]),
+        ]),
+        throwsStateError,
+      );
+      expect(httpCalls, 1);
+      pendingResponse.complete(http.Response('[]', 200));
+      await retiredQuery;
       await session.reconnect();
       session.onAppResumed();
       sockets.first.disconnectWith(Exception('late old-socket callback'));
@@ -100,6 +121,18 @@ void main() {
       age.setState(AgeSignalState.allowed);
       await Future<void>.delayed(Duration.zero);
       expect(sockets, hasLength(2));
+      await session.queryRelay(const [
+        NostrFilter(kinds: [1]),
+      ]);
+      expect(httpCalls, 2);
+      session.debugDispose();
+      await expectLater(
+        session.queryRelay(const [
+          NostrFilter(kinds: [1]),
+        ]),
+        throwsStateError,
+      );
+      expect(httpCalls, 2);
     },
   );
 
@@ -114,6 +147,7 @@ void main() {
     final session = RelaySessionNotifier(httpClient: client);
     final container = ProviderContainer(
       overrides: [
+        authProvider.overrideWith(() => _PendingAuthNotifier()),
         relaySessionProvider.overrideWith(() => session),
         relayConfigProvider.overrideWith(
           () => _FakeRelayConfigNotifier(
@@ -180,6 +214,7 @@ void main() {
     );
     final container = ProviderContainer(
       overrides: [
+        authProvider.overrideWith(() => _PendingAuthNotifier()),
         relaySessionProvider.overrideWith(() => session),
         relayConfigProvider.overrideWith(
           () => _FakeRelayConfigNotifier(
@@ -208,6 +243,7 @@ void main() {
     );
     final container = ProviderContainer(
       overrides: [
+        authProvider.overrideWith(() => _PendingAuthNotifier()),
         relaySessionProvider.overrideWith(() => session),
         relayConfigProvider.overrideWith(
           () => _FakeRelayConfigNotifier(
@@ -247,6 +283,7 @@ void main() {
       );
       final container = ProviderContainer(
         overrides: [
+          authProvider.overrideWith(() => _PendingAuthNotifier()),
           relaySessionProvider.overrideWith(() => session),
           relayConfigProvider.overrideWith(
             () => _FakeRelayConfigNotifier(
@@ -1687,6 +1724,7 @@ _QueryHarness _queryHarness({
   final session = RelaySessionNotifier(httpClient: client, rateLimitGate: gate);
   final container = ProviderContainer(
     overrides: [
+      authProvider.overrideWith(() => _PendingAuthNotifier()),
       relaySessionProvider.overrideWith(() => session),
       relayConfigProvider.overrideWith(
         () => _FakeRelayConfigNotifier(
@@ -1848,4 +1886,11 @@ class _MutableAgeNotifier extends AgeSignalNotifier {
   AgeSignalState build() => AgeSignalState.allowed;
 
   void setState(AgeSignalState value) => state = value;
+}
+
+// HTTP transport tests hold authentication steady, avoiding unrelated native
+// storage initialization and provider retirement while a query is in flight.
+class _PendingAuthNotifier extends AuthNotifier {
+  @override
+  Future<AuthState> build() => Completer<AuthState>().future;
 }

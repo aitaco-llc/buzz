@@ -157,6 +157,10 @@ class RelaySessionNotifier extends Notifier<SessionState> {
     List<NostrFilter> filters, {
     Duration timeout = const Duration(seconds: 8),
   }) async {
+    if (_disposed || _ageRestricted) {
+      throw StateError('Relay session is unavailable');
+    }
+    final generation = _connectionGeneration;
     final config = ref.read(relayConfigProvider);
     final url = Uri.parse(config.baseUrl).resolve('/query').toString();
     final bodyBytes = utf8.encode(
@@ -178,6 +182,9 @@ class RelaySessionNotifier extends Notifier<SessionState> {
       body: bodyBytes,
       timeout: timeout,
     );
+    if (_disposed || _ageRestricted || generation != _connectionGeneration) {
+      throw StateError('Relay query belongs to a retired session');
+    }
     if (response.statusCode < 200 || response.statusCode >= 300) {
       _activateRateLimitGateFromHttpError(response.body);
       throw RelayException(response.statusCode, response.body);
