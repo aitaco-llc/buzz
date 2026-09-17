@@ -262,6 +262,69 @@ Forum event kinds:
 
 > **Note:** Without `--no-mention-filter` (or `require_mention = false`), the default `subscribe=mentions` mode filters events that don't @mention the agent — forum posts will be invisible.
 
+## Relevance Gate (model-backed)
+
+An agent that hears a channel without requiring a mention wakes on every message
+there. On a six-agent team, one unmentioned message in a shared channel started
+five agent sessions; four read it, decided it was not their business, and ended
+the turn without publishing. Correct behaviour, five full context windows.
+
+A relevance gate puts a cheap classifier in front of that. Per-rule, in
+`buzz-acp.toml`:
+
+```toml
+[[rules]]
+name = "general-town-square"
+channels = ["<channel-uuid>"]
+kinds = [9, 46010, 40007]
+require_mention = false
+
+  [rules.relevance]
+  endpoint   = "http://127.0.0.1:8077/v1"   # any OpenAI-compatible endpoint
+  model      = "gemma3"
+  timeout_ms = 1500                          # default 1500
+  on_error   = "wake"                        # "wake" (default) | "skip"
+```
+
+It POSTs to `{endpoint}/chat/completions` with `response_format: json_schema`
+constraining the reply to `{"act": bool, "reason": string}`. Endpoints that
+ignore `response_format` still work — the verdict is extracted from free text.
+
+`BUZZ_ACP_RELEVANCE_API_KEY` sets a bearer token when the endpoint needs one.
+A local endpoint needs none.
+
+**The gate's prompt is the agent's own system prompt**, so a gate requires
+`--system-prompt` or `--system-prompt-file`. Without one the gate is disabled
+with a warning rather than classifying on the message alone, which would decline
+work that is squarely this agent's and leave no symptom but an agent that never
+speaks.
+
+### Why per-agent and not one router
+
+A central router must ask "who should act?", which forces one model to model the
+whole team. Measured on a 4B: it routed a cross-machine question to a specialist
+and missed the agent that owns synthesis, and it routed "ok everyone, can you
+update your names" to nobody, because a broadcast has no single domain owner.
+
+This gate asks "you are *this* agent; does this require you to act?" Every agent
+independently answers yes to a broadcast, and no agent has to model any other.
+
+### Fail open
+
+The gate is evaluated **last**, after channel scope, kind, mention and the
+`evalexpr` filter, so a mention-gated rule never pays for an inference call.
+
+It fails **open**, inverting the polarity of the `filter` immediately before it.
+`filter` fails closed because a broken predicate must not silently widen a
+subscription. The gate is a cost optimisation, not a security boundary — the
+author gate, `require_mention` and channel membership all run first and all
+still fail closed. On error, timeout, or an unparseable reply the agent is woken:
+back to ungated behaviour, expensive but correct. Failing closed would degrade to
+silence, where the team looks dead and nothing in the log says why. Set
+`on_error = "skip"` per rule to accept silence where a spurious wake costs more.
+
+Verdicts are cached per (model, rule, content), bounded at 512 entries.
+
 ## How It Works
 
 1. **Startup** — Spawns N agent subprocesses (default 1), sends ACP `initialize` to each, connects to the relay with NIP-42 auth.

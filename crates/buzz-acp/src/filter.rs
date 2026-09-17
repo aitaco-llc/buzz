@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 /// Errors that can occur during filter expression evaluation.
 #[derive(Debug, thiserror::Error)]
@@ -97,6 +97,13 @@ pub struct SubscriptionRule {
     /// Tag passed to the prompt template. Falls back to `name` if absent.
     #[serde(default)]
     pub prompt_tag: Option<String>,
+    /// Optional model-backed relevance gate, from `[rules.relevance]`.
+    ///
+    /// Evaluated last, only when every cheaper check has passed, and only when
+    /// the caller supplied a [`crate::relevance::RelevanceGate`]. Unlike
+    /// `filter`, it fails **open** — see [`crate::relevance`].
+    #[serde(default)]
+    pub relevance: Option<crate::relevance::RelevanceConfig>,
     /// Pre-compiled evalexpr AST for the `filter` expression.
     ///
     /// Populated by `load_rules()` at startup so `match_event` never re-parses
@@ -122,6 +129,7 @@ impl Default for SubscriptionRule {
             require_mention: false,
             filter: None,
             prompt_tag: None,
+            relevance: None,
             compiled_filter: None,
             consecutive_timeouts: Arc::new(AtomicU32::new(0)),
         }
@@ -137,6 +145,7 @@ impl Clone for SubscriptionRule {
             require_mention: self.require_mention,
             filter: self.filter.clone(),
             prompt_tag: self.prompt_tag.clone(),
+            relevance: self.relevance.clone(),
             compiled_filter: self.compiled_filter.clone(),
             // Share the same counter across clones so all copies of a rule
             // agree on the timeout state.
@@ -353,6 +362,10 @@ const MAX_CONSECUTIVE_TIMEOUTS: u32 = 5;
 ///    exist. Tag kind is checked via `tag.as_slice()` for stable, library-independent
 ///    access.
 /// 4. **filter** — if `Some`, the evalexpr expression must evaluate to `true`.
+/// 5. **relevance** — if `Some` and `gate` is supplied, a cheap model decides
+///    whether the event is worth waking the harness for. Runs last so the free
+///    checks reject first, and **fails open** (see [`crate::relevance`]) rather
+///    than closed like step 4.
 ///
 /// # Fail-closed filter error handling
 ///
@@ -370,6 +383,7 @@ pub async fn match_event(
     channel_id: uuid::Uuid,
     rules: &[SubscriptionRule],
     agent_pubkey_hex: &str,
+    gate: Option<&crate::relevance::RelevanceGate>,
 ) -> Option<MatchedRule> {
     let filter_ctx = FilterContext::from_event(event, channel_id);
 
@@ -447,6 +461,25 @@ pub async fn match_event(
             }
         }
 
+        // 5. Optional model-backed relevance gate.
+        //
+        // Last on purpose: every check above is free, so a mention-gated rule
+        // never pays for an inference call. Also note the polarity flip — step
+        // 4 fails CLOSED because a broken predicate must not widen a
+        // subscription, while this gate fails OPEN because it is a cost
+        // optimisation and its failure mode must be "expensive", never
+        // "silent". See `crate::relevance`.
+        if let (Some(cfg), Some(gate)) = (&rule.relevance, gate) {
+            if !gate.wants(cfg, &rule.name, &event.content).await {
+                debug!(
+                    rule = %rule.name,
+                    rule_index = index,
+                    "relevance gate declined — trying next rule"
+                );
+                continue;
+            }
+        }
+
         // All checks passed — this rule wins.
         let prompt_tag = rule.prompt_tag.clone().unwrap_or_else(|| rule.name.clone());
 
@@ -503,6 +536,7 @@ mod tests {
             require_mention: mention,
             filter: filter.map(|s| s.into()),
             prompt_tag: prompt_tag.map(|s| s.into()),
+            relevance: None,
             compiled_filter: None,
             consecutive_timeouts: Arc::new(AtomicU32::new(0)),
         }
@@ -601,7 +635,9 @@ mod tests {
             ),
         ];
 
-        let matched = match_event(&event, channel_id, &rules, "").await.unwrap();
+        let matched = match_event(&event, channel_id, &rules, "", None)
+            .await
+            .unwrap();
         assert_eq!(matched.rule_index, 0);
         assert_eq!(matched.prompt_tag, "tag-first");
     }
@@ -630,7 +666,9 @@ mod tests {
             ),
         ];
 
-        let matched = match_event(&event, channel_id, &rules, "").await.unwrap();
+        let matched = match_event(&event, channel_id, &rules, "", None)
+            .await
+            .unwrap();
         assert_eq!(matched.rule_index, 1);
         assert_eq!(matched.prompt_tag, "matched");
     }
@@ -653,11 +691,11 @@ mod tests {
         )];
 
         // Without mention — no match.
-        let result = match_event(&event_no_mention, channel_id, &rules, agent_pubkey).await;
+        let result = match_event(&event_no_mention, channel_id, &rules, agent_pubkey, None).await;
         assert!(result.is_none());
 
         // With mention — matches.
-        let matched = match_event(&event_with_mention, channel_id, &rules, agent_pubkey)
+        let matched = match_event(&event_with_mention, channel_id, &rules, agent_pubkey, None)
             .await
             .unwrap();
         assert_eq!(matched.prompt_tag, "mentioned");
@@ -677,7 +715,7 @@ mod tests {
             None,
         )];
 
-        let result = match_event(&event, channel_id, &rules, "").await;
+        let result = match_event(&event, channel_id, &rules, "", None).await;
         assert!(result.is_none());
     }
 
@@ -725,7 +763,9 @@ mod tests {
             None, // no explicit tag
         )];
 
-        let matched = match_event(&event, channel_id, &rules, "").await.unwrap();
+        let matched = match_event(&event, channel_id, &rules, "", None)
+            .await
+            .unwrap();
         assert_eq!(matched.prompt_tag, "my-rule");
     }
 
@@ -755,7 +795,7 @@ mod tests {
         ];
 
         // Must return None — not "catch-all".
-        let result = match_event(&event, channel_id, &rules, "").await;
+        let result = match_event(&event, channel_id, &rules, "", None).await;
         assert!(
             result.is_none(),
             "filter error must fail closed, not fall through to next rule"
@@ -781,7 +821,7 @@ mod tests {
             .store(MAX_CONSECUTIVE_TIMEOUTS, Ordering::Relaxed);
 
         let rules = vec![rule];
-        let result = match_event(&event, channel_id, &rules, "").await;
+        let result = match_event(&event, channel_id, &rules, "", None).await;
         assert!(result.is_none(), "disabled rule must return None");
     }
 }

@@ -488,7 +488,9 @@ async fn nudge_authorized_event(
 
     // Apply channel/kind filter rules.
     let filter_matched =
-        filter::match_event(&buzz_event.event, buzz_event.channel_id, rules, pubkey_hex)
+        // Setup mode has no agent harness to wake, so gating would only add
+        // latency and an inference bill to a path that does no work.
+        filter::match_event(&buzz_event.event, buzz_event.channel_id, rules, pubkey_hex, None)
             .await
             .is_some();
 
@@ -600,6 +602,8 @@ fn mentions_rule(kinds: Vec<u32>) -> filter::SubscriptionRule {
         kinds,
         require_mention: true,
         filter: None,
+        // Setup mode wakes no harness, so there is nothing to gate.
+        relevance: None,
         compiled_filter: None,
         consecutive_timeouts: Arc::new(AtomicU32::new(0)),
         prompt_tag: Some("@mention".into()),
