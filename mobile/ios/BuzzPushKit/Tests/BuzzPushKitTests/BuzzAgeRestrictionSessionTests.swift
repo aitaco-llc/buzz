@@ -40,21 +40,39 @@ struct BuzzAgeRestrictionSessionTests {
     #expect(!BuzzAgeRestrictionSession.isRestricted(containerURL: missing))
   }
 
-  @Test func `Restriction cannot begin between the access check and delivery`() throws {
+  @Test func `Pending restriction prevents newer handoffs before the current delivery finishes`() throws {
     let url = try directory()
     defer { try? FileManager.default.removeItem(at: url) }
     let session = BuzzAgeRestrictionSession()
     var delivered = false
-    #expect(BuzzAgeRestrictionSession.handoffIfAllowed(containerURL: url) {
+    let allowed = BuzzAgeRestrictionSession.handoffIfAllowed(containerURL: url) {
       #expect(throws: (any Error).self) { try session.restrict(containerURL: url) }
+      #expect(BuzzAgeRestrictionSession.isRestricted(containerURL: url))
+      #expect(!BuzzAgeRestrictionSession.handoffIfAllowed(containerURL: url) {
+        Issue.record("Pending restriction must prevent a newer handoff")
+      })
       delivered = true
-    })
+    }
+    #expect(allowed)
     #expect(delivered)
     try session.restrict(containerURL: url)
     #expect(!BuzzAgeRestrictionSession.handoffIfAllowed(containerURL: url) {
       Issue.record("A confirmed restriction must suppress ordinary content")
     })
     session.release()
+  }
+
+  @Test func `Allowed restoration does not wait for a suspended handoff`() throws {
+    let url = try directory()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let session = BuzzAgeRestrictionSession()
+    let allowed = BuzzAgeRestrictionSession.handoffIfAllowed(containerURL: url) {
+      #expect(throws: (any Error).self) { try session.restrict(containerURL: url) }
+      session.release()
+      #expect(!BuzzAgeRestrictionSession.isRestricted(containerURL: url))
+      #expect(BuzzAgeRestrictionSession.handoffIfAllowed(containerURL: url) {})
+    }
+    #expect(allowed)
   }
 
   @Test func `Handoff delivers when restriction storage is unavailable`() {
