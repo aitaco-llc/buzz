@@ -104,7 +104,6 @@ void main() {
     (tester) async {
       final relaySession = _CountingRelaySessionNotifier();
       var requests = 0;
-      var snapshotSuspensions = 0;
       var snapshotRestorations = 0;
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(ageSignalChannel, (call) {
@@ -119,22 +118,12 @@ void main() {
           overrides: [
             authProvider.overrideWith(() => _AuthenticatedAuthNotifier()),
             relaySessionProvider.overrideWith(() => relaySession),
-            suspendCommunitySnapshotForAgeCheckProvider.overrideWithValue(
-              () async {
-                snapshotSuspensions += 1;
-                if (snapshotSuspensions == 1) {
-                  throw StateError('injected suspension failure');
-                }
-              },
-            ),
-            resumeCommunitySnapshotAfterAgeCheckProvider.overrideWithValue(
-              () async {
-                snapshotRestorations += 1;
-                if (snapshotRestorations == 1) {
-                  throw StateError('injected restoration failure');
-                }
-              },
-            ),
+            ageAllowedNotificationRestorerProvider.overrideWithValue(() async {
+              snapshotRestorations += 1;
+              if (snapshotRestorations == 1) {
+                throw StateError('injected restoration failure');
+              }
+            }),
             ageSignalPushSnapshotRetryWaitProvider.overrideWithValue(
               (_) async {},
             ),
@@ -146,7 +135,6 @@ void main() {
 
       await tester.pump();
       await tester.pump();
-      expect(snapshotSuspensions, 0);
 
       expect(find.bySemanticsLabel('Checking age eligibility'), findsNothing);
       expect(find.byType(HomePage), findsOneWidget);
@@ -165,7 +153,6 @@ void main() {
     ) async {
       final response = Completer<Object?>();
       var requests = 0;
-      var suspensions = 0;
       final relaySession = _CountingRelaySessionNotifier();
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(ageSignalChannel, (_) {
@@ -183,12 +170,7 @@ void main() {
               () =>
                   AgeSignalNotifier(requestTimeout: const Duration(seconds: 1)),
             ),
-            suspendCommunitySnapshotForAgeCheckProvider.overrideWithValue(
-              () async {
-                suspensions += 1;
-              },
-            ),
-            resumeCommunitySnapshotAfterAgeCheckProvider.overrideWithValue(
+            ageAllowedNotificationRestorerProvider.overrideWithValue(
               () async {},
             ),
             savedPrefsProvider.overrideWithValue(prefs),
@@ -200,7 +182,6 @@ void main() {
       expect(find.byType(HomePage), findsOneWidget);
       expect(find.byType(BuzzPushBootstrap), findsOneWidget);
       expect(relaySession.builds, 1);
-      expect(suspensions, 0);
       expect(requests, 1);
 
       if (outcome == 'timeout') {
@@ -228,62 +209,10 @@ void main() {
         find.byType(BuzzPushBootstrap),
         restricted ? findsNothing : findsOneWidget,
       );
-      expect(suspensions, 0);
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump();
     });
   }
-
-  testWidgets('reloads failed community storage on resume before cleanup', (
-    tester,
-  ) async {
-    final communities = _RecoveringCommunityListNotifier();
-
-    await tester.pumpWidget(
-      ProviderScope(
-        retry: (_, _) => null,
-        overrides: [
-          ageSignalProvider.overrideWith(() => _BlockingAgeSignalNotifier()),
-          communityListProvider.overrideWith(() => communities),
-        ],
-        child: const AgeSignalPushBootstrap(child: SizedBox()),
-      ),
-    );
-    await tester.pump();
-
-    expect(communities.builds, 1);
-    expect(communities.cleanups, 0);
-
-    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
-    await tester.pump();
-    await tester.pump();
-
-    expect(communities.builds, 2);
-    expect(communities.cleanups, 1);
-  });
-
-  testWidgets('retries failed restricted push cleanup without an app resume', (
-    tester,
-  ) async {
-    final communities = _RetryingCleanupCommunityListNotifier();
-
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [
-          ageSignalProvider.overrideWith(() => _BlockingAgeSignalNotifier()),
-          communityListProvider.overrideWith(() => communities),
-          ageSignalPushSnapshotRetryWaitProvider.overrideWithValue(
-            (_) async {},
-          ),
-        ],
-        child: const AgeSignalPushBootstrap(child: SizedBox()),
-      ),
-    );
-    await tester.pump();
-    await tester.pump();
-
-    expect(communities.cleanups, 2);
-  });
 
   testWidgets(
     'purges restricted notifications before community storage recovers',
@@ -319,7 +248,7 @@ void main() {
         overrides: [
           ageSignalProvider.overrideWith(() => _BlockingAgeSignalNotifier()),
           communityListProvider.overrideWith(
-            () => _RetryingCleanupCommunityListNotifier(),
+            () => _UnavailableCommunityListNotifier(),
           ),
           ageRestrictedNotificationPurgerProvider.overrideWithValue(() async {
             purges += 1;
@@ -351,7 +280,7 @@ void main() {
           overrides: [
             ageSignalProvider.overrideWith(() => _BlockingAgeSignalNotifier()),
             communityListProvider.overrideWith(
-              () => _SuccessfulCleanupCommunityListNotifier(),
+              () => _UnavailableCommunityListNotifier(),
             ),
             ageRestrictedNotificationPurgerProvider.overrideWithValue(() async {
               purges += 1;
@@ -425,46 +354,6 @@ class _CountingRelaySessionNotifier extends RelaySessionNotifier {
     builds += 1;
     return const SessionState(status: SessionStatus.disconnected);
   }
-}
-
-class _RecoveringCommunityListNotifier extends CommunityListNotifier {
-  int builds = 0;
-  int cleanups = 0;
-
-  @override
-  Future<List<Community>> build() async {
-    builds += 1;
-    if (builds == 1) throw StateError('secure storage unavailable');
-    return const [];
-  }
-
-  @override
-  Future<void> enforceAgeRestrictionOnPush() async {
-    cleanups += 1;
-  }
-}
-
-class _RetryingCleanupCommunityListNotifier extends CommunityListNotifier {
-  int cleanups = 0;
-
-  @override
-  Future<List<Community>> build() async => const [];
-
-  @override
-  Future<void> enforceAgeRestrictionOnPush() async {
-    cleanups += 1;
-    if (cleanups == 1) {
-      throw StateError('injected restricted cleanup failure');
-    }
-  }
-}
-
-class _SuccessfulCleanupCommunityListNotifier extends CommunityListNotifier {
-  @override
-  Future<List<Community>> build() async => const [];
-
-  @override
-  Future<void> enforceAgeRestrictionOnPush() async {}
 }
 
 class _UnavailableCommunityListNotifier extends CommunityListNotifier {

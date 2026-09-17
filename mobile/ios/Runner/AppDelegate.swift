@@ -31,6 +31,8 @@ import os.log
   private var qrScannerChannel: FlutterMethodChannel?
   private var inlinePhotoPickerSupportChannel: FlutterMethodChannel?
   private var ageSignalChannel: FlutterMethodChannel?
+  var requestPlatformAgeSignal: @MainActor (UIViewController) async throws -> [String: Any] =
+    AppDelegate.platformAgeSignal
   private var ageSignalTask: Task<Void, Never>?
   private var ageSignalRequestID: UUID?
   private var ageSignalResult: FlutterResult?
@@ -280,32 +282,11 @@ import os.log
     let requestID = UUID()
     ageSignalRequestID = requestID
     ageSignalResult = result
+    let request = requestPlatformAgeSignal
     ageSignalTask = Task { @MainActor [weak self] in
       do {
-        let response = try await AgeRangeService.shared.requestAgeRange(
-          ageGates: 18,
-          in: viewController
-        )
-        switch response {
-        case .declinedSharing:
-          self?.completeAgeSignalRequest(requestID, value: Self.noAgeSignalResponse)
-        case .sharing(let range):
-          self?.completeAgeSignalRequest(
-            requestID,
-            value: BuzzAgeSignalPayload.sharing(
-              exclusiveUpperBound: range.upperBound, lowerBound: range.lowerBound)
-          )
-        @unknown default:
-          self?.completeAgeSignalRequest(
-            requestID,
-            value:
-            FlutterError(
-              code: "age_signal_unavailable",
-              message: "The age signal response is unsupported.",
-              details: nil
-            )
-          )
-        }
+        let payload = try await request(viewController)
+        self?.completeAgeSignalRequest(requestID, value: payload)
       } catch {
         self?.completeAgeSignalRequest(
           requestID,
@@ -317,6 +298,22 @@ import os.log
           )
         )
       }
+    }
+  }
+
+  @MainActor
+  private static func platformAgeSignal(_ viewController: UIViewController) async throws -> [String: Any] {
+    guard #available(iOS 26.0, *) else { return noAgeSignalResponse }
+    let response = try await AgeRangeService.shared.requestAgeRange(ageGates: 18, in: viewController)
+    switch response {
+    case .declinedSharing:
+      return noAgeSignalResponse
+    case .sharing(let range):
+      return BuzzAgeSignalPayload.sharing(
+        exclusiveUpperBound: range.upperBound, lowerBound: range.lowerBound)
+    @unknown default:
+      throw NSError(domain: "BuzzAgeSignal", code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "Unsupported age signal response"])
     }
   }
 

@@ -14,10 +14,8 @@ import androidx.annotation.RequiresApi
 import com.google.android.play.agesignals.AgeSignalsException
 import com.google.android.play.agesignals.model.AgeSignalsErrorCode
 import com.google.android.play.agesignals.AgeSignalsAccessRequest
-import com.google.android.play.agesignals.AgeSignalsManager
 import com.google.android.play.agesignals.AgeSignalsManagerFactory
 import com.google.android.play.agesignals.AgeSignalsRequest
-import com.google.android.play.agesignals.model.AgeSignalsStatus
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -130,8 +128,7 @@ internal object AndroidImageProcessor {
 class MainActivity : FlutterFragmentActivity() {
     private var mediaUploadChannel: MethodChannel? = null
     private var ageSignalChannel: MethodChannel? = null
-    private var ageSignalRequestGeneration = 0
-    private var pendingAgeSignalResult: MethodChannel.Result? = null
+    private val ageSignalRequest = AgeSignalRequest()
     private var huddleMediaPlugin: HuddleMediaPlugin? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -178,90 +175,21 @@ class MainActivity : FlutterFragmentActivity() {
             channel.setMethodCallHandler { call, result ->
                 when (call.method) {
                     REQUEST_AGE_SIGNAL_METHOD -> {
-                        try {
-                            handleRequestAgeSignal(
-                                AgeSignalsManagerFactory.create(applicationContext),
-                                result,
-                            )
-                        } catch (error: Exception) {
-                            pendingAgeSignalResult = null
-                            ageSignalRequestGeneration += 1
-                            replyWithAgeSignalError(result, error)
-                        }
+                        val manager by lazy { AgeSignalsManagerFactory.create(applicationContext) }
+                        ageSignalRequest.start(
+                            result,
+                            requestAccess = {
+                                manager.requestAgeSignalsAccess(
+                                    AgeSignalsAccessRequest.builder().setActivity(this).build(),
+                                )
+                            },
+                            checkAge = { manager.checkAgeSignals(AgeSignalsRequest.builder().build()) },
+                        )
                     }
                     else -> result.notImplemented()
                 }
             }
         }
-    }
-
-    private fun handleRequestAgeSignal(
-        ageSignalsManager: AgeSignalsManager,
-        result: MethodChannel.Result,
-    ) {
-        if (pendingAgeSignalResult != null) {
-            result.error("age_signal_in_flight", "An age signal request is already active.", null)
-            return
-        }
-        ageSignalRequestGeneration += 1
-        val generation = ageSignalRequestGeneration
-        pendingAgeSignalResult = result
-        val accessRequest = AgeSignalsAccessRequest.builder()
-            .setActivity(this)
-            .build()
-        ageSignalsManager.requestAgeSignalsAccess(accessRequest)
-            .addOnSuccessListener { accessResult ->
-                if (generation != ageSignalRequestGeneration || pendingAgeSignalResult !== result) return@addOnSuccessListener
-                if (accessResult.ageSignalsStatus() != AgeSignalsStatus.SHARED) {
-                    completeAgeSignalRequest(generation, result) { replyWithNoAgeSignal(result) }
-                    return@addOnSuccessListener
-                }
-
-                try {
-                    ageSignalsManager.checkAgeSignals(AgeSignalsRequest.builder().build())
-                        .addOnSuccessListener { ageSignalsResult ->
-                            completeAgeSignalRequest(generation, result) {
-                                replyWithAgeSignal(result, ageSignalsResult.ageUpper(), ageSignalsResult.ageLower())
-                            }
-                        }
-                        .addOnFailureListener { error ->
-                            completeAgeSignalRequest(generation, result) {
-                                replyWithAgeSignalError(result, error)
-                            }
-                        }
-                } catch (error: Exception) {
-                    completeAgeSignalRequest(generation, result) {
-                        replyWithAgeSignalError(result, error)
-                    }
-                }
-            }
-            .addOnFailureListener { error ->
-                completeAgeSignalRequest(generation, result) {
-                    replyWithAgeSignalError(result, error)
-                }
-            }
-    }
-
-    private fun completeAgeSignalRequest(
-        generation: Int,
-        result: MethodChannel.Result,
-        reply: () -> Unit,
-    ) {
-        if (generation != ageSignalRequestGeneration || pendingAgeSignalResult !== result) return
-        pendingAgeSignalResult = null
-        reply()
-    }
-
-    private fun replyWithAgeSignal(
-        result: MethodChannel.Result,
-        ageUpper: Int?,
-        ageLower: Int?,
-    ) {
-        result.success(ageSignalPayload(ageUpper, ageLower))
-    }
-
-    private fun replyWithNoAgeSignal(result: MethodChannel.Result) {
-        result.success(noAgeSignalPayload())
     }
 
     override fun onRequestPermissionsResult(
@@ -274,8 +202,7 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     override fun onDestroy() {
-        ageSignalRequestGeneration += 1
-        pendingAgeSignalResult = null
+        ageSignalRequest.retire()
         huddleMediaPlugin?.dispose()
         huddleMediaPlugin = null
         super.onDestroy()
