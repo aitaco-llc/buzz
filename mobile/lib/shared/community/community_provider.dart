@@ -260,6 +260,7 @@ class _CommunitySnapshotSync {
   ) => _serializeMutation(() async {
     if (_ageRestricted) return;
     final communities = await loadCommunities();
+    if (_ageRestricted) return;
     _ageCheckSuspended = false;
     await _write(communities, useAgeGateWriter: true, settleAgeGateFence: true);
   });
@@ -354,6 +355,7 @@ Future<void> _enforceAgeRestrictedCommunitySnapshot(Ref ref) async {
     pushCommunitySnapshotError.value = null;
   } catch (error, stackTrace) {
     reportPushCommunitySnapshotError(error, stackTrace);
+    Error.throwWithStackTrace(error, stackTrace);
   }
 }
 
@@ -623,67 +625,11 @@ class CommunityListNotifier extends AsyncNotifier<List<Community>> {
     }
   }
 
-  /// Disables every stored push lease after the platform age gate restricts
-  /// access, and retries journals left pending by an earlier launch.
-  Future<void> enforceAgeRestrictionOnPush() async {
-    // Fence every older or later authenticated export before touching storage.
-    // The final empty write wins even if a stale export is already in I/O.
-    await _enforceAgeRestrictedCommunitySnapshot(ref);
-    final attempts = <({String id, bool advanceGeneration})>[];
-    await _serializePushMutation(() async {
-      final storage = ref.read(communityStorageProvider);
-      final current = state.value ?? await storage.loadAll();
-      final updatedList = [...current];
-      var changed = false;
-
-      for (var index = 0; index < current.length; index += 1) {
-        final community = current[index];
-        final pending =
-            community.pushSubscriptionState.pendingTombstoneGeneration;
-        if (!community.pushNotificationsEnabled) {
-          if (pending != null) {
-            attempts.add((id: community.id, advanceGeneration: true));
-          }
-          continue;
-        }
-
-        var pushState = community.pushSubscriptionState;
-        if (pushState.acceptedGeneration != null ||
-            pushState.generationCursor != null) {
-          final cursor =
-              pushState.generationCursor ?? pushState.acceptedGeneration ?? 0;
-          pushState = pushState.withPendingTombstone(cursor + 1);
-          attempts.add((id: community.id, advanceGeneration: false));
-        }
-        final updated = community.copyWith(
-          pushNotificationsEnabled: false,
-          pushSubscriptionState: pushState,
-        );
-        updatedList[index] = updated;
-        changed = true;
-      }
-
-      if (changed) {
-        // Persist the complete restricted state in one secure-storage write so
-        // termination can never leave later communities push-enabled.
-        await storage.saveAll(updatedList);
-        state = AsyncData(updatedList);
-      }
-      // A failed native clear is retried on the next restricted launch/resume.
-      await syncCommunitySnapshot(ref, updatedList);
-    });
-
-    for (final attempt in attempts) {
-      try {
-        await retryPendingPushLeaseTombstone(
-          attempt.id,
-          advanceGeneration: attempt.advanceGeneration,
-        );
-      } catch (_) {
-        // The durable journal remains available for the next launch/resume.
-      }
-    }
-  }
+  /// Suppresses local notification presentation for this launch only.
+  /// An age restriction must not overwrite the user's notification preferences
+  /// or revoke remote leases that would remain disabled after a failed check.
+  Future<void> enforceAgeRestrictionOnPush() =>
+      _enforceAgeRestrictedCommunitySnapshot(ref);
 
   /// Publishes a durably journaled opt-out tombstone.
   ///

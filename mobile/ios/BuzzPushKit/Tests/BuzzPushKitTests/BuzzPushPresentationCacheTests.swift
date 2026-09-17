@@ -28,8 +28,8 @@ struct BuzzPushPresentationCacheTests {
     #expect(reader.current() == second)
   }
 
-  @Test("Legacy notification state without a fence fails closed until restored")
-  func legacyNotificationStateWithoutFenceFailsClosed() throws {
+  @Test("Legacy notification state without a fence allows presentation")
+  func legacyNotificationStateWithoutFenceAllowsPresentation() throws {
     let directory = try temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
     let legacySnapshot = directory.appendingPathComponent(
@@ -40,7 +40,7 @@ struct BuzzPushPresentationCacheTests {
 
     let beforeAgeCheck = store.current()
     #expect(beforeAgeCheck == .unavailable)
-    #expect(beforeAgeCheck.requiresDiscard(since: beforeAgeCheck))
+    #expect(!beforeAgeCheck.requiresDiscard(since: beforeAgeCheck))
 
     let restored = try store.settleIfFencing()
     #expect(!restored.isFencing)
@@ -253,7 +253,7 @@ struct BuzzPushPresentationCacheTests {
 
     #expect(!initial.requiresDiscard(since: initial))
     #expect(active.requiresDiscard(since: initial))
-    #expect(BuzzAgeRestrictionFence.unavailable.requiresDiscard(since: initial))
+    #expect(!BuzzAgeRestrictionFence.unavailable.requiresDiscard(since: initial))
     #expect(settled.requiresDiscard(since: initial))
     #expect(!settled.requiresDiscard(since: settled))
   }
@@ -1119,46 +1119,32 @@ struct BuzzPushPresentationCacheTests {
 }
 
 struct BuzzLaunchNotificationProtectionTests {
-  @Test func failedLaunchClearsCredentialsAndStillRequiresRetry() throws {
+  @Test func missingOrMalformedRestrictionStateAllowsAccess() throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    defer {
-      try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
-      try? FileManager.default.removeItem(at: directory)
-    }
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = BuzzAgeRestrictionFenceStore(containerURL: directory)
+    #expect(!store.current().isFencing)
+    try Data("invalid".utf8).write(to: directory.appendingPathComponent(BuzzAgeRestrictionFenceStore.fileName))
+    #expect(!store.current().isFencing)
+    #expect(!store.current().requiresDiscard(since: .initial))
+  }
+
+  @Test func nextLaunchRestoresAConfirmedRestriction() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
     let store = BuzzAgeRestrictionFenceStore(containerURL: directory)
     try store.begin()
-    let allowed = try store.settleIfFencing()
-    try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
-    var credentials = ["community": "saved signing key"]
-
-    #expect(throws: (any Error).self) {
-      try BuzzAgeRestrictionFenceStore.beginLaunch(containerURL: directory) {
-        credentials.removeAll()
-      }
-    }
-    #expect(credentials.isEmpty)
-    #expect(store.current() == allowed, "The old allowed fence remains readable")
-
-    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
-    try BuzzAgeRestrictionFenceStore.beginLaunch(containerURL: directory) {
-      Issue.record("Recovered storage should establish the fence")
-    }
     #expect(store.current().isFencing)
+    try store.settleIfFencing()
+    #expect(!store.current().isFencing)
   }
 
-  @Test func missingContainerStillAttemptsCredentialRemoval() {
-    var cleared = false
-    #expect(throws: (any Error).self) {
-      try BuzzAgeRestrictionFenceStore.beginLaunch(containerURL: nil) { cleared = true }
-    }
-    #expect(cleared)
-  }
-
-  @Test func credentialRemovalFailurePropagates() {
-    let failure = NSError(domain: "test.keychain", code: 1)
-    #expect(throws: failure) {
-      try BuzzAgeRestrictionFenceStore.beginLaunch(containerURL: nil) { throw failure }
-    }
+  @Test func inaccessibleStorageAllowsAccess() {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let store = BuzzAgeRestrictionFenceStore(containerURL: directory)
+    #expect(!store.current().isFencing)
+    #expect(!store.current().requiresDiscard(since: .initial))
   }
 }

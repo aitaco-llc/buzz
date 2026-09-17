@@ -143,9 +143,12 @@ void main() {
           container.read(suspendCommunitySnapshotForAgeCheckProvider)(),
           throwsStateError,
         );
-        await container
-            .read(communityListProvider.notifier)
-            .enforceAgeRestrictionOnPush();
+        await expectLater(
+          container
+              .read(communityListProvider.notifier)
+              .enforceAgeRestrictionOnPush(),
+          throwsStateError,
+        );
         await container.read(suspendCommunitySnapshotForAgeCheckProvider)();
 
         expect(strictAttempts, 3);
@@ -506,110 +509,31 @@ void main() {
       },
     );
 
-    test(
-      'age restriction clears push state and retries pending leases',
-      () async {
-        var failPendingOnce = true;
-        deactivator = (community, {generation}) async {
-          deactivatedCommunityIds.add(community.id);
-          deactivationGenerations.add(generation);
-          if (community.name == 'Pending' && failPendingOnce) {
-            failPendingOnce = false;
-            throw StateError('injected pending failure');
-          }
-        };
-        container = createContainer();
-        await container.read(communityListProvider.future);
-        final subscription = BuzzPushSubscription(
-          filter: BuzzPushFilter(kinds: const [9], pTags: ['a' * 64]),
-          notificationClass: 'default',
-        );
-        final active =
-            Community.create(
-              name: 'Active',
-              relayUrl: 'https://active.example.com',
-            ).copyWith(
-              pushNotificationsEnabled: true,
-              pushSubscriptionState: BuzzPushLeaseSubscriptionState.desired(
-                desired: [subscription],
-              ).withAccepted(subscriptions: [subscription], generation: 4),
-            );
-        final pending =
-            Community.create(
-              name: 'Pending',
-              relayUrl: 'https://pending.example.com',
-            ).copyWith(
-              pushSubscriptionState:
-                  BuzzPushLeaseSubscriptionState.desired(
-                        desired: [subscription],
-                      )
-                      .withAccepted(
-                        subscriptions: [subscription],
-                        generation: 6,
-                      )
-                      .withPendingTombstone(7),
-            );
-        final notifier = container.read(communityListProvider.notifier);
-        await notifier.addCommunity(active);
-        await notifier.addCommunity(pending);
-
-        await notifier.enforceAgeRestrictionOnPush();
-        await notifier.enforceAgeRestrictionOnPush();
-
-        final stored = await communityStorage.loadAll();
-        expect(
-          stored.every((community) => !community.pushNotificationsEnabled),
-          isTrue,
-        );
-        expect(
-          stored.every(
-            (community) =>
-                community.pushSubscriptionState.pendingTombstoneGeneration ==
-                null,
-          ),
-          isTrue,
-        );
-        expect(
-          snapshots.last.every(
-            (community) => !community.pushNotificationsEnabled,
-          ),
-          isTrue,
-        );
-        expect(deactivatedCommunityIds, [active.id, pending.id, pending.id]);
-        expect(deactivationGenerations, [5, 8, 9]);
-      },
-    );
-
-    test(
-      'age restriction persists all disabled communities in one write',
-      () async {
-        container = createContainer();
-        final first = Community.create(
-          name: 'First',
-          relayUrl: 'https://first.example.com',
-        ).copyWith(pushNotificationsEnabled: true);
-        final second = Community.create(
-          name: 'Second',
-          relayUrl: 'https://second.example.com',
-        ).copyWith(pushNotificationsEnabled: true);
-        await communityStorage.save(first);
-        await communityStorage.save(second);
-        await container.read(communityListProvider.future);
-        final writesBefore = fakeSecure.writeCount('buzz_communities');
-
-        await container
-            .read(communityListProvider.notifier)
-            .enforceAgeRestrictionOnPush();
-
-        final stored = await communityStorage.loadAll();
-        expect(stored, hasLength(2));
-        expect(
-          stored.every((community) => !community.pushNotificationsEnabled),
-          isTrue,
-        );
-        expect(fakeSecure.writeCount('buzz_communities') - writesBefore, 1);
-      },
-    );
+    test('age restriction preserves preferences and remote leases', () async {
+      container = createContainer();
+      final community = Community.create(
+        name: 'Active',
+        relayUrl: 'https://active.example.com',
+      ).copyWith(pushNotificationsEnabled: true);
+      await communityStorage.save(community);
+      await container.read(communityListProvider.future);
+      final writesBefore = fakeSecure.writeCount('buzz_communities');
+      final notifier = container.read(communityListProvider.notifier);
+      await notifier.enforceAgeRestrictionOnPush();
+      await notifier.enforceAgeRestrictionOnPush();
+      expect(
+        (await communityStorage.loadAll()).single.pushNotificationsEnabled,
+        isTrue,
+      );
+      expect(fakeSecure.writeCount('buzz_communities'), writesBefore);
+      expect(deactivatedCommunityIds, isEmpty);
+      expect(snapshots.last, isEmpty);
+      container.dispose();
+      container = createContainer();
+      await container.read(communityListProvider.future);
+      await container.read(resumeCommunitySnapshotAfterAgeCheckProvider)();
+      expect(snapshots.last.single.pushNotificationsEnabled, isTrue);
+    });
 
     test(
       'age restriction fences a stale authenticated snapshot export',
@@ -797,6 +721,46 @@ void main() {
       await bootstrap;
       await resume;
       expect(strictSnapshots.last.single.pushNotificationsEnabled, isFalse);
+    });
+
+    test('confirmed restriction supersedes an in-flight restoration', () async {
+      final controlledStorage = _PausedCommunityStorage();
+      communityStorage = controlledStorage;
+      final community = Community.create(
+        name: 'Active',
+        relayUrl: 'https://active.example.com',
+      ).copyWith(pushNotificationsEnabled: true);
+      await communityStorage.save(community);
+      final settlements = <bool>[];
+      container = ProviderContainer(
+        overrides: [
+          communityStorageProvider.overrideWithValue(communityStorage),
+          communitySnapshotWriterProvider.overrideWithValue((_) async {}),
+          ageGateCommunitySnapshotWriterProvider.overrideWithValue((
+            items, {
+            required settleFence,
+          }) async {
+            expect(items, isEmpty);
+            settlements.add(settleFence);
+          }),
+        ],
+      );
+      await container.read(communityListProvider.future);
+      controlledStorage.pauseNextLoad = true;
+      final restore = container.read(
+        resumeCommunitySnapshotAfterAgeCheckProvider,
+      )();
+      await controlledStorage.loadStarted.future;
+      final restrict = container
+          .read(communityListProvider.notifier)
+          .enforceAgeRestrictionOnPush();
+      controlledStorage.releaseLoad.complete();
+      await Future.wait([restore, restrict]);
+      expect(settlements, [false]);
+      expect(
+        (await communityStorage.loadAll()).single.pushNotificationsEnabled,
+        isTrue,
+      );
     });
 
     test('removal during resume cannot leave restored credentials', () async {

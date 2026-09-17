@@ -45,26 +45,10 @@ import os.log
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
-    do {
-      try prepareLaunchAgeRestrictionFence()
-    } catch {
-      // Flutter must start so the existing age-check retry screen is reachable.
-      // requestAgeSignal retries this protection before returning any age result.
-      os_log(
-        "Launch notification protection failed: %{public}@", type: .error,
-        error.localizedDescription)
-    }
+    // Age checking and notification restoration run asynchronously from
+    // Flutter. No age-related storage or platform request may delay launch.
     UNUserNotificationCenter.current().delegate = self
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
-  }
-
-  private func prepareLaunchAgeRestrictionFence() throws {
-    let container = appGroupIdentifier.flatMap {
-      FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: $0)
-    }
-    try BuzzAgeRestrictionFenceStore.beginLaunch(containerURL: container) {
-      try BuzzPushKeychain.replace(signingKeys: [:], accessGroup: self.pushKeychainAccessGroup)
-    }
   }
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
@@ -278,18 +262,6 @@ import os.log
       result(FlutterMethodNotImplemented)
       return
     }
-    do {
-      try prepareLaunchAgeRestrictionFence()
-    } catch {
-      result(
-        FlutterError(
-          code: "age_signal_notification_protection_failed",
-          message: "Unable to protect notifications before checking age. Please retry.",
-          details: error.localizedDescription
-        )
-      )
-      return
-    }
     guard #available(iOS 26.0, *) else {
       result(Self.noAgeSignalResponse)
       return
@@ -320,7 +292,8 @@ import os.log
         case .sharing(let range):
           self?.completeAgeSignalRequest(
             requestID,
-            value: BuzzAgeSignalPayload.sharing(exclusiveUpperBound: range.upperBound)
+            value: BuzzAgeSignalPayload.sharing(
+              exclusiveUpperBound: range.upperBound, lowerBound: range.lowerBound)
           )
         @unknown default:
           self?.completeAgeSignalRequest(

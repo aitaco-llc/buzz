@@ -63,7 +63,7 @@ final ageRestrictedNotificationMaintenanceScheduleProvider =
       };
     });
 
-/// Starts the push lifecycle only after the launch age check allows access.
+/// Starts push normally unless a confirmed age restriction is active.
 class AgeSignalPushBootstrap extends HookConsumerWidget {
   /// Creates the production push boundary around [child].
   const AgeSignalPushBootstrap({required this.child, super.key});
@@ -73,9 +73,6 @@ class AgeSignalPushBootstrap extends HookConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(ageSignalProvider);
-    final suspendSnapshot = ref.watch(
-      suspendCommunitySnapshotForAgeCheckProvider,
-    );
     final resumeSnapshot = ref.watch(
       resumeCommunitySnapshotAfterAgeCheckProvider,
     );
@@ -84,45 +81,34 @@ class AgeSignalPushBootstrap extends HookConsumerWidget {
     final consecutiveFailures = useRef(0);
     final previousState = useRef<AgeSignalState?>(null);
 
-    useEffect(
-      () {
-        if (previousState.value != state) {
-          previousState.value = state;
+    useEffect(() {
+      if (previousState.value != state) {
+        previousState.value = state;
+        consecutiveFailures.value = 0;
+      }
+      if (state == AgeSignalState.restricted) return null;
+      var cancelled = false;
+      unawaited(() async {
+        try {
+          await resumeSnapshot();
           consecutiveFailures.value = 0;
-        }
-        var cancelled = false;
-        unawaited(() async {
-          try {
-            await (state == AgeSignalState.allowed
-                ? resumeSnapshot()
-                : suspendSnapshot());
-            consecutiveFailures.value = 0;
-          } catch (_) {
-            final delay = ageSignalPushSnapshotRetryDelay(
-              consecutiveFailures.value,
-            );
-            await waitBeforeRetry(delay);
-            if (!cancelled) {
-              consecutiveFailures.value += 1;
-              retryGeneration.value += 1;
-            }
+        } catch (_) {
+          final delay = ageSignalPushSnapshotRetryDelay(
+            consecutiveFailures.value,
+          );
+          await waitBeforeRetry(delay);
+          if (!cancelled) {
+            consecutiveFailures.value += 1;
+            retryGeneration.value += 1;
           }
-        }());
-        return () => cancelled = true;
-      },
-      [
-        state,
-        suspendSnapshot,
-        resumeSnapshot,
-        waitBeforeRetry,
-        retryGeneration.value,
-      ],
-    );
+        }
+      }());
+      return () => cancelled = true;
+    }, [state, resumeSnapshot, waitBeforeRetry, retryGeneration.value]);
 
     return switch (state) {
-      AgeSignalState.allowed => BuzzPushBootstrap(child: child),
       AgeSignalState.restricted => _AgeRestrictedPushCleanup(child: child),
-      AgeSignalState.checking || AgeSignalState.retryableFailure => child,
+      _ => BuzzPushBootstrap(child: child),
     };
   }
 }

@@ -1,6 +1,5 @@
 package xyz.block.buzz.mobile
 
-import android.content.Intent
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -27,10 +26,12 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.util.UUID
 
-internal fun ageSignalPayload(ageUpper: Int?): Map<String, Any?> {
+internal fun ageSignalPayload(ageUpper: Int?, ageLower: Int? = null): Map<String, Any?> {
+    val validRange = (ageUpper == null || ageUpper >= 0) &&
+        (ageLower == null || (ageLower >= 0 && (ageUpper == null || ageLower <= ageUpper)))
     return mapOf(
         "status" to "signal",
-        "ageUpper" to ageUpper,
+        "ageUpper" to if (validRange) ageUpper else null,
     )
 }
 
@@ -47,7 +48,7 @@ internal fun replyWithAgeSignalError(
 ) {
     // Missing/outdated Play installations and non-Play installs cannot supply
     // a signal. Preserve Buzz's unsupported-environment no-signal policy.
-    // Transport, binding, SDK integration, and unknown failures stay gated.
+    // Other failures remain distinguishable; Flutter preserves access on errors.
     if (error is AgeSignalsException && error.errorCode in setOf(
             AgeSignalsErrorCode.API_NOT_AVAILABLE,
             AgeSignalsErrorCode.PLAY_STORE_NOT_FOUND,
@@ -177,13 +178,17 @@ class MainActivity : FlutterFragmentActivity() {
             channel.setMethodCallHandler { call, result ->
                 when (call.method) {
                     REQUEST_AGE_SIGNAL_METHOD -> {
-                        handleRequestAgeSignal(
-                            AgeSignalsManagerFactory.create(applicationContext),
-                            result,
-                        )
+                        try {
+                            handleRequestAgeSignal(
+                                AgeSignalsManagerFactory.create(applicationContext),
+                                result,
+                            )
+                        } catch (error: Exception) {
+                            pendingAgeSignalResult = null
+                            ageSignalRequestGeneration += 1
+                            replyWithAgeSignalError(result, error)
+                        }
                     }
-                    CANCEL_AGE_SIGNAL_METHOD -> cancelAgeSignalRequest(result)
-                    RESTART_AGE_SIGNAL_METHOD -> restartForAgeSignal(result)
                     else -> result.notImplemented()
                 }
             }
@@ -206,22 +211,29 @@ class MainActivity : FlutterFragmentActivity() {
             .build()
         ageSignalsManager.requestAgeSignalsAccess(accessRequest)
             .addOnSuccessListener { accessResult ->
+                if (generation != ageSignalRequestGeneration || pendingAgeSignalResult !== result) return@addOnSuccessListener
                 if (accessResult.ageSignalsStatus() != AgeSignalsStatus.SHARED) {
                     completeAgeSignalRequest(generation, result) { replyWithNoAgeSignal(result) }
                     return@addOnSuccessListener
                 }
 
-                ageSignalsManager.checkAgeSignals(AgeSignalsRequest.builder().build())
-                    .addOnSuccessListener { ageSignalsResult ->
-                        completeAgeSignalRequest(generation, result) {
-                            replyWithAgeSignal(result, ageSignalsResult.ageUpper())
+                try {
+                    ageSignalsManager.checkAgeSignals(AgeSignalsRequest.builder().build())
+                        .addOnSuccessListener { ageSignalsResult ->
+                            completeAgeSignalRequest(generation, result) {
+                                replyWithAgeSignal(result, ageSignalsResult.ageUpper(), ageSignalsResult.ageLower())
+                            }
                         }
-                    }
-                    .addOnFailureListener { error ->
-                        completeAgeSignalRequest(generation, result) {
-                            replyWithAgeSignalError(result, error)
+                        .addOnFailureListener { error ->
+                            completeAgeSignalRequest(generation, result) {
+                                replyWithAgeSignalError(result, error)
+                            }
                         }
+                } catch (error: Exception) {
+                    completeAgeSignalRequest(generation, result) {
+                        replyWithAgeSignalError(result, error)
                     }
+                }
             }
             .addOnFailureListener { error ->
                 completeAgeSignalRequest(generation, result) {
@@ -240,32 +252,12 @@ class MainActivity : FlutterFragmentActivity() {
         reply()
     }
 
-    private fun cancelAgeSignalRequest(result: MethodChannel.Result) {
-        // Play age-signals 0.0.4 exposes non-cancellable Tasks. Retain the
-        // original single flight rather than allowing an overlapping prompt.
-        result.success(false)
-    }
-
-    private fun restartForAgeSignal(result: MethodChannel.Result) {
-        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
-        if (launchIntent == null) {
-            result.error("age_signal_restart_failed", "Buzz could not restart.", null)
-            return
-        }
-        result.success(false)
-        window.decorView.post {
-            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-            startActivity(launchIntent)
-            finishAffinity()
-            Runtime.getRuntime().exit(0)
-        }
-    }
-
     private fun replyWithAgeSignal(
         result: MethodChannel.Result,
         ageUpper: Int?,
+        ageLower: Int?,
     ) {
-        result.success(ageSignalPayload(ageUpper))
+        result.success(ageSignalPayload(ageUpper, ageLower))
     }
 
     private fun replyWithNoAgeSignal(result: MethodChannel.Result) {
@@ -282,6 +274,8 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     override fun onDestroy() {
+        ageSignalRequestGeneration += 1
+        pendingAgeSignalResult = null
         huddleMediaPlugin?.dispose()
         huddleMediaPlugin = null
         super.onDestroy()
@@ -543,8 +537,6 @@ class MainActivity : FlutterFragmentActivity() {
         private const val MEDIA_UPLOAD_CHANNEL = "buzz/media_upload"
         private const val AGE_SIGNAL_CHANNEL = "buzz/age_signal"
         private const val REQUEST_AGE_SIGNAL_METHOD = "requestAgeSignal"
-        private const val CANCEL_AGE_SIGNAL_METHOD = "cancelAgeSignalRequest"
-        private const val RESTART_AGE_SIGNAL_METHOD = "restartForAgeSignal"
         private const val SANITIZE_IMAGE_FOR_UPLOAD_METHOD = "sanitizeImageForUpload"
         private const val TRANSCODE_IMAGE_TO_JPEG_METHOD = "transcodeImageToJpeg"
         private const val TRANSCODE_VIDEO_TO_MP4_METHOD = "transcodeVideoToMp4"

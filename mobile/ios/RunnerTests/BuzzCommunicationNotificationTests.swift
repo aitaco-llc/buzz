@@ -307,29 +307,18 @@ final class BuzzCommunicationNotificationTests: XCTestCase {
 }
 
 final class BuzzPushSnapshotEnrichmentTests: XCTestCase {
-  func testLaunchBeginsAgeRestrictionFenceBeforeFlutterState() throws {
-    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
-      UUID().uuidString,
-      isDirectory: true
-    )
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: directory) }
-
-    try BuzzAgeRestrictionFenceStore.beginLaunch(containerURL: directory) {
-      XCTFail("A successful fence must not remove credentials")
-    }
-
-    XCTAssertTrue(BuzzAgeRestrictionFenceStore(containerURL: directory).current().isFencing)
-  }
-
-  func testAgeSignalRequestRejectsFailedLaunchProtectionBeforeCheckingAge() {
+  func testAgeSignalRequestDoesNotDependOnNotificationStorage() {
     let delegate = MissingAppGroupDelegate()
     var completed = false
     delegate.handleAgeSignalMethodCall(
       FlutterMethodCall(methodName: "requestAgeSignal", arguments: nil),
       viewController: nil
     ) { value in
-      XCTAssertEqual((value as? FlutterError)?.code, "age_signal_notification_protection_failed")
+      if #available(iOS 26.0, *) {
+        XCTAssertEqual((value as? FlutterError)?.code, "age_signal_unavailable")
+      } else {
+        XCTAssertEqual((value as? [String: Any])?["status"] as? String, "noSignal")
+      }
       completed = true
     }
     XCTAssertTrue(completed)

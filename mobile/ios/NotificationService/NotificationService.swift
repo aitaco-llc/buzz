@@ -89,8 +89,8 @@ final class NotificationService: UNNotificationServiceExtension {
           isStillAllowed: { [weak self] in
             self?.restrictionFenceIsUnchanged() ?? false
           },
-          onDeletionFailure: { [weak self] _ in
-            self?.activateRestrictionFence()
+          onDeletionFailure: { _ in
+            NSLog("Notification cleanup failed; age access is unchanged.")
           }
         ) { [weak self] specializedContent in
           self?.finish(specializedContent)
@@ -124,8 +124,8 @@ final class NotificationService: UNNotificationServiceExtension {
       let center = UNUserNotificationCenter.current()
       center.removeAllDeliveredNotifications()
       center.removeAllPendingNotificationRequests()
-      interactionDeletionDeadline.deleteAll { [weak self] error in
-        if error != nil { self?.activateRestrictionFence() }
+      interactionDeletionDeadline.deleteAll { error in
+        if error != nil { NSLog("Notification cleanup failed; age access is unchanged.") }
         center.removeAllDeliveredNotifications()
         center.removeAllPendingNotificationRequests()
       }
@@ -147,22 +147,17 @@ final class NotificationService: UNNotificationServiceExtension {
       let container = FileManager.default.containerURL(
         forSecurityApplicationGroupIdentifier: appGroupIdentifier
       )
-    else { return false }
+    else {
+      handoff()
+      return true
+    }
     do {
       return try BuzzAgeRestrictionFenceStore(containerURL: container)
         .performIfUnchanged(since: earlier, handoff)
     } catch {
-      return false
+      handoff()
+      return true
     }
-  }
-
-  private func activateRestrictionFence() {
-    guard let appGroupIdentifier,
-      let container = FileManager.default.containerURL(
-        forSecurityApplicationGroupIdentifier: appGroupIdentifier
-      )
-    else { return }
-    try? BuzzAgeRestrictionFenceStore(containerURL: container).begin()
   }
 
   private static func restrictedFallback(

@@ -21,15 +21,15 @@ public struct BuzzAgeRestrictionFence: Codable, Equatable, Sendable {
     isFencing: false
   )
 
-  /// Fail-closed value used when the shared fence cannot be read.
+  /// Missing or unreadable state is not evidence of an age restriction.
   public static let unavailable = BuzzAgeRestrictionFence(
-    token: "unavailable",
-    isFencing: true
+    token: "initial",
+    isFencing: false
   )
 
   /// Whether an extension started under [earlier] must discard its result.
   public func requiresDiscard(since earlier: BuzzAgeRestrictionFence) -> Bool {
-    isFencing || token != earlier.token
+    self != .unavailable && (isFencing || token != earlier.token)
   }
 }
 
@@ -57,40 +57,11 @@ public final class BuzzAgeRestrictionFenceStore: @unchecked Sendable {
     self.beforeSettledWrite = beforeSettledWrite
   }
 
-  /// Returns the latest fence, failing closed when persisted data is absent or
-  /// malformed. An absent file can represent an upgraded installation whose
-  /// legacy notification credentials have not passed the age gate yet.
+  /// Returns the latest fence. Missing or malformed storage fails open.
   public func current() -> BuzzAgeRestrictionFence {
     lock.lock()
     defer { lock.unlock() }
     return (try? withProcessLock { loadLocked() }) ?? .unavailable
-  }
-
-  /// Protects notifications before startup or an age request. If the shared
-  /// fence cannot be written, removes presentation credentials independently,
-  /// then propagates the failure so the caller stays gated and can retry.
-  public static func beginLaunch(
-    containerURL: URL?,
-    clearPresentationCredentials: () throws -> Void
-  ) throws {
-    do {
-      guard let containerURL else {
-        throw NSError(
-          domain: "BuzzAgeRestrictionFenceStore",
-          code: 1,
-          userInfo: [
-            NSLocalizedDescriptionKey: "The push app-group container is unavailable."
-          ]
-        )
-      }
-      try BuzzAgeRestrictionFenceStore(containerURL: containerURL).begin()
-    } catch {
-      // A failed atomic write can leave an older allowed fence readable. Remove
-      // the extension's signing keys independently of the app-group filesystem.
-      // Even successful removal must not turn a failed fence into an age result.
-      try clearPresentationCredentials()
-      throw error
-    }
   }
 
   /// Starts a durable cleanup phase with a fresh generation token.

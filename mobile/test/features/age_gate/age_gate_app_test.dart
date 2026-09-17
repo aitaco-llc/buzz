@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:buzz/app.dart';
 import 'package:buzz/features/age_gate/age_restriction_page.dart';
 import 'package:buzz/features/age_gate/age_signal_push_bootstrap.dart';
@@ -5,6 +7,7 @@ import 'package:buzz/features/age_gate/age_signal_provider.dart';
 import 'package:buzz/features/channels/unread_badge/unread_badge_provider.dart';
 import 'package:buzz/features/home/home_page.dart';
 import 'package:buzz/shared/auth/auth.dart';
+import 'package:buzz/shared/push/push_bootstrap.dart';
 import 'package:buzz/shared/relay/relay.dart';
 import 'package:buzz/shared/theme/theme_provider.dart';
 import 'package:flutter/material.dart';
@@ -52,7 +55,7 @@ void main() {
     expect(find.byType(HomePage), findsNothing);
   });
 
-  testWidgets('clears the app badge until age access is allowed', (
+  testWidgets('clears the app badge only after a confirmed restriction', (
     tester,
   ) async {
     final badgeCounts = <int>[];
@@ -85,13 +88,13 @@ void main() {
     await tester.pump();
 
     expect(badgeCounts, isNotEmpty);
-    expect(badgeCounts.last, 0);
+    expect(badgeCounts.last, 7);
 
     ageSignal.setState(AgeSignalState.allowed);
     await tester.pump();
     expect(badgeCounts.last, 7);
 
-    ageSignal.setState(AgeSignalState.retryableFailure);
+    ageSignal.setState(AgeSignalState.restricted);
     await tester.pump();
     expect(badgeCounts.last, 0);
   });
@@ -149,66 +152,87 @@ void main() {
       expect(find.byType(HomePage), findsOneWidget);
       expect(find.byType(Navigator), findsOneWidget);
       expect(relaySession.builds, 1);
-      expect(requests, 0);
+      expect(requests, ageGatingEnabled ? 1 : 0);
       await tester.pump();
       await tester.pump();
       expect(snapshotRestorations, 2);
     },
   );
 
-  testWidgets('offers a retry after the native age check fails', (
-    tester,
-  ) async {
-    var requests = 0;
-    var snapshotSuspensions = 0;
-    var snapshotRestorations = 0;
-    SharedPreferences.setMockInitialValues({});
-    final prefs = await SharedPreferences.getInstance();
-
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [
-          authProvider.overrideWith(() => _AuthenticatedAuthNotifier()),
-          ageSignalProvider.overrideWith(
-            () => AgeSignalNotifier(
-              requestSignal: () async {
-                requests += 1;
-                if (requests <= 2) {
-                  throw PlatformException(code: 'unavailable');
-                }
-                return {'status': 'noSignal', 'ageUpper': null};
-              },
-              delay: (_) async {},
+  for (final outcome in ['minor', 'adult', 'error', 'malformed', 'timeout']) {
+    testWidgets('normal app and push start before native $outcome result', (
+      tester,
+    ) async {
+      final response = Completer<Object?>();
+      var requests = 0;
+      var suspensions = 0;
+      final relaySession = _CountingRelaySessionNotifier();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(ageSignalChannel, (_) {
+            requests += 1;
+            return response.future;
+          });
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            authProvider.overrideWith(() => _AuthenticatedAuthNotifier()),
+            relaySessionProvider.overrideWith(() => relaySession),
+            ageSignalProvider.overrideWith(
+              () =>
+                  AgeSignalNotifier(requestTimeout: const Duration(seconds: 1)),
             ),
-          ),
-          suspendCommunitySnapshotForAgeCheckProvider.overrideWithValue(
-            () async => snapshotSuspensions += 1,
-          ),
-          resumeCommunitySnapshotAfterAgeCheckProvider.overrideWithValue(
-            () async => snapshotRestorations += 1,
-          ),
-          savedPrefsProvider.overrideWithValue(prefs),
-        ],
-        child: const AgeSignalPushBootstrap(child: App()),
-      ),
-    );
-    await tester.pump();
-    await tester.pump();
+            suspendCommunitySnapshotForAgeCheckProvider.overrideWithValue(
+              () async {
+                suspensions += 1;
+              },
+            ),
+            resumeCommunitySnapshotAfterAgeCheckProvider.overrideWithValue(
+              () async {},
+            ),
+            savedPrefsProvider.overrideWithValue(prefs),
+          ],
+          child: const AgeSignalPushBootstrap(child: App()),
+        ),
+      );
+      await tester.pump();
+      expect(find.byType(HomePage), findsOneWidget);
+      expect(find.byType(BuzzPushBootstrap), findsOneWidget);
+      expect(relaySession.builds, 1);
+      expect(suspensions, 0);
+      expect(requests, 1);
 
-    expect(find.text('Try again'), findsOneWidget);
-    expect(find.byType(HomePage), findsNothing);
-    expect(snapshotSuspensions, greaterThanOrEqualTo(1));
-    expect(snapshotRestorations, 0);
-
-    await tester.tap(find.text('Try again'));
-    await tester.pump();
-    await tester.pump();
-
-    expect(requests, 3);
-    expect(find.text('Try again'), findsNothing);
-    expect(find.byType(HomePage), findsOneWidget);
-    expect(snapshotRestorations, 1);
-  });
+      if (outcome == 'timeout') {
+        await tester.pump(const Duration(seconds: 2));
+        response.complete({'status': 'signal', 'ageUpper': 17});
+      } else if (outcome == 'error') {
+        response.completeError(PlatformException(code: 'unavailable'));
+      } else if (outcome == 'malformed') {
+        response.complete({'status': 'signal', 'ageUpper': '17'});
+      } else {
+        response.complete({
+          'status': 'signal',
+          'ageUpper': outcome == 'minor' ? 17 : 18,
+        });
+      }
+      await tester.pump();
+      await tester.pump();
+      final restricted = outcome == 'minor';
+      expect(
+        find.byType(AgeRestrictionPage),
+        restricted ? findsOneWidget : findsNothing,
+      );
+      expect(find.byType(HomePage), restricted ? findsNothing : findsOneWidget);
+      expect(
+        find.byType(BuzzPushBootstrap),
+        restricted ? findsNothing : findsOneWidget,
+      );
+      expect(suspensions, 0);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+    });
+  }
 
   testWidgets('reloads failed community storage on resume before cleanup', (
     tester,
@@ -377,7 +401,7 @@ class _UnauthenticatedAuthNotifier extends AuthNotifier {
 
 class _MutableAgeSignalNotifier extends AgeSignalNotifier {
   @override
-  AgeSignalState build() => AgeSignalState.checking;
+  AgeSignalState build() => AgeSignalState.allowed;
 
   @override
   Future<void> request() async {}
