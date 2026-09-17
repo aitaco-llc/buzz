@@ -319,6 +319,7 @@ final class BuzzPushSnapshotEnrichmentTests: XCTestCase {
     ])
     let snapshotURL = directory.appendingPathComponent(BuzzPushPresentationCacheStore.fileName)
     let original = try Data(contentsOf: snapshotURL)
+    var deletionCalls = 0
     let bridge = BuzzPushSnapshotBridge(
       appGroupIdentifier: nil,
       endpointGrantStore: BuzzPushEndpointGrantKeychainStore(accessGroup: nil),
@@ -326,7 +327,10 @@ final class BuzzPushSnapshotEnrichmentTests: XCTestCase {
       containerURL: { directory },
       interactionDeletionDeadline: BuzzInteractionDeletionDeadline(
         timeout: 5,
-        deleteAllInteractions: { $0(NSError(domain: "InjectedCleanupFailure", code: 1)) },
+        deleteAllInteractions: { completion in
+          deletionCalls += 1
+          completion(deletionCalls == 1 ? NSError(domain: "InjectedCleanupFailure", code: 1) : nil)
+        },
         scheduleTimeout: { _, _ in }
       )
     )
@@ -350,7 +354,35 @@ final class BuzzPushSnapshotEnrichmentTests: XCTestCase {
       restored.fulfill()
     })
     wait(for: [restored], timeout: 1)
+    XCTAssertEqual(deletionCalls, 2)
     XCTAssertEqual(try Data(contentsOf: snapshotURL), original)
+  }
+
+  func testNewBridgeRetriesRecordedCleanupWithoutRestrictingAccess() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let failure = NSError(domain: "InjectedCleanupFailure", code: 1)
+    let deletion = BuzzInteractionDeletionDeadline(timeout: 5,
+      deleteAllInteractions: { $0(failure) }, scheduleTimeout: { _, _ in })
+    BuzzInteractionCleanupRetry(containerURL: directory, deletion: deletion).request {
+      XCTAssertNotNil($0)
+    }
+    let bridge = BuzzPushSnapshotBridge(
+      appGroupIdentifier: nil,
+      endpointGrantStore: BuzzPushEndpointGrantKeychainStore(accessGroup: nil),
+      keychainAccessGroup: nil, containerURL: { directory },
+      interactionDeletionDeadline: deletion
+    )
+    let completed = expectation(description: "retry failure stays allowed")
+    XCTAssertTrue(bridge.handle(
+      FlutterMethodCall(methodName: "restoreAgeRestrictedNotifications", arguments: nil)
+    ) { value in
+      XCTAssertEqual((value as? FlutterError)?.code, "interaction_cleanup_retry_failed")
+      XCTAssertFalse(BuzzAgeRestrictionSession.isRestricted(containerURL: directory))
+      completed.fulfill()
+    })
+    wait(for: [completed], timeout: 1)
   }
 
   func testStrictAgeGateWriteFailsWhenAppGroupStoreIsUnavailable() {

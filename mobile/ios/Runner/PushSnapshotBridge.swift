@@ -53,7 +53,15 @@ final class BuzzPushSnapshotBridge {
     if call.method == "restoreAgeRestrictedNotifications" {
       queue.async { [self] in
         ageRestrictionSession.release()
-        Self.complete(result, value: nil)
+        BuzzInteractionCleanupRetry(
+          containerURL: containerURL(), deletion: interactionDeletionDeadline
+        ).retryPending { error in
+          Self.complete(result, value: error.map {
+            FlutterError(code: "interaction_cleanup_retry_failed",
+              message: "Unable to finish pending interaction cleanup.",
+              details: $0.localizedDescription)
+          })
+        }
       }
       return true
     }
@@ -101,7 +109,9 @@ final class BuzzPushSnapshotBridge {
         let center = UNUserNotificationCenter.current()
         center.removeAllDeliveredNotifications()
         center.removeAllPendingNotificationRequests()
-        self.interactionDeletionDeadline.deleteAll { error in
+        BuzzInteractionCleanupRetry(
+          containerURL: container, deletion: interactionDeletionDeadline
+        ).request { error in
           Self.complete(
             result,
             value: error.map {

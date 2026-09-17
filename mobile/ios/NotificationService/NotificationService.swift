@@ -8,7 +8,15 @@ final class NotificationService: UNNotificationServiceExtension {
   private var handoff: BuzzNotificationHandoff<UNNotificationContent>?
   private var bestAttemptContent: UNMutableNotificationContent?
   private var restrictedFallbackContent: UNMutableNotificationContent?
-  private let communicationPresenter = BuzzCommunicationNotificationPresenter()
+  private lazy var interactionCleanup = BuzzInteractionCleanupRetry(
+    containerURL: ageRestrictionContainerURL, deletion: interactionDeletionDeadline)
+  private lazy var communicationPresenter = BuzzCommunicationNotificationPresenter(
+    donate: { interaction, completion in interaction.donate(completion: completion) },
+    deleteAllInteractions: { [cleanup = interactionCleanup] completion in
+      cleanup.request(completion: completion)
+    },
+    updateContent: { content, intent in try content.updating(from: intent) }
+  )
   private let interactionDeletionDeadline = BuzzInteractionDeletionDeadline(
     timeout: 5,
     deleteAllInteractions: { completion in
@@ -85,8 +93,8 @@ final class NotificationService: UNNotificationServiceExtension {
           isStillAllowed: { [weak self] in
             !(self?.isAgeRestricted() ?? false)
           },
-          onDeletionFailure: { _ in
-            NSLog("Notification cleanup failed; age access is unchanged.")
+          onDeletionFailure: { error in
+            NSLog("Notification cleanup retry failed: %@", String(describing: error))
           }
         ) { [weak self] specializedContent in
           self?.finish(specializedContent)
@@ -117,7 +125,7 @@ final class NotificationService: UNNotificationServiceExtension {
       let center = UNUserNotificationCenter.current()
       center.removeAllDeliveredNotifications()
       center.removeAllPendingNotificationRequests()
-      interactionDeletionDeadline.deleteAll { error in
+      interactionCleanup.request { error in
         if error != nil { NSLog("Notification cleanup failed; age access is unchanged.") }
         center.removeAllDeliveredNotifications()
         center.removeAllPendingNotificationRequests()
