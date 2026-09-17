@@ -9,6 +9,10 @@ import 'package:buzz/features/channels/unread_badge/unread_badge_provider.dart';
 import 'package:buzz/features/home/home_page.dart';
 import 'package:buzz/features/pairing/pairing_provider.dart';
 import 'package:buzz/shared/auth/auth.dart';
+import 'package:buzz/shared/huddle/huddle.dart';
+import 'package:nostr/nostr.dart' as nostr;
+import '../../shared/community/community_storage_test.dart'
+    show FakeSecureStorage;
 import 'package:buzz/shared/push/push_bootstrap.dart';
 import 'package:buzz/shared/relay/relay.dart';
 import 'package:buzz/shared/theme/theme_provider.dart';
@@ -28,6 +32,92 @@ void main() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(appBadgeChannel, null);
   });
+
+  testWidgets(
+    'an in-flight credential commit cannot reopen restricted access',
+    (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final storage = _PausedCommunityStorage();
+      final age = _MutableAgeSignalNotifier();
+      var connections = 0;
+      final relay = RelaySessionNotifier(
+        socketFactory:
+            ({
+              required wsUrl,
+              required nsec,
+              required onMessage,
+              required onConnected,
+              required onDisconnected,
+            }) {
+              connections++;
+              throw StateError(
+                'Restricted authentication must not open a socket',
+              );
+            },
+      );
+      final container = ProviderContainer(
+        overrides: [
+          savedPrefsProvider.overrideWithValue(prefs),
+          communityStorageProvider.overrideWithValue(storage),
+          communitySnapshotWriterProvider.overrideWithValue((_) async {}),
+          ageSignalProvider.overrideWith(() => age),
+          relaySessionProvider.overrideWith(() => relay),
+          pairingProvider.overrideWith(
+            () => PairingNotifier(
+              credentialValidator:
+                  ({required relayUrl, required nsec}) async {},
+            ),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      await container.read(authProvider.future);
+      final listener = container.listen(relaySessionProvider, (_, _) {});
+      addTearDown(listener.close);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(container: container, child: const App()),
+      );
+      await tester.pump();
+      final code = base64Url.encode(
+        utf8.encode(
+          jsonEncode({
+            'relayUrl': 'https://relay.example',
+            'nsec': nostr.Keys.generate().nsec,
+          }),
+        ),
+      );
+      final pairing = container.read(pairingProvider.notifier).pair(code);
+      await tester.pump();
+      expect(storage.started.isCompleted, isTrue);
+      age.setState(AgeSignalState.restricted);
+      await tester.pump();
+      expect(find.byType(AgeRestrictionPage), findsOneWidget);
+      storage.release.complete();
+      await pairing;
+      await tester.pump();
+      expect((await storage.loadAll()), hasLength(1));
+      expect(
+        (await container.read(authProvider.future)).status,
+        AuthStatus.authenticated,
+      );
+      expect(container.read(pairingProvider).status, PairingStatus.idle);
+      expect(find.byType(AgeRestrictionPage), findsOneWidget);
+      expect(
+        container.read(relaySessionProvider).status,
+        SessionStatus.disconnected,
+      );
+      expect(connections, 0);
+      expect(
+        container.read(huddleSessionProvider).phase,
+        HuddleSessionPhase.idle,
+      );
+      await tester.pumpWidget(const SizedBox.shrink());
+      listener.close();
+      container.dispose();
+      await tester.pump(const Duration(milliseconds: 1));
+    },
+  );
 
   test('backs off repeated snapshot transition failures', () {
     expect(ageSignalPushSnapshotRetryDelay(0), const Duration(seconds: 5));
@@ -204,6 +294,7 @@ void main() {
     ) async {
       final response = Completer<Object?>();
       var requests = 0;
+      var restrictions = 0;
       final relaySession = _CountingRelaySessionNotifier();
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(ageSignalChannel, (_) {
@@ -224,6 +315,9 @@ void main() {
             ageAllowedNotificationRestorerProvider.overrideWithValue(
               () async {},
             ),
+            ageRestrictedNotificationPurgerProvider.overrideWithValue(() async {
+              restrictions++;
+            }),
             savedPrefsProvider.overrideWithValue(prefs),
           ],
           child: const AgeSignalPushBootstrap(child: App()),
@@ -251,6 +345,7 @@ void main() {
       await tester.pump();
       await tester.pump();
       final restricted = outcome == 'minor';
+      expect(restrictions, restricted ? 1 : 0);
       expect(
         find.byType(AgeRestrictionPage),
         restricted ? findsOneWidget : findsNothing,
@@ -420,5 +515,18 @@ class _RecordingPairAuthNotifier extends _UnauthenticatedAuthNotifier {
   @override
   Future<void> authenticateWithCommunity(Community community) async {
     imports += 1;
+  }
+}
+
+class _PausedCommunityStorage extends CommunityStorage {
+  _PausedCommunityStorage() : super(secure: FakeSecureStorage());
+  final started = Completer<void>();
+  final release = Completer<void>();
+
+  @override
+  Future<void> save(Community community) async {
+    started.complete();
+    await release.future;
+    await super.save(community);
   }
 }
