@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:buzz/app.dart';
 import 'package:buzz/features/age_gate/age_restriction_page.dart';
@@ -6,6 +7,7 @@ import 'package:buzz/features/age_gate/age_signal_push_bootstrap.dart';
 import 'package:buzz/features/age_gate/age_signal_provider.dart';
 import 'package:buzz/features/channels/unread_badge/unread_badge_provider.dart';
 import 'package:buzz/features/home/home_page.dart';
+import 'package:buzz/features/pairing/pairing_provider.dart';
 import 'package:buzz/shared/auth/auth.dart';
 import 'package:buzz/shared/push/push_bootstrap.dart';
 import 'package:buzz/shared/relay/relay.dart';
@@ -34,6 +36,55 @@ void main() {
     expect(ageSignalPushSnapshotRetryDelay(6), const Duration(minutes: 5));
     expect(ageSignalPushSnapshotRetryDelay(100), const Duration(minutes: 5));
   });
+
+  for (final restrict in [false, true]) {
+    testWidgets('pending legacy pairing follows restriction=$restrict', (
+      tester,
+    ) async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final age = _MutableAgeSignalNotifier();
+      final auth = _RecordingPairAuthNotifier();
+      final validation = Completer<void>();
+      final pairing = PairingNotifier(
+        credentialValidator: ({required relayUrl, required nsec}) =>
+            validation.future,
+      );
+      final container = ProviderContainer(
+        overrides: [
+          savedPrefsProvider.overrideWithValue(prefs),
+          authProvider.overrideWith(() => auth),
+          ageSignalProvider.overrideWith(() => age),
+          pairingProvider.overrideWith(() => pairing),
+        ],
+      );
+      addTearDown(container.dispose);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(container: container, child: const App()),
+      );
+      await tester.pump();
+      final code = base64Url.encode(
+        utf8.encode(
+          jsonEncode({
+            'relayUrl': 'https://relay.example',
+            'nsec': 'pending-key',
+          }),
+        ),
+      );
+      final pending = container.read(pairingProvider.notifier).pair(code);
+      expect(container.read(pairingProvider).status, PairingStatus.connecting);
+      if (restrict) age.setState(AgeSignalState.restricted);
+      await tester.pump();
+      validation.complete();
+      await pending;
+      expect(auth.imports, restrict ? 0 : 1);
+      expect(
+        container.read(pairingProvider).status,
+        restrict ? PairingStatus.idle : PairingStatus.success,
+      );
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
 
   testWidgets('blocks authenticated app content', (tester) async {
     SharedPreferences.setMockInitialValues({});
@@ -360,5 +411,14 @@ class _UnavailableCommunityListNotifier extends CommunityListNotifier {
   @override
   Future<List<Community>> build() async {
     throw StateError('secure storage unavailable');
+  }
+}
+
+class _RecordingPairAuthNotifier extends _UnauthenticatedAuthNotifier {
+  int imports = 0;
+
+  @override
+  Future<void> authenticateWithCommunity(Community community) async {
+    imports += 1;
   }
 }

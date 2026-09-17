@@ -20,6 +20,7 @@ import 'features/home/home_page.dart';
 import 'features/invites/invite_create_page.dart';
 import 'features/invites/invite_join_provider.dart';
 import 'features/pairing/pairing_page.dart';
+import 'features/pairing/pairing_provider.dart';
 import 'features/channels/agent_activity/observer_subscription.dart';
 import 'features/channels/channel_detail_page.dart';
 import 'features/channels/deep_link_dispatcher.dart';
@@ -295,6 +296,11 @@ class App extends HookConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final ageSignalState = ref.watch(ageSignalProvider);
+    ref.listen(ageSignalProvider, (_, next) {
+      if (next == AgeSignalState.restricted) {
+        ref.read(pairingProvider.notifier).reset();
+      }
+    });
     final communityTheme = ageSignalState != AgeSignalState.restricted
         ? ref.watch(communityThemeProvider)
         : defaultCommunityTheme;
