@@ -3764,6 +3764,39 @@ async fn tokio_main() -> Result<()> {
                 if let Some(scope) = result.source.scope() {
                     typing_channels.remove(scope);
                 }
+                // A turn ending is otherwise invisible. Steers, deadline
+                // renewals and failures all log; a turn that simply finishes
+                // logs nothing at any level, so from the outside a working
+                // agent and a wedged one look identical — you cannot tell
+                // "still thinking" from "done ten minutes ago" without
+                // inspecting the relay for a publish.
+                //
+                // That gap defeats the ordinary question an operator asks of a
+                // busy agent: is the backlog draining? Log the outcome, with
+                // the scope, so turn starts and ends pair up in the journal.
+                // Coarse, stable labels rather than a Debug derive on
+                // PromptOutcome: the operator question is "did it finish, and
+                // roughly how", and a label survives changes to the variants'
+                // payloads. Exhaustive with no wildcard on purpose — a new
+                // outcome should force someone to decide how it reads in the
+                // log rather than silently landing in an "other" bucket.
+                let outcome = match &result.outcome {
+                    PromptOutcome::Ok(_) => "ok",
+                    PromptOutcome::Error(_) => "error",
+                    PromptOutcome::ProjectContextIndeterminate(_) => {
+                        "project_context_indeterminate"
+                    }
+                    PromptOutcome::AgentExited => "agent_exited",
+                    PromptOutcome::Timeout(_) => "timeout",
+                    PromptOutcome::Cancelled => "cancelled",
+                    PromptOutcome::CancelDrainTimeout(_) => "cancel_drain_timeout",
+                };
+                tracing::info!(
+                    turn_id = %result.turn_id,
+                    scope = ?result.source.scope(),
+                    outcome,
+                    "turn finished"
+                );
                 if handle_prompt_result(
                     &mut pool,
                     &mut queue,
