@@ -4,6 +4,7 @@ import {
   getChannelIdFromTags,
   getThreadReference,
 } from "@/features/messages/lib/threading";
+import { subscribeLiveChannelMessages } from "@/features/messages/liveChannelMessages";
 import { relayClient } from "@/shared/api/relayClient";
 import type { Channel, RelayEvent } from "@/shared/api/types";
 import {
@@ -137,44 +138,74 @@ export function useChannelTyping(
     latestMessageCreatedAtByPubkeyRef.current = {};
   }, [channelId]);
 
-  useEffect(() => {
-    if (
-      !channelId ||
-      !latestMessageEvent ||
-      !isTypingCompletionEvent(latestMessageEvent)
-    ) {
+  // An author's message ends their typing in the thread it was posted to and
+  // on the channel itself. Agents announce typing on the channel while they
+  // answer a top-level mention in the thread it opens, so the channel-level
+  // entry must clear too. Sibling threads keep their entries: an agent can be
+  // working in several threads at once. A thread reply never reaches the main
+  // timeline (`latestMessageEvent`); it arrives through the live channel
+  // messages instead.
+  const completeTyping = useEffectEvent((event: RelayEvent) => {
+    if (!channelId || !isTypingCompletionEvent(event)) {
       return;
     }
 
-    if (getChannelIdFromTags(latestMessageEvent.tags) !== channelId) {
+    if (getChannelIdFromTags(event.tags) !== channelId) {
+      return;
+    }
+
+    // Older than any live indicator: a reconnect replay or a window refresh,
+    // not a message that just ended someone's typing.
+    if (event.created_at * 1_000 + TYPING_INDICATOR_TTL_MS <= Date.now()) {
       return;
     }
 
     const authorPubkey = resolveEventAuthorPubkey({
-      event: latestMessageEvent,
+      event,
       preferActorTag: true,
       relaySelfPubkey,
       requireChannelTagForPTags: true,
     }).toLowerCase();
-    const threadHeadId = getTypingScopeId(latestMessageEvent);
-    const typingKey = getTypingStateKey(authorPubkey, threadHeadId);
-    latestMessageCreatedAtByPubkeyRef.current[typingKey] = Math.max(
-      latestMessageCreatedAtByPubkeyRef.current[typingKey] ?? 0,
-      latestMessageEvent.created_at,
-    );
-    typingSuppressUntilByPubkeyRef.current[typingKey] =
-      Date.now() + TYPING_POST_MESSAGE_SUPPRESS_MS;
+    const typingKeys = new Set([
+      getTypingStateKey(authorPubkey, getTypingScopeId(event)),
+      getTypingStateKey(authorPubkey, null),
+    ]);
+    const suppressUntil = Date.now() + TYPING_POST_MESSAGE_SUPPRESS_MS;
+    for (const typingKey of typingKeys) {
+      latestMessageCreatedAtByPubkeyRef.current[typingKey] = Math.max(
+        latestMessageCreatedAtByPubkeyRef.current[typingKey] ?? 0,
+        event.created_at,
+      );
+      typingSuppressUntilByPubkeyRef.current[typingKey] = suppressUntil;
+    }
     setTypingByPubkey((current) => {
       const next = pruneTypingState(current);
-      if (!(typingKey in next)) {
+      if (![...typingKeys].some((typingKey) => typingKey in next)) {
         return next;
       }
 
       const updated = { ...next };
-      delete updated[typingKey];
+      for (const typingKey of typingKeys) {
+        delete updated[typingKey];
+      }
       return updated;
     });
-  }, [channelId, latestMessageEvent, relaySelfPubkey]);
+  });
+
+  useEffect(() => {
+    if (latestMessageEvent) {
+      completeTyping(latestMessageEvent);
+    }
+  }, [latestMessageEvent]);
+
+  useEffect(() => {
+    if (!channelId) {
+      return;
+    }
+    return subscribeLiveChannelMessages(channelId, (event) => {
+      completeTyping(event);
+    });
+  }, [channelId]);
 
   useEffect(() => {
     if (!channelId || channelType === "forum") {

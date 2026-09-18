@@ -380,3 +380,57 @@ test("a cold channel with an immediate live subscription fetches the window once
     mock.restoreAll();
   }
 });
+
+test("live timeline rows, thread replies included, reach local listeners", async () => {
+  // The typing indicator clears an author's entry when their message lands.
+  // Thread replies never reach the main timeline, so the live handler must
+  // publish them before it routes them into the thread cache and returns.
+  install([]);
+  mock.method(relayClient, "subscribeToReconnects", () => () => {});
+  let deliver = null;
+  mock.method(relayClient, "subscribeToChannelLive", (_channelId, onEvent) => {
+    deliver = onEvent;
+    return Promise.resolve(async () => {});
+  });
+  const { subscribeLiveChannelMessages } = await import(
+    "../liveChannelMessages.ts"
+  );
+  const seen = [];
+  const unsubscribe = subscribeLiveChannelMessages(channelId, (event) =>
+    seen.push(event.id),
+  );
+  try {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const { act, renderHook, waitFor } = await import("@testing-library/react");
+    const view = renderHook(() => useChannelSubscription(channel), {
+      wrapper: ({ children }) =>
+        React.createElement(QueryClientProvider, { client }, children),
+    });
+    await waitFor(() => assert.ok(deliver));
+
+    const threadReply = {
+      ...root,
+      id: "1".repeat(64),
+      kind: 9,
+      created_at: 20,
+      tags: [
+        ["h", channelId],
+        ["e", root.id, "", "reply"],
+      ],
+    };
+    const topLevel = { ...root, id: "2".repeat(64), kind: 9, created_at: 21 };
+    await act(() => {
+      deliver(threadReply);
+      deliver(topLevel);
+      deliver(bounds());
+    });
+    assert.deepEqual(seen, [threadReply.id, topLevel.id]);
+    view.unmount();
+    client.clear();
+  } finally {
+    unsubscribe();
+    mock.restoreAll();
+  }
+});
