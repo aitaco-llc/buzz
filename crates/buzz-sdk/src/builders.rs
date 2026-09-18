@@ -12,7 +12,8 @@ use buzz_core::{
         KIND_GIT_STATUS_OPEN, KIND_IA_ARCHIVE_REQUEST, KIND_IA_UNARCHIVE_REQUEST,
         KIND_MODERATION_BAN, KIND_MODERATION_RESOLVE_REPORT, KIND_MODERATION_TIMEOUT,
         KIND_MODERATION_UNBAN, KIND_MODERATION_UNTIMEOUT, KIND_PRESENCE_UPDATE, KIND_PROJECT,
-        KIND_USER_STATUS, KIND_WORKFLOW_DEF, KIND_WORKFLOW_TRIGGER,
+        KIND_USER_STATUS, KIND_WORKFLOW_DEF, KIND_WORKFLOW_TRIGGER, RELAY_ADMIN_ADD_MEMBER,
+        RELAY_ADMIN_REMOVE_MEMBER,
     },
     observer::{
         content_looks_like_nip44, OBSERVER_AGENT_TAG, OBSERVER_FRAME_CONTROL, OBSERVER_FRAME_TAG,
@@ -1745,6 +1746,43 @@ pub fn build_user_status(text: &str, emoji: Option<&str>) -> Result<EventBuilder
         tags.push(tag(&["emoji", emoji])?);
     }
     Ok(EventBuilder::new(Kind::Custom(KIND_USER_STATUS as u16), text).tags(tags))
+}
+
+// ---------------------------------------------------------------------------
+// NIP-43 relay membership admin commands (kinds 9030/9031).
+//
+// Signed command events that the relay validates, authorizes, and executes
+// directly against `relay_members` — they are never stored. The permission
+// matrix lives in `buzz-relay/src/handlers/relay_admin.rs`: add/remove need an
+// admin or owner sender, and only an owner may grant `admin`. Promoting to
+// `owner` is not a 9030 operation, so the builder refuses it. The wire form
+// matches the desktop's `build_relay_admin_add`/`build_relay_admin_remove`
+// (`desktop/src-tauri/src/events.rs`).
+// ---------------------------------------------------------------------------
+
+/// Build a relay add-member command (kind 9030).
+///
+/// `role` must be `member` or `admin`. Re-adding an existing member is a
+/// no-op at the relay; it does not change the member's role.
+pub fn build_relay_admin_add(target_pubkey: &str, role: &str) -> Result<EventBuilder, SdkError> {
+    let target_pubkey = check_pubkey_hex(target_pubkey, "target_pubkey")?;
+    match role {
+        "member" | "admin" => {}
+        _ => {
+            return Err(SdkError::InvalidInput(format!(
+                "role must be member or admin (got: {role})"
+            )))
+        }
+    }
+    let tags = vec![tag(&["p", &target_pubkey])?, tag(&["role", role])?];
+    Ok(EventBuilder::new(Kind::Custom(RELAY_ADMIN_ADD_MEMBER as u16), "").tags(tags))
+}
+
+/// Build a relay remove-member command (kind 9031).
+pub fn build_relay_admin_remove(target_pubkey: &str) -> Result<EventBuilder, SdkError> {
+    let target_pubkey = check_pubkey_hex(target_pubkey, "target_pubkey")?;
+    let tags = vec![tag(&["p", &target_pubkey])?];
+    Ok(EventBuilder::new(Kind::Custom(RELAY_ADMIN_REMOVE_MEMBER as u16), "").tags(tags))
 }
 
 // ---------------------------------------------------------------------------
@@ -4445,6 +4483,65 @@ mod tests {
             ..Default::default()
         };
         let err = build_git_pr_update(&pr_repo(), "", &meta).unwrap_err();
+        assert!(matches!(err, SdkError::InvalidInput(_)));
+    }
+
+    // --- NIP-43 relay membership admin commands (9030/9031) ---------------
+
+    #[test]
+    fn relay_admin_add_shape() {
+        let pk = "a".repeat(64);
+        let ev = sign(build_relay_admin_add(&pk, "member").unwrap());
+        assert_eq!(ev.kind.as_u16(), RELAY_ADMIN_ADD_MEMBER as u16);
+        assert_eq!(ev.content, "");
+        assert!(has_tag(&ev, "p", &pk));
+        assert!(has_tag(&ev, "role", "member"));
+        assert_eq!(ev.tags.len(), 2);
+    }
+
+    #[test]
+    fn relay_admin_add_admin_role() {
+        let ev = sign(build_relay_admin_add(&"b".repeat(64), "admin").unwrap());
+        assert!(has_tag(&ev, "role", "admin"));
+    }
+
+    #[test]
+    fn relay_admin_add_lowercases_pubkey() {
+        // The relay's `extract_p_tag_hex` lowercases after matching, but the
+        // desktop always sends lowercase; keep both clients on one wire form.
+        let ev = sign(build_relay_admin_add(&"C".repeat(64), "member").unwrap());
+        assert!(has_tag(&ev, "p", &"c".repeat(64)));
+    }
+
+    #[test]
+    fn relay_admin_add_rejects_owner_and_unknown_roles() {
+        for role in ["owner", "moderator", "", "Member"] {
+            let err = build_relay_admin_add(&"a".repeat(64), role).unwrap_err();
+            assert!(matches!(err, SdkError::InvalidInput(_)), "role {role:?}");
+        }
+    }
+
+    #[test]
+    fn relay_admin_add_rejects_bad_pubkey() {
+        for pk in ["abc".to_string(), "a".repeat(65), "g".repeat(64)] {
+            let err = build_relay_admin_add(&pk, "member").unwrap_err();
+            assert!(matches!(err, SdkError::InvalidInput(_)), "pubkey {pk:?}");
+        }
+    }
+
+    #[test]
+    fn relay_admin_remove_shape() {
+        let pk = "d".repeat(64);
+        let ev = sign(build_relay_admin_remove(&pk).unwrap());
+        assert_eq!(ev.kind.as_u16(), RELAY_ADMIN_REMOVE_MEMBER as u16);
+        assert_eq!(ev.content, "");
+        assert!(has_tag(&ev, "p", &pk));
+        assert_eq!(ev.tags.len(), 1);
+    }
+
+    #[test]
+    fn relay_admin_remove_rejects_bad_pubkey() {
+        let err = build_relay_admin_remove("abc").unwrap_err();
         assert!(matches!(err, SdkError::InvalidInput(_)));
     }
 

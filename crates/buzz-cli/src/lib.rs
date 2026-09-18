@@ -279,6 +279,9 @@ enum Cmd {
     /// Community moderation — reports queue, bans, timeouts, audit trail
     #[command(subcommand)]
     Moderation(ModerationCmd),
+    /// Relay administration — NIP-43 relay membership
+    #[command(subcommand)]
+    Relay(RelayCmd),
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -1990,6 +1993,64 @@ pub enum PackCmd {
     },
 }
 
+/// Relay administration commands.
+#[derive(Subcommand)]
+pub enum RelayCmd {
+    /// Add, remove, and list relay members (NIP-43)
+    #[command(subcommand)]
+    Members(RelayMembersCmd),
+}
+
+/// Role granted by `buzz relay members add`. Granting `admin` requires an
+/// owner key; `owner` is never grantable this way.
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum RelayRoleArg {
+    #[value(name = "member")]
+    Member,
+    #[value(name = "admin")]
+    Admin,
+}
+
+impl RelayRoleArg {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Member => "member",
+            Self::Admin => "admin",
+        }
+    }
+}
+
+/// Relay membership commands.
+///
+/// The relay (community) is selected by `--relay` / `BUZZ_RELAY_URL`. `add`
+/// and `remove` need a key holding the relay `admin` or `owner` role; the
+/// relay authorizes every command and a refusal exits 3.
+#[derive(Subcommand)]
+pub enum RelayMembersCmd {
+    /// Add a pubkey to the relay member list (kind 9030); re-adding is a no-op
+    #[command(
+        after_help = "Examples:\n  buzz relay members add --pubkey <HEX|NPUB>\n  buzz relay members add --pubkey <HEX|NPUB> --role admin   # owner key only\n\nExit 0 only when the relay accepted the command. Re-adding an existing member\nexits 0 and leaves its role unchanged."
+    )]
+    Add {
+        /// Pubkey to admit (hex or npub)
+        #[arg(long)]
+        pubkey: String,
+        /// Role to grant
+        #[arg(long, value_enum, default_value = "member")]
+        role: RelayRoleArg,
+    },
+    /// Remove a pubkey from the relay member list (kind 9031)
+    #[command(after_help = "Examples:\n  buzz relay members remove --pubkey <HEX|NPUB>")]
+    Remove {
+        /// Pubkey to remove (hex or npub)
+        #[arg(long)]
+        pubkey: String,
+    },
+    /// List relay members and roles from the relay-signed roster (kind 13534)
+    #[command(after_help = "Examples:\n  buzz relay members list")]
+    List,
+}
+
 /// Community moderation commands.
 ///
 /// The community (tenant) is selected by the relay host in `--relay` /
@@ -2192,6 +2253,7 @@ async fn run(cli: Cli) -> Result<(), CliError> {
         Cmd::Upload(sub) => commands::upload::dispatch(sub, &client).await,
         Cmd::Mem(sub) => commands::mem::dispatch(sub, &client).await,
         Cmd::Moderation(sub) => commands::moderation::dispatch(sub, &client, &cli.format).await,
+        Cmd::Relay(sub) => commands::relay::dispatch(sub, &client).await,
         Cmd::Pack(_) => unreachable!("handled above"),
     }
 }
@@ -2317,6 +2379,50 @@ mod tests {
         assert!(Cli::try_parse_from(["buzz", "users", "set-status", "--clear"]).is_ok());
     }
 
+    /// `agentctl add-seat` runs exactly this invocation; keep it parsing.
+    #[test]
+    fn relay_members_add_parses_agentctl_form() {
+        let pk = "a".repeat(64);
+        let cli = Cli::try_parse_from([
+            "buzz",
+            "--format",
+            "compact",
+            "relay",
+            "members",
+            "add",
+            "--pubkey",
+            pk.as_str(),
+            "--role",
+            "member",
+        ])
+        .expect("agentctl form parses");
+        assert!(matches!(cli.format, OutputFormat::Compact));
+        assert!(matches!(
+            cli.command,
+            Cmd::Relay(RelayCmd::Members(RelayMembersCmd::Add {
+                role: RelayRoleArg::Member,
+                ..
+            }))
+        ));
+
+        let cli = Cli::try_parse_from(["buzz", "relay", "members", "add", "--pubkey", &pk])
+            .expect("role defaults");
+        assert!(matches!(
+            cli.command,
+            Cmd::Relay(RelayCmd::Members(RelayMembersCmd::Add {
+                role: RelayRoleArg::Member,
+                ..
+            }))
+        ));
+
+        assert!(Cli::try_parse_from([
+            "buzz", "relay", "members", "add", "--pubkey", &pk, "--role", "owner"
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from(["buzz", "relay", "members", "remove"]).is_err());
+        assert!(Cli::try_parse_from(["buzz", "relay", "members", "list"]).is_ok());
+    }
+
     #[test]
     fn command_inventory_is_stable() {
         let expected_groups: Vec<&str> = vec![
@@ -2338,6 +2444,7 @@ mod tests {
             "pr",
             "projects",
             "reactions",
+            "relay",
             "repos",
             "social",
             "upload",
@@ -2526,6 +2633,18 @@ mod tests {
                 "untimeout"
             ]
         );
+        assert_eq!(names(&cmd, "relay"), vec!["members"]);
+        let members = cmd
+            .find_subcommand("relay")
+            .and_then(|relay| relay.find_subcommand("members"))
+            .expect("relay members group");
+        let mut member_verbs: Vec<&str> = members
+            .get_subcommands()
+            .map(|s| s.get_name())
+            .filter(|n| *n != "help")
+            .collect();
+        member_verbs.sort();
+        assert_eq!(member_verbs, vec!["add", "list", "remove"]);
     }
 
     #[test]
@@ -2545,6 +2664,7 @@ mod tests {
             ("pr", 5),
             ("projects", 8),
             ("reactions", 3),
+            ("relay", 1),
             ("repos", 6),
             ("social", 7),
             ("upload", 1),

@@ -181,6 +181,9 @@ The table below mirrors that tree for readers who are not at a terminal.
 | `upload` | `file` | Upload a file to the Blossom store |
 | `pack` | `validate` | Validate a persona pack (local, no relay) |
 | | `inspect` | Inspect a persona pack (local, no relay) |
+| `relay` | `members add` | Add a pubkey to the relay member list (admin/owner key; re-add is a no-op) |
+| | `members remove` | Remove a pubkey from the relay member list (admin/owner key) |
+| | `members list` | List relay members and roles from the relay-signed roster |
 | `mem` | `ls` | List non-tombstoned memories |
 | | `get` | Print memory value to stdout |
 | | `hash` | Print SHA-256 hex of memory value |
