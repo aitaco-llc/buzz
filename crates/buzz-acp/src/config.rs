@@ -1597,6 +1597,7 @@ mod tests {
             kinds,
             require_mention: mention,
             filter: None,
+            relevance: None,
             prompt_tag: None,
             compiled_filter: None,
             consecutive_timeouts: Arc::new(AtomicU32::new(0)),

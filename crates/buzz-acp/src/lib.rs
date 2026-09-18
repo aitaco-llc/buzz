@@ -11,6 +11,7 @@ mod prompt_framing;
 mod prompt_project;
 mod queue;
 mod relay;
+pub mod relevance;
 mod scope;
 mod setup_mode;
 mod usage;
@@ -595,6 +596,7 @@ impl AuthorizedNormalListenerEvent {
         self,
         rules: &[SubscriptionRule],
         agent_pubkey_hex: &str,
+        gate: Option<&relevance::RelevanceGate>,
     ) -> Option<NormalListenerIngress> {
         let (buzz_event, effective_author) = self.0.into_parts();
         let matched = filter::match_event(
@@ -602,6 +604,7 @@ impl AuthorizedNormalListenerEvent {
             buzz_event.channel_id,
             rules,
             agent_pubkey_hex,
+            gate,
         )
         .await?;
         Some(NormalListenerIngress {
@@ -2682,6 +2685,9 @@ async fn tokio_main() -> Result<()> {
                 }),
                 require_mention: !config.no_mention_filter,
                 filter: None,
+                // Built-in modes are mention-gated or explicitly wide; a gate
+                // belongs in a config-mode rule where the operator asked for it.
+                relevance: None,
                 compiled_filter: None,
                 consecutive_timeouts: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
                 prompt_tag: Some("@mention".into()),
@@ -2694,6 +2700,7 @@ async fn tokio_main() -> Result<()> {
                 kinds: config.kinds_override.clone().unwrap_or_default(),
                 require_mention: false,
                 filter: None,
+                relevance: None,
                 compiled_filter: None,
                 consecutive_timeouts: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
                 prompt_tag: Some("all".into()),
@@ -2704,6 +2711,38 @@ async fn tokio_main() -> Result<()> {
             config::load_rules(&config.config_path)?
         }
     };
+
+    // Build the relevance gate once if any rule asks for one. Its prompt is
+    // this agent's own system prompt, which is what makes the decision
+    // per-agent: each agent judges whether a message needs *it*, so a message
+    // addressed to the whole team wakes everyone, which a central router
+    // cannot get right. See `relevance`.
+    let relevance_gate: Option<std::sync::Arc<relevance::RelevanceGate>> =
+        if rules.iter().any(|r| r.relevance.is_some()) {
+            match relevance::RelevanceGate::new(
+                config.system_prompt.clone(),
+                std::env::var("BUZZ_ACP_RELEVANCE_API_KEY").ok(),
+            ) {
+                Some(gate) => {
+                    tracing::info!("relevance gate enabled");
+                    Some(std::sync::Arc::new(gate))
+                }
+                None => {
+                    // Refusing is better than gating on the message alone: a
+                    // gate with no idea what the agent is for would decline
+                    // work that is squarely this agent's, and the only symptom
+                    // would be an agent that never speaks.
+                    tracing::warn!(
+                        "rules request a relevance gate but no system prompt is set \
+                         (--system-prompt / --system-prompt-file) — gate disabled, \
+                         every matching event will wake the agent"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
     let channel_filters = config::resolve_channel_filters(&config, &channel_ids, &rules);
     if channel_filters.is_empty() {
@@ -3504,7 +3543,7 @@ async fn tokio_main() -> Result<()> {
                             };
                             let Some(ingress) =
                                 AuthorizedNormalListenerEvent(authorized_event)
-                                    .match_subscription(&rules, &pubkey_hex)
+                                    .match_subscription(&rules, &pubkey_hex, relevance_gate.as_deref())
                                     .await
                             else {
                                 tracing::debug!("authorized event matched no rule — dropping");
@@ -3725,6 +3764,39 @@ async fn tokio_main() -> Result<()> {
                 if let Some(scope) = result.source.scope() {
                     typing_channels.remove(scope);
                 }
+                // A turn ending is otherwise invisible. Steers, deadline
+                // renewals and failures all log; a turn that simply finishes
+                // logs nothing at any level, so from the outside a working
+                // agent and a wedged one look identical — you cannot tell
+                // "still thinking" from "done ten minutes ago" without
+                // inspecting the relay for a publish.
+                //
+                // That gap defeats the ordinary question an operator asks of a
+                // busy agent: is the backlog draining? Log the outcome, with
+                // the scope, so turn starts and ends pair up in the journal.
+                // Coarse, stable labels rather than a Debug derive on
+                // PromptOutcome: the operator question is "did it finish, and
+                // roughly how", and a label survives changes to the variants'
+                // payloads. Exhaustive with no wildcard on purpose — a new
+                // outcome should force someone to decide how it reads in the
+                // log rather than silently landing in an "other" bucket.
+                let outcome = match &result.outcome {
+                    PromptOutcome::Ok(_) => "ok",
+                    PromptOutcome::Error(_) => "error",
+                    PromptOutcome::ProjectContextIndeterminate(_) => {
+                        "project_context_indeterminate"
+                    }
+                    PromptOutcome::AgentExited => "agent_exited",
+                    PromptOutcome::Timeout(_) => "timeout",
+                    PromptOutcome::Cancelled => "cancelled",
+                    PromptOutcome::CancelDrainTimeout(_) => "cancel_drain_timeout",
+                };
+                tracing::info!(
+                    turn_id = %result.turn_id,
+                    scope = ?result.source.scope(),
+                    outcome,
+                    "turn finished"
+                );
                 if handle_prompt_result(
                     &mut pool,
                     &mut queue,
