@@ -686,6 +686,34 @@ enum RelayCommand {
 
 type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
+/// Tags for a typing indicator (kind:20002): the channel, then NIP-10 markers
+/// placing it in a thread. A direct reply to the root carries only the `reply`
+/// marker, the same shape a message reply gets from `buzz-sdk`.
+pub(crate) fn typing_event_tags(
+    channel_id: Uuid,
+    root_event_id: Option<&str>,
+    parent_event_id: Option<&str>,
+) -> Result<Vec<Tag>, RelayError> {
+    let h_tag = Tag::parse(["h", &channel_id.to_string()])
+        .map_err(|e| RelayError::AuthFailed(e.to_string()))?;
+    let mut tags = vec![h_tag];
+    if let Some(parent) = parent_event_id {
+        if let Some(root) = root_event_id {
+            if root != parent {
+                tags.push(
+                    Tag::parse(["e", root, "", "root"])
+                        .map_err(|e| RelayError::AuthFailed(e.to_string()))?,
+                );
+            }
+        }
+        tags.push(
+            Tag::parse(["e", parent, "", "reply"])
+                .map_err(|e| RelayError::AuthFailed(e.to_string()))?,
+        );
+    }
+    Ok(tags)
+}
+
 /// Harness-side relay client.
 ///
 /// Connects to the Buzz relay, authenticates via NIP-42, and streams
@@ -1008,23 +1036,7 @@ impl HarnessRelay {
         root_event_id: Option<&str>,
         parent_event_id: Option<&str>,
     ) -> Result<Event, RelayError> {
-        let h_tag = Tag::parse(["h", &channel_id.to_string()])
-            .map_err(|e| RelayError::AuthFailed(e.to_string()))?;
-        let mut tags = vec![h_tag];
-        if let Some(parent) = parent_event_id {
-            if let Some(root) = root_event_id {
-                if root != parent {
-                    tags.push(
-                        Tag::parse(["e", root, "", "root"])
-                            .map_err(|e| RelayError::AuthFailed(e.to_string()))?,
-                    );
-                }
-            }
-            tags.push(
-                Tag::parse(["e", parent, "", "reply"])
-                    .map_err(|e| RelayError::AuthFailed(e.to_string()))?,
-            );
-        }
+        let tags = typing_event_tags(channel_id, root_event_id, parent_event_id)?;
         let event = EventBuilder::new(Kind::Custom(KIND_TYPING_INDICATOR as u16), "")
             .tags(tags)
             .sign_with_keys(&self.keys)?;

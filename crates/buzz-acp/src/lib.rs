@@ -3089,15 +3089,18 @@ async fn tokio_main() -> Result<()> {
             // called on relay events or pool results, neither of which
             // arrive when the channel is silent.
             if queue.has_flushable_work() {
-                for (scope, thread_tags) in dispatch_pending(
-                    &mut pool,
-                    &mut queue,
-                    &ctx,
-                    &mut last_activity,
-                    observer.as_ref(),
-                ) {
-                    typing_channels.insert(scope, thread_tags);
-                }
+                begin_typing(
+                    &relay,
+                    config.typing_enabled,
+                    &mut typing_channels,
+                    dispatch_pending(
+                        &mut pool,
+                        &mut queue,
+                        &ctx,
+                        &mut last_activity,
+                        observer.as_ref(),
+                    ),
+                );
             }
         }
 
@@ -3145,15 +3148,18 @@ async fn tokio_main() -> Result<()> {
         // this, batches requeued during crash recovery sit idle until the
         // next relay event arrives — which can be minutes on quiet channels.
         if respawn_collected {
-            for (scope, thread_tags) in dispatch_pending(
-                &mut pool,
-                &mut queue,
-                &ctx,
-                &mut last_activity,
-                observer.as_ref(),
-            ) {
-                typing_channels.insert(scope, thread_tags);
-            }
+            begin_typing(
+                &relay,
+                config.typing_enabled,
+                &mut typing_channels,
+                dispatch_pending(
+                    &mut pool,
+                    &mut queue,
+                    &ctx,
+                    &mut last_activity,
+                    observer.as_ref(),
+                ),
+            );
         }
 
         // Borrow result_rx and join_set simultaneously via split-borrow helper.
@@ -3593,11 +3599,12 @@ async fn tokio_main() -> Result<()> {
                                 &steer_ack_tx,
                             );
                             if pool_ready {
-                                for (scope, thread_tags) in
-                                    dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity, observer.as_ref())
-                                {
-                                    typing_channels.insert(scope, thread_tags);
-                                }
+                                begin_typing(
+                                    &relay,
+                                    config.typing_enabled,
+                                    &mut typing_channels,
+                                    dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity, observer.as_ref()),
+                                );
                             }
                         }
                         None => {
@@ -3693,11 +3700,12 @@ async fn tokio_main() -> Result<()> {
                         tracing::debug!("heartbeat_skipped_pool_not_ready");
                     } else if queue.has_flushable_work() {
                         tracing::debug!("heartbeat_skipped_events");
-                        for (scope, thread_tags) in
-                            dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity, observer.as_ref())
-                        {
-                            typing_channels.insert(scope, thread_tags);
-                        }
+                        begin_typing(
+                            &relay,
+                            config.typing_enabled,
+                            &mut typing_channels,
+                            dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity, observer.as_ref()),
+                        );
                     } else if pool.any_idle() {
                         dispatch_heartbeat(&mut pool, &ctx, &mut heartbeat_in_flight);
                     } else {
@@ -3732,20 +3740,8 @@ async fn tokio_main() -> Result<()> {
                     }
                 } => {
                     let _ = result_rx;
-                    // Use try_publish (non-blocking) for typing indicators —
-                    // they're ephemeral and must not block the main loop during
-                    // relay reconnection (#35).
                     for (scope, thread_tags) in &typing_channels {
-                        let ch = scope.channel_id();
-                        if let Ok(event) = relay.build_typing_event(
-                            ch,
-                            thread_tags.root_event_id.as_deref(),
-                            thread_tags.parent_event_id.as_deref(),
-                        ) {
-                            if let Err(e) = relay.try_publish_event(event) {
-                                tracing::debug!("typing indicator dropped for {ch}: {e}");
-                            }
-                        }
+                        publish_typing(&relay, scope, thread_tags);
                     }
                     None
                 }
@@ -3828,15 +3824,18 @@ async fn tokio_main() -> Result<()> {
                 {
                     break;
                 }
-                for (scope, thread_tags) in dispatch_pending(
-                    &mut pool,
-                    &mut queue,
-                    &ctx,
-                    &mut last_activity,
-                    observer.as_ref(),
-                ) {
-                    typing_channels.insert(scope, thread_tags);
-                }
+                begin_typing(
+                    &relay,
+                    config.typing_enabled,
+                    &mut typing_channels,
+                    dispatch_pending(
+                        &mut pool,
+                        &mut queue,
+                        &ctx,
+                        &mut last_activity,
+                        observer.as_ref(),
+                    ),
+                );
             }
             Some(PoolEvent::Panic(join_error)) => {
                 tracing::error!("agent task panicked: {join_error}");
@@ -3857,15 +3856,18 @@ async fn tokio_main() -> Result<()> {
                     tracing::error!("all agents dead — exiting");
                     break;
                 }
-                for (scope, thread_tags) in dispatch_pending(
-                    &mut pool,
-                    &mut queue,
-                    &ctx,
-                    &mut last_activity,
-                    observer.as_ref(),
-                ) {
-                    typing_channels.insert(scope, thread_tags);
-                }
+                begin_typing(
+                    &relay,
+                    config.typing_enabled,
+                    &mut typing_channels,
+                    dispatch_pending(
+                        &mut pool,
+                        &mut queue,
+                        &ctx,
+                        &mut last_activity,
+                        observer.as_ref(),
+                    ),
+                );
             }
             Some(PoolEvent::SteerAck(SteerAckEvent {
                 channel_id,
@@ -4015,15 +4017,18 @@ async fn tokio_main() -> Result<()> {
                 // tear down the in-flight task; on its completion the
                 // queue drains. We still try here in case the in-flight
                 // task has already returned.
-                for (scope, thread_tags) in dispatch_pending(
-                    &mut pool,
-                    &mut queue,
-                    &ctx,
-                    &mut last_activity,
-                    observer.as_ref(),
-                ) {
-                    typing_channels.insert(scope, thread_tags);
-                }
+                begin_typing(
+                    &relay,
+                    config.typing_enabled,
+                    &mut typing_channels,
+                    dispatch_pending(
+                        &mut pool,
+                        &mut queue,
+                        &ctx,
+                        &mut last_activity,
+                        observer.as_ref(),
+                    ),
+                );
             }
             Some(PoolEvent::Wake(attempt, result)) => {
                 let completion = result.as_ref().map(|_| ()).map_err(|error| error.clone());
@@ -4047,15 +4052,18 @@ async fn tokio_main() -> Result<()> {
                             "ready",
                             None,
                         );
-                        for (scope, thread_tags) in dispatch_pending(
-                            &mut pool,
-                            &mut queue,
-                            &ctx,
-                            &mut last_activity,
-                            observer.as_ref(),
-                        ) {
-                            typing_channels.insert(scope, thread_tags);
-                        }
+                        begin_typing(
+                            &relay,
+                            config.typing_enabled,
+                            &mut typing_channels,
+                            dispatch_pending(
+                                &mut pool,
+                                &mut queue,
+                                &ctx,
+                                &mut last_activity,
+                                observer.as_ref(),
+                            ),
+                        );
                     }
                     Err(error) => {
                         debug_assert_eq!(pool_lifecycle.failed_error(), Some(error.as_str()));
@@ -4075,15 +4083,18 @@ async fn tokio_main() -> Result<()> {
                 // relay/timer source is quiet. The deadline is derived from
                 // the pool's first-held stamp, so this dispatch observes
                 // `ForkAfterHold` and claims an idle worker immediately.
-                for (scope, thread_tags) in dispatch_pending(
-                    &mut pool,
-                    &mut queue,
-                    &ctx,
-                    &mut last_activity,
-                    observer.as_ref(),
-                ) {
-                    typing_channels.insert(scope, thread_tags);
-                }
+                begin_typing(
+                    &relay,
+                    config.typing_enabled,
+                    &mut typing_channels,
+                    dispatch_pending(
+                        &mut pool,
+                        &mut queue,
+                        &ctx,
+                        &mut last_activity,
+                        observer.as_ref(),
+                    ),
+                );
             }
             None => {} // relay/heartbeat/shutdown branches handled inline above
         }
@@ -4449,6 +4460,39 @@ fn try_native_steer(
     }
 }
 
+/// Publish one typing indicator for `scope`. Non-blocking: indicators are
+/// ephemeral and must not stall the main loop during relay reconnection (#35),
+/// so a full command queue drops this one and the next refresh retries.
+fn publish_typing(relay: &HarnessRelay, scope: &scope::SessionScope, thread_tags: &ThreadTags) {
+    let ch = scope.channel_id();
+    if let Ok(event) = relay.build_typing_event(
+        ch,
+        thread_tags.root_event_id.as_deref(),
+        thread_tags.parent_event_id.as_deref(),
+    ) {
+        if let Err(e) = relay.try_publish_event(event) {
+            tracing::debug!("typing indicator dropped for {ch}: {e}");
+        }
+    }
+}
+
+/// Track newly dispatched turns for the 3 s typing refresh, and announce each
+/// one immediately. Before, the first indicator waited for the next refresh
+/// tick, so a turn shorter than one tick never showed one.
+fn begin_typing(
+    relay: &HarnessRelay,
+    typing_enabled: bool,
+    typing_channels: &mut HashMap<scope::SessionScope, ThreadTags>,
+    dispatched: Vec<(scope::SessionScope, ThreadTags)>,
+) {
+    for (scope, thread_tags) in dispatched {
+        if typing_enabled {
+            publish_typing(relay, &scope, &thread_tags);
+        }
+        typing_channels.insert(scope, thread_tags);
+    }
+}
+
 // ── dispatch_pending ──────────────────────────────────────────────────────────
 
 /// Flush queued work to available agents.
@@ -4522,10 +4566,13 @@ fn dispatch_pending(
             } => Some((held_for, owner_index)),
             pool::HoldDecision::Dispatch => None,
         };
+        // Where Desktop shows this turn's typing: the thread root for a
+        // trigger inside a thread, the channel otherwise
+        // (see `queue::typing_thread_tags`).
         let typing_scope = batch
             .events
             .last()
-            .map(|event| queue::parse_thread_tags(&event.event))
+            .map(|event| queue::typing_thread_tags(&event.event))
             .unwrap_or_default();
         // Scope-level affinity: reuse the worker that already holds THIS
         // thread's provider session so a temporarily busy worker cannot cause

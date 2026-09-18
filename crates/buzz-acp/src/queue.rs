@@ -1457,6 +1457,26 @@ fn resolve_reply_anchor(
     )
 }
 
+/// Thread tags for a turn's typing indicator: where Desktop should show it.
+///
+/// A trigger inside a thread keys the indicator to the thread ROOT. Desktop
+/// shows thread typing in the thread panel whose head matches the key
+/// (`desktop/src/features/channels/ui/ChannelPane.helpers.ts`), and a nested
+/// trigger's immediate parent is not a thread head, so keying to the parent
+/// (the trigger's own `reply` marker) showed the indicator nowhere.
+///
+/// A top-level trigger stays channel-keyed. Only channel-keyed typing reaches
+/// the channel surfaces (composer bar, sidebar; `useChannelActivityTyping.ts`),
+/// and the thread the agent's reply will open does not exist yet.
+pub fn typing_thread_tags(event: &Event) -> ThreadTags {
+    let root = parse_thread_tags(event).root_event_id;
+    ThreadTags {
+        root_event_id: root.clone(),
+        parent_event_id: root,
+        mentioned_pubkeys: Vec::new(),
+    }
+}
+
 /// Maximum length (in characters) of a channel description rendered into `<context>`.
 ///
 /// Limits prompt bloat from unusually long descriptions. Multi-line
@@ -4538,6 +4558,69 @@ mod tests {
         let tags = thread_tags(Some(ROOT_ID), &[AGENT_A_PK, AGENT_B_PK]);
         let anchor = resolve_reply_anchor(AGENT_A_PK, &tags, TRIGGER_ID, Some(&id_lookup()));
         assert_eq!(anchor, None);
+    }
+
+    // ── typing_thread_tags ──────────────────────────────────────────────────
+
+    fn e_tag(id: &str, marker: &str) -> Vec<String> {
+        vec!["e".into(), id.into(), String::new(), marker.into()]
+    }
+
+    /// The key Desktop files a typing entry under: the value of the last `e`
+    /// tag marked `reply`, or the channel (`None`) when there is none
+    /// (`getThreadReference` in desktop/src/features/messages/lib/threading.ts).
+    fn desktop_typing_key(event: &Event) -> Option<String> {
+        let tt = typing_thread_tags(event);
+        let tags = crate::relay::typing_event_tags(
+            Uuid::nil(),
+            tt.root_event_id.as_deref(),
+            tt.parent_event_id.as_deref(),
+        )
+        .unwrap();
+        tags.iter()
+            .rev()
+            .map(|t| t.as_slice())
+            .find(|t| {
+                t.first().map(String::as_str) == Some("e")
+                    && t.get(3).map(String::as_str) == Some("reply")
+            })
+            .and_then(|t| t.get(1).cloned())
+    }
+
+    #[test]
+    fn typing_for_top_level_trigger_stays_on_the_channel() {
+        let event = make_event_with_tags("@agent hi", vec![]);
+        let tt = typing_thread_tags(&event);
+        assert_eq!(tt.root_event_id, None);
+        assert_eq!(tt.parent_event_id, None);
+        assert_eq!(desktop_typing_key(&event), None);
+    }
+
+    #[test]
+    fn typing_for_direct_thread_reply_keys_to_the_root() {
+        let event = make_event_with_tags("@agent more", vec![e_tag(ROOT_ID, "reply")]);
+        assert_eq!(desktop_typing_key(&event).as_deref(), Some(ROOT_ID));
+    }
+
+    #[test]
+    fn typing_for_nested_reply_keys_to_the_root_not_the_parent() {
+        let event = make_event_with_tags(
+            "@agent nested",
+            vec![e_tag(ROOT_ID, "root"), e_tag(TRIGGER_ID, "reply")],
+        );
+        let tt = typing_thread_tags(&event);
+        assert_eq!(tt.root_event_id.as_deref(), Some(ROOT_ID));
+        assert_eq!(tt.parent_event_id.as_deref(), Some(ROOT_ID));
+        // One `reply` marker on the root: the head of the thread panel.
+        assert_eq!(desktop_typing_key(&event).as_deref(), Some(ROOT_ID));
+        let tags =
+            crate::relay::typing_event_tags(Uuid::nil(), Some(ROOT_ID), Some(ROOT_ID)).unwrap();
+        assert_eq!(
+            tags.iter()
+                .filter(|t| t.as_slice().first().map(String::as_str) == Some("e"))
+                .count(),
+            1
+        );
     }
 
     #[test]
