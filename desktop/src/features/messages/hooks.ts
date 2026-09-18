@@ -39,6 +39,7 @@ export { mergeMessages, mergeTimelineCacheMessages };
 import { splitOutgoingTags } from "@/features/messages/lib/imetaMediaMarkdown";
 import { messageMentionPubkeys } from "@/features/messages/lib/messageMentionPubkeys";
 import { buildSentFromThreadTag } from "@/features/messages/lib/sentFromThread";
+import { publishLiveChannelMessage } from "@/features/messages/liveChannelMessages";
 import {
   clearTimeoutState,
   recordTimeoutFromRejection,
@@ -343,6 +344,11 @@ export function useChannelSubscription(channel: Channel | null) {
     const threadReference = isTimelineRow
       ? getThreadReference(event.tags)
       : null;
+    if (isTimelineRow) {
+      // Before the thread early-return below: consumers such as the typing
+      // indicator need thread replies too, and those never reach the timeline.
+      publishLiveChannelMessage(channelId, event);
+    }
     if (threadReference?.parentId != null) {
       const rootId = threadReference?.rootId;
       if (rootId) {
