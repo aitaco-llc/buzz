@@ -501,6 +501,12 @@ pub struct CliArgs {
     #[arg(long, env = "BUZZ_ACP_RELAY_OBSERVER", default_value_t = false)]
     pub relay_observer: bool,
 
+    /// Write a durable local record of every turn (ACP frames, triggering
+    /// event ids, outcome) and of every inbound-event decision to this
+    /// directory. Unset disables it. See `turn_log.rs` for the layout.
+    #[arg(long, env = "BUZZ_ACP_TURN_LOG_DIR")]
+    pub turn_log_dir: Option<PathBuf>,
+
     /// Exit after this many seconds with no dispatched events and no turn in flight.
     /// 0 disables inactivity self-termination.
     #[arg(long, env = "BUZZ_ACP_EXIT_AFTER_INACTIVITY", default_value_t = 0)]
@@ -606,6 +612,8 @@ pub struct Config {
     pub has_generated_codex_config: bool,
     /// Whether to publish encrypted observer frames through the relay.
     pub relay_observer: bool,
+    /// Directory for the durable local turn log, when enabled.
+    pub turn_log_dir: Option<PathBuf>,
     /// Seconds without dispatched events before an idle harness exits. 0 = disabled.
     pub exit_after_inactivity_secs: u64,
     /// Whether ACP/LLM subprocess initialization is deferred until accepted work arrives.
@@ -1197,6 +1205,7 @@ impl Config {
             persona_env_vars,
             has_generated_codex_config,
             relay_observer: args.relay_observer,
+            turn_log_dir: args.turn_log_dir.filter(|dir| !dir.as_os_str().is_empty()),
             exit_after_inactivity_secs: args.exit_after_inactivity,
             lazy_pool: args.lazy_pool,
             idle_pool_sleep_secs: args.idle_pool_sleep,
@@ -1225,7 +1234,7 @@ impl Config {
             format!(" allowed_respond_to=[{}]", modes.join(","))
         };
         format!(
-            "relay={} pubkey={} agent_cmd={} {} mcp_cmd={} idle_timeout={}s max_turn={}s agents={} heartbeat={}s subscribe={:?} dedup={:?} session_policy={} meh={:?} ignore_self={} context_limit={} max_turns_per_session={} presence={} typing={} memory={} model={} permission_mode={} {}{}",
+            "relay={} pubkey={} agent_cmd={} {} mcp_cmd={} idle_timeout={}s max_turn={}s agents={} heartbeat={}s subscribe={:?} dedup={:?} session_policy={} meh={:?} ignore_self={} context_limit={} max_turns_per_session={} presence={} typing={} memory={} model={} permission_mode={} {}{}{}",
             self.relay_url,
             self.keys.public_key().to_hex(),
             self.agent_command,
@@ -1249,6 +1258,10 @@ impl Config {
             self.permission_mode,
             respond_to_detail,
             allowed_respond_to_detail,
+            self.turn_log_dir
+                .as_ref()
+                .map(|dir| format!(" turn_log={}", dir.display()))
+                .unwrap_or_default(),
         )
     }
 }
@@ -1573,6 +1586,7 @@ mod tests {
             persona_env_vars: vec![],
             has_generated_codex_config: false,
             relay_observer: false,
+            turn_log_dir: None,
             exit_after_inactivity_secs: 0,
             lazy_pool: false,
             idle_pool_sleep_secs: 0,

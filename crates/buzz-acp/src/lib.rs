@@ -14,6 +14,7 @@ mod relay;
 pub mod relevance;
 mod scope;
 mod setup_mode;
+mod turn_log;
 mod usage;
 
 pub use usage::TurnUsage;
@@ -2513,9 +2514,33 @@ async fn tokio_main() -> Result<()> {
 
     tracing::info!("buzz-acp starting: {}", config.summary());
 
-    let observer = config
-        .relay_observer
+    // The in-process observer bus feeds two independent sinks: encrypted relay
+    // frames (`relay_observer`) and the local turn log (`turn_log_dir`). Every
+    // observer-gated site only emits, so creating the bus for the turn log
+    // alone changes nothing the relay sees.
+    let observer = (config.relay_observer || config.turn_log_dir.is_some())
         .then(observer::ObserverHandle::in_process);
+    // Subscribe before `harness_started` so the log records it.
+    let turn_log = match (&config.turn_log_dir, &observer) {
+        (Some(dir), Some(handle)) => match turn_log::TurnLog::start(
+            dir.clone(),
+            config.keys.public_key().to_hex(),
+            handle.subscribe(),
+        ) {
+            Ok(log) => {
+                tracing::info!(dir = %dir.display(), "turn log enabled");
+                Some(log)
+            }
+            Err(error) => {
+                tracing::warn!(
+                    dir = %dir.display(),
+                    "turn log disabled: cannot initialize: {error}"
+                );
+                None
+            }
+        },
+        _ => None,
+    };
     if let Some(handle) = &observer {
         handle.emit(
             "harness_started",
@@ -3528,6 +3553,10 @@ async fn tokio_main() -> Result<()> {
                             // launched by the same human). Allowlist adds the
                             // explicit pubkey list on top, for external people;
                             // it never revokes same-owner team bots.
+                            // Kept only for the turn log's decision record.
+                            let logged_event = turn_log
+                                .as_ref()
+                                .map(|_| (buzz_event.event.clone(), buzz_event.channel_id));
                             let Some(authorized_event) = authorize_normal_listener_event(
                                 &mut author_gate_ctx,
                                 buzz_event,
@@ -3539,6 +3568,16 @@ async fn tokio_main() -> Result<()> {
                             )
                             .await
                             else {
+                                if let (Some(log), Some((event, channel_id))) =
+                                    (&turn_log, &logged_event)
+                                {
+                                    log.decision(
+                                        event,
+                                        *channel_id,
+                                        turn_log::Decision::AuthorGate,
+                                        None,
+                                    );
+                                }
                                 continue;
                             };
                             let Some(ingress) =
@@ -3547,6 +3586,16 @@ async fn tokio_main() -> Result<()> {
                                     .await
                             else {
                                 tracing::debug!("authorized event matched no rule — dropping");
+                                if let (Some(log), Some((event, channel_id))) =
+                                    (&turn_log, &logged_event)
+                                {
+                                    log.decision(
+                                        event,
+                                        *channel_id,
+                                        turn_log::Decision::NoRuleMatched,
+                                        None,
+                                    );
+                                }
                                 continue;
                             };
                             // Derive the session scope once, at admission, from
@@ -3574,7 +3623,20 @@ async fn tokio_main() -> Result<()> {
                                 policy = %config.session_policy,
                                 "admitted event — resolved session scope"
                             );
+                            let scope_label = turn_log
+                                .as_ref()
+                                .map(|_| turn_log_scope(&session_scope));
                             let queued = ingress.push(&mut queue, session_scope);
+                            if let (Some(log), Some((event, channel_id))) =
+                                (&turn_log, &logged_event)
+                            {
+                                let decision = if queued.accepted {
+                                    turn_log::Decision::Queued
+                                } else {
+                                    turn_log::Decision::DroppedScopeBusy
+                                };
+                                log.decision(event, *channel_id, decision, scope_label.as_deref());
+                            }
                             // 👀 — immediate "seen" reaction, only if the event
                             // was actually queued (not dropped by DedupMode::Drop).
                             // Fire-and-forget: on rare fast-failure paths the
@@ -3797,6 +3859,13 @@ async fn tokio_main() -> Result<()> {
                     outcome,
                     "turn finished"
                 );
+                if let Some(log) = &turn_log {
+                    log.outcome(
+                        &result.turn_id,
+                        outcome,
+                        result.source.scope().map(turn_log_scope),
+                    );
+                }
                 if handle_prompt_result(
                     &mut pool,
                     &mut queue,
@@ -4209,8 +4278,23 @@ async fn tokio_main() -> Result<()> {
     // for the background task to finish, rather than aborting immediately (#40).
     relay.shutdown().await;
 
+    // Flush the turn log last, after every turn's outcome has been recorded.
+    if let Some(log) = turn_log.clone() {
+        let _ = tokio::task::spawn_blocking(move || log.close(Duration::from_secs(5))).await;
+    }
+
     tracing::info!("buzz-acp stopped");
     Ok(())
+}
+
+/// Full scope id for the turn log: `conversation`, or `thread:<root id>`.
+/// Unlike [`scope::SessionScope::telemetry_label`], it keeps the whole root id
+/// so a post-mortem can find the thread.
+fn turn_log_scope(scope: &scope::SessionScope) -> String {
+    match scope.root_event_id() {
+        Some(root) => format!("thread:{root}"),
+        None => "conversation".to_string(),
+    }
 }
 
 #[derive(PartialEq)]
@@ -9241,6 +9325,7 @@ mod build_mcp_servers_tests {
             persona_env_vars: vec![],
             has_generated_codex_config: false,
             relay_observer: false,
+            turn_log_dir: None,
             exit_after_inactivity_secs: 0,
             lazy_pool: false,
             idle_pool_sleep_secs: 0,
@@ -9467,6 +9552,7 @@ mod error_outcome_emission_tests {
             persona_env_vars: vec![],
             has_generated_codex_config: false,
             relay_observer: false,
+            turn_log_dir: None,
             exit_after_inactivity_secs: 0,
             lazy_pool: false,
             idle_pool_sleep_secs: 0,
