@@ -19,6 +19,9 @@ Recorded per run (null when a field does not apply to the mode):
   serve_ready_s        rebrand only: `rebrand serve` start to /health ok
   vram_baseline_mib, vram_peak_mib
                        amdgpu sysfs, sampled once a second (not in stub mode)
+  seat_cwd, hint_agents_md, hint_bytes, hint_skill_files
+                       the seat's own working directory, and the AGENTS.md files
+                       (path, bytes) and SKILL.md count its hint loader reads
   mode, model_id, model_path, model_bytes, backend_version, max_seq_len,
   max_output_tokens, binaries, repo_commit, run_id
 """
@@ -116,6 +119,9 @@ def main():
         name, _, digest = line.partition(" ")
         binaries[name] = digest
 
+    hints = json.loads(read(run_dir, "hint_files.json") or "{}")
+    hint_files = hints.get("agents_md") or []
+
     result = {
         "run_id": os.path.basename(run_dir.rstrip("/")),
         "mode": read(run_dir, "mode"),
@@ -153,6 +159,10 @@ def main():
         "unknown_fields": sorted({f for c in calls for f in (c.get("unknown_fields") or [])}),
         "vram_baseline_mib": round(vram[0]) if vram else None,
         "vram_peak_mib": round(max(vram)) if vram else None,
+        "seat_cwd": read(run_dir, "seat_cwd"),
+        "hint_agents_md": hint_files,
+        "hint_bytes": sum(f.get("bytes") or 0 for f in hint_files),
+        "hint_skill_files": hints.get("skill_md_files"),
         "binaries": binaries,
         "repo_commit": read(run_dir, "repo_commit"),
     }
@@ -171,7 +181,8 @@ def main():
 
     keys = ["pass", "mode", "model_id", "reply_threaded", "turn_outcome", "mention_to_reply_s",
             "turn_s", "llm_calls", "llm_s_first", "llm_s_total", "prompt_tokens_first",
-            "prompt_tokens_max", "tool_calls", "http_errors", "unknown_fields",
+            "prompt_tokens_max", "prompt_chars_first", "hint_bytes", "tool_calls",
+            "http_errors", "unknown_fields",
             "serve_ready_s", "vram_peak_mib"]
     for key in keys:
         print(f"{key:>24}: {result[key]}")

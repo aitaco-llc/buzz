@@ -31,6 +31,7 @@ Each run does the following:
 - Starts its own Postgres, Redis and MinIO containers (`rebrand-proof-*`) and its own relay on `localhost:3950`.
 - Admits the throwaway seat with `buzz relay members add`, the way `agentctl add-seat` does.
 - Starts the backend and the recording proxy, then the seat, using the installed fleet binaries from `~/.local/bin`.
+- Runs the seat in its own empty directory, `<run dir>/seat-cwd`, whatever directory you start the script from. The agent's shell tools work there, and its hint loader reads `AGENTS.md` from there and from `~`. So the prompt contains no hints unless you set `PROOF_SEAT_AGENTS_MD`.
 - Sends one top-level mention: "@probe Reply in this thread with exactly: PONG-<nonce>".
 - Waits for the reply, then tears everything down and appends one JSON line to `results.jsonl`.
 
@@ -47,6 +48,7 @@ The main knobs:
 | `PROOF_MAX_ROUNDS` | 8 |
 | `PROOF_TIMEOUT_S` | 900 |
 | `REBRAND_EXTRA_ARGS` | none (e.g. `--max-batch-size 1`) |
+| `PROOF_SEAT_AGENTS_MD` | none. A file to copy in as the seat's `AGENTS.md`, e.g. `~/.buzz/AGENTS.md` to match a fleet seat's prompt |
 
 ## What it records
 
@@ -60,6 +62,7 @@ One line per run, written by `summarize.py`. The field meanings are in its docst
 | contract | `unknown_fields` (request fields Rebrand would reject), `http_errors`, `finish_reasons` |
 | GPU | `vram_baseline_mib`, `vram_peak_mib` (amdgpu sysfs, sampled at 1 Hz) |
 | provenance | `mode`, `model_id`, `model_path`, `model_bytes`, `backend_version`, `max_seq_len`, `max_output_tokens`, the sha256 of each seat binary, `repo_commit` |
+| prompt inputs | `seat_cwd`; `hint_agents_md` (each `AGENTS.md` the hint loader reads, with its bytes); `hint_bytes`; `hint_skill_files` |
 
 Everything else stays in the run directory:
 
@@ -74,7 +77,15 @@ A `run.sh stub` run with fleet `buzz-acp` `e1750044`, `buzz-agent` `461635ba` an
 - **Verdict:** `pass: true`. The reply was threaded under the mention and the turn outcome was `ok`.
 - **Calls:** 2 LLM calls (a tool call, then `stop`) and 1 shell tool call.
 - **Contract:** `unknown_fields: []` and no HTTP errors. So `buzz-agent`'s request is valid under Rebrand's `deny_unknown_fields` request struct (`rebrand_schema.py`).
-- **Request size:** the first request had 2 messages, 6 tools, 25,293 prompt characters and 31.5 KB. That is roughly 6.3k tokens at 4 characters per token, too big for `rebrand serve`'s default `--max-seq-len 4096`.
+- **Request size (2026-09-19, seat in its own directory):** the first request had 2 messages and 6 tools. The two cases:
+
+  | seat hints | run | prompt characters | request size | ≈ tokens at 4 chars per token |
+  |---|---|---|---|---|
+  | none (the default) | `20260919T004452Z-stub` | 20,531 | 26.9 KB | 5.1k |
+  | the nest's `AGENTS.md`, 3,659 bytes (`PROOF_SEAT_AGENTS_MD`) | `20260919T004516Z-stub` | 24,209 | 30.7 KB | 6.1k |
+
+  Both are too big for `rebrand serve`'s default `--max-seq-len 4096`. The token figures are the stub's estimate (`stub_llm.py:50`), not a tokenizer's count.
+- **Superseded:** the 2026-09-18 figure of 25,293 characters came from a seat that ran in the caller's directory, which was the nest. So the nest's `AGENTS.md` was in the prompt by accident.
 
 ## Open questions for Rebrand (for neil, when the GPU is scheduled)
 

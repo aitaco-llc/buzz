@@ -216,7 +216,53 @@ for bin in buzz-acp buzz-agent buzz-dev-mcp buzz; do
 done > "${RUN_DIR}/binaries"
 git -C "${REPO}" rev-parse HEAD > "${RUN_DIR}/repo_commit"
 
-env -i HOME="${HOME}" USER="${USER}" PATH="${BIN_DIR}:/usr/bin:/bin" NO_COLOR=1 \
+# The seat runs in a fresh directory of its own, never the caller's. buzz-acp
+# hands its working directory to the agent (crates/buzz-acp/src/lib.rs:81): the
+# agent's shell tools work there, and its hint loader puts AGENTS.md files from
+# there (and ~/AGENTS.md) into the prompt (crates/buzz-agent/src/hints.rs).
+# PROOF_SEAT_AGENTS_MD copies one AGENTS.md in on purpose, e.g. the nest's, to
+# match a fleet seat's prompt.
+SEAT_CWD="${RUN_DIR}/seat-cwd"
+mkdir -p "${SEAT_CWD}"
+if [[ -n "${PROOF_SEAT_AGENTS_MD:-}" ]]; then
+  cp "${PROOF_SEAT_AGENTS_MD}" "${SEAT_CWD}/AGENTS.md"
+fi
+put seat_cwd "${SEAT_CWD}"
+# What the hint loader will read, mirroring hints.rs: AGENTS.md along the git
+# root -> cwd chain (cwd alone outside a repo), ~/AGENTS.md first, and SKILL.md
+# files under the skill directories.
+python3 - "${SEAT_CWD}" "${HOME}" > "${RUN_DIR}/hint_files.json" <<'PY'
+import json, os, sys
+cwd, home = os.path.realpath(sys.argv[1]), os.path.realpath(sys.argv[2])
+root, d = None, cwd
+while True:
+    if os.path.exists(os.path.join(d, ".git")):
+        root = d
+        break
+    if os.path.dirname(d) == d:
+        break
+    d = os.path.dirname(d)
+chain = [cwd]
+if root:
+    chain, d = [], cwd
+    while d.startswith(root):
+        chain.insert(0, d)
+        if d == root:
+            break
+        d = os.path.dirname(d)
+if home not in chain:
+    chain.insert(0, home)
+files = [{"path": p, "bytes": os.path.getsize(p)}
+         for p in (os.path.join(c, "AGENTS.md") for c in chain) if os.path.isfile(p)]
+skill_dirs = [os.path.join(cwd, s) for s in (".agents/skills", ".goose/skills", ".claude/skills")]
+skill_dirs.append(os.path.join(home, ".agents/skills"))
+skills = sum(1 for sd in skill_dirs if os.path.isdir(sd)
+             for _, _, fs in os.walk(sd) for f in fs if f == "SKILL.md")
+json.dump({"agents_md": files, "skill_md_files": skills}, sys.stdout)
+PY
+log "seat cwd ${SEAT_CWD}; hint files $(cat "${RUN_DIR}/hint_files.json")"
+
+( cd "${SEAT_CWD}" && exec env -i HOME="${HOME}" USER="${USER}" PATH="${BIN_DIR}:/usr/bin:/bin" NO_COLOR=1 \
   BUZZ_RELAY_URL="ws://localhost:${RELAY_PORT}" \
   BUZZ_PRIVATE_KEY="$(cat "${STATE}/keys/seat.sec")" \
   BUZZ_ACP_AGENT_COMMAND=buzz-agent \
@@ -238,7 +284,7 @@ env -i HOME="${HOME}" USER="${USER}" PATH="${BIN_DIR}:/usr/bin:/bin" NO_COLOR=1 
   BUZZ_AGENT_REQUIRE_REPLY=1 \
   BUZZ_AGENT_LLM_TIMEOUT_SECS="${TIMEOUT_S}" \
   RUST_LOG=buzz_acp=info,buzz_agent=info \
-  "${BIN_DIR}/buzz-acp" >"${RUN_DIR}/seat.log" 2>&1 &
+  "${BIN_DIR}/buzz-acp" ) >"${RUN_DIR}/seat.log" 2>&1 &
 PIDS+=($!)
 for _ in $(seq 1 60); do grep -q "subscribed to channel" "${RUN_DIR}/seat.log" && break; sleep 1; done
 grep -q "subscribed to channel" "${RUN_DIR}/seat.log" || { log "seat did not subscribe"; exit 70; }
