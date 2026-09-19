@@ -151,7 +151,7 @@ export function useDetachedAgentStart(): (
         // communities.
         warnAgentMayNotRespond(
           agent.name,
-          "Buzz is still connecting to this community — mention the agent again in a moment.",
+          "aitaco is still connecting to this community — mention the agent again in a moment.",
         );
         return false;
       }

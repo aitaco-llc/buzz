@@ -486,7 +486,7 @@ test("machine onboarding: landing, backup, setup docked CTAs", async ({
   ).toBeVisible();
   await expect(
     page.getByText(
-      "Choose your provider and enter an API key to connect to the Buzz harness.",
+      "Choose your provider and enter an API key to connect to the aitaco harness.",
     ),
   ).toBeVisible();
   await expectHorizontalCardTransition(

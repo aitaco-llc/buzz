@@ -103,7 +103,7 @@ async function chooseSharedComputeProvider(
   await page
     .getByRole("menuitemradio", {
       exact: true,
-      name: "Buzz shared compute",
+      name: "aitaco shared compute",
     })
     .click();
 }
@@ -123,7 +123,7 @@ test("creates a new mocked stream", async ({ page }) => {
   await expect(page.getByTestId("chat-title")).toContainText(channelName);
 });
 
-test("Buzz shared compute explains automatic model selection", async ({
+test("aitaco shared compute explains automatic model selection", async ({
   page,
 }) => {
   await page.goto("/");
