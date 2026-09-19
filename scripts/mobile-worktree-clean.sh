@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Uninstalls stale worktree-suffixed Buzz debug builds from booted iOS
 # simulators and connected Android devices/emulators. Unsuffixed app installs
-# (`xyz.block.buzz.dogfood.mobile` and `xyz.block.buzz.mobile`) are never
-# touched. Only identifiers with a worktree suffix appended after the dogfood
-# or production id are matched. Run `just mobile-clean` (or this script
-# directly); pass --dry-run to list what would be removed without uninstalling.
+# (`co.aitaco.buzz` on iOS, `xyz.block.buzz.mobile` on Android) are never
+# touched. Only identifiers under the iOS `co.aitaco.buzz.wt.` worktree
+# namespace or with a suffix after the Android production id are matched.
+# Run `just mobile-clean` (or this script directly); pass --dry-run to list
+# what would be removed without uninstalling.
 set -euo pipefail
 
-ios_prefix="xyz.block.buzz.dogfood.mobile."
+ios_prefix="co.aitaco.buzz.wt."
 android_prefix="xyz.block.buzz.mobile."
 
 dry_run=0
