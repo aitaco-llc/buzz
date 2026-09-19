@@ -4,11 +4,11 @@
 // Defaults for the iOS Release build. Internal/custom builds (e.g. an
 // enterprise-signed distribution) override these without patching tracked
 // files by writing `mobile/ios/Flutter/AppOverrides.xcconfig` (gitignored).
-BUNDLE_IDENTIFIER = xyz.block.buzz.mobile
+BUNDLE_IDENTIFIER = co.aitaco.buzz
 APP_DISPLAY_NAME = Buzz
 CODE_SIGN_STYLE = Automatic
 CODE_SIGN_IDENTITY = iPhone Developer
-BUZZ_DEVELOPMENT_TEAM = EYF346PHUG
+BUZZ_DEVELOPMENT_TEAM = 5F7YLJS4YR
 
 // Push support is always present in the iOS artifact. Relay advertisement is
 // the rollout authority, so a relay without a valid descriptor remains inert.

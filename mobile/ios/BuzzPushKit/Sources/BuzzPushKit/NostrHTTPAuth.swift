@@ -1,6 +1,6 @@
 import CryptoKit
 import Foundation
-import P256K
+@_implementationOnly import P256K
 
 public enum NostrHTTPAuthError: Error, Equatable {
     case invalidHex
