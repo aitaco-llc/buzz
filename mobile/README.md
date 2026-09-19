@@ -32,7 +32,7 @@ cd mobile && flutter run --dart-define=BUZZ_PUSH_GATEWAY_URL=https://push.exampl
 
 Debug builds produced from a git worktree get a unique app identifier keyed
 to the **worktree directory name**
-(`xyz.block.buzz.dogfood.mobile.<slug>` on iOS,
+(`co.aitaco.buzz.wt.<slug>` on iOS,
 `xyz.block.buzz.mobile.<slug>` on Android) plus a display-only branch label
 in the app name (`Buzz (my-branch)`, or a short SHA when the worktree is
 detached). Because the identifier follows the directory rather than the
