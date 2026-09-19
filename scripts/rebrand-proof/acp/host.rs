@@ -191,16 +191,36 @@ impl Host {
         if seen.is_empty() {
             return vec![json!({
                 "name": "search_messages",
-                "description": "Search this channel's messages for words in the question. Returns event IDs.",
-                "inputSchema": schema(json!({"query": {"type": "string"}}), &["query"]),
+                "description": "Search this channel's messages for words in the question. Returns the relay's own \
+                    message IDs for what matches. Pass one of them to read_thread; they are not answers and not \
+                    the identifier the question names.",
+                "inputSchema": schema(
+                    json!({"query": {
+                        "type": "string",
+                        "description": "Words expected in the message, not an identifier.",
+                    }}),
+                    &["query"],
+                ),
             })];
         }
         let mut ids: Vec<&String> = seen.iter().collect();
         ids.sort();
         vec![json!({
             "name": "read_thread",
-            "description": "Read a found incident message and its replies to learn the resolution.",
-            "inputSchema": schema(json!({"event_id": {"type": "string", "enum": ids}}), &["event_id"]),
+            "description": "Read a found message and its replies, which is where the resolution is. Call this \
+                once, with one of the IDs search_messages returned. Those are the relay's 64-character message \
+                IDs. The identifier the question names is not one of them and is not in this list: it appears \
+                inside the messages, so the only way to reach it is to read the thread. A list that does not \
+                contain the question's identifier is expected, not a dead end.",
+            "inputSchema": schema(
+                json!({"event_id": {
+                    "type": "string",
+                    "enum": ids,
+                    "description": "One of the message IDs search_messages returned. Never the identifier from \
+                        the question.",
+                }}),
+                &["event_id"],
+            ),
         })]
     }
 
