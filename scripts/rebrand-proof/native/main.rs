@@ -364,7 +364,10 @@ async fn retrieve(host: Arc<Host>, question: &str) -> Result<(String, Value)> {
         outcome.termination
     );
     let answer: Answer =
-        serde_json::from_str(outcome.answer()).context("final answer must be structured JSON")?;
+        serde_json::from_str(outcome.answer()).with_context(|| {
+            let head: String = outcome.answer().chars().take(400).collect();
+            format!("final answer must be structured JSON; the model wrote {head:?}")
+        })?;
     validate_answer(&answer, &*host.thread_seen.lock().await)?;
     let links = answer
         .source_ids
