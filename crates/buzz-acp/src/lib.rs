@@ -719,10 +719,6 @@ impl NormalListenerIngress {
     }
 }
 
-/// Apply the complete normal-listener author boundary for one relay event.
-///
-/// The event is consumed here, so the production loop cannot recover it except
-/// from the gate's private authorized capability.
 /// What the listener does with an event, by author, before the author gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SelfEventDisposition {
@@ -749,6 +745,10 @@ fn self_event_disposition(
     }
 }
 
+/// Apply the complete normal-listener author boundary for one relay event.
+///
+/// The event is consumed here, so the production loop cannot recover it except
+/// from the gate's private authorized capability.
 async fn authorize_normal_listener_event(
     author_gate: &mut InboundAuthorGate,
     buzz_event: relay::BuzzEvent,

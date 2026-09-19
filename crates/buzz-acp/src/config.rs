@@ -740,7 +740,6 @@ fn compose_session_title_with_limit(
     format!("{agent}{SESSION_TITLE_SEPARATOR}#{channel}")
 }
 
-/// Validate and deduplicate allowlist entries: each must be exactly 64 hex chars.
 /// A `name=value` tag that marks a self-authored event as work for this agent.
 ///
 /// Only this agent's own key can sign a self-authored event, so the tag is an
@@ -798,6 +797,7 @@ pub fn parse_self_wake_tag(raw: &str) -> Result<SelfWakeTag, String> {
     })
 }
 
+/// Validate and deduplicate allowlist entries: each must be exactly 64 hex chars.
 fn validate_allowlist(entries: &[String]) -> Result<HashSet<String>, ConfigError> {
     let mut validated = HashSet::new();
     for entry in entries {
@@ -1625,7 +1625,6 @@ mod tests {
     use crate::filter::{ChannelScope, SubscriptionRule};
     use clap::{Parser, ValueEnum};
 
-    /// Build a minimal Config for testing without CLI parsing.
     #[test]
     fn test_parse_self_wake_tag() {
         let tag = parse_self_wake_tag("voice-bridge=ask").expect("valid");
@@ -1661,6 +1660,7 @@ mod tests {
         assert!(!tag.matches(&event(&["t", "voice-bridge", "ask"])));
     }
 
+    /// Build a minimal Config for testing without CLI parsing.
     fn test_config(mode: SubscribeMode) -> Config {
         Config {
             keys: nostr::Keys::generate(),
