@@ -2,7 +2,7 @@
 //!
 //! Accepts WebSocket connections, matches incoming kind:24134 events against
 //! live `#p`-filtered subscriptions, and forwards matches to the subscriber.
-//! No persistence. No auth. No history.
+//! No persistence. No auth. History only for the hold window (see below).
 //!
 //! # Deployment
 //!
@@ -19,15 +19,37 @@
 //!
 //! - **Signature verification** — Schnorr signatures are verified against the
 //!   NIP-01 event ID hash. Events with invalid signatures are rejected.
-//! - **No persistence** — events exist only in-flight between matched pub/sub.
+//! - **No persistence** — events live only in memory, and for at most
+//!   [`HOLD_TTL`] (see Hold).
 //! - **Bounded resources** — 128 max WS connections, 4 KiB max frame, 120s TTL.
 //! - **Session cap** — at most 6 accepted EVENTs per connection.
 //! - **Freshness** — `created_at` must be within ±120 s of relay wall-clock.
 //! - **Deduplication** — duplicate event IDs are rejected; dedup entries expire after 300 s.
+//!
+//! # Hold
+//!
+//! A phone that pairs with another app on the same phone spends part of the
+//! handshake in the background, where its socket can be suspended or torn down.
+//! So every accepted event is also held for [`HOLD_TTL`], at most
+//! [`HOLD_PER_P`] per `#p` and [`HOLD_TOTAL`] in all:
+//! - With no live subscriber for its `#p`, the event is held (`OK` true,
+//!   `"held: no live subscriber"`). If the hold is full, it is rejected as before.
+//! - A new subscription for a `#p` gets `EOSE`, then every held event for that
+//!   `#p` in arrival order, including ones already written to an earlier
+//!   subscription. The relay can't tell a suspended socket from a live one, so
+//!   an event it "delivered" may never have been read. NIP-AB requires clients
+//!   to discard duplicates.
+//! - A new subscription for a `#p` replaces a subscription for the same `#p` on
+//!   another connection, which gets `CLOSED`. That is how a client that
+//!   reconnects gets past its own dead socket. Anyone who knows the `#p` could
+//!   already take the held events while the owner was away, and events are
+//!   NIP-44 encrypted to the owner's ephemeral key, so this adds no exposure.
+//! - A timer drops each held event at [`HOLD_TTL`], whether or not it was
+//!   delivered.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
@@ -59,7 +81,9 @@ use tokio_util::sync::CancellationToken;
 pub(crate) const CONN_TIMEOUT: Duration = Duration::from_secs(120);
 
 const MAX_CONNS: u32 = 128;
-const CHANNEL_CAP: usize = 4;
+/// Writer queue per connection. Room for `EOSE` plus a full replay of the hold
+/// for one `#p` ([`HOLD_PER_P`]).
+const CHANNEL_CAP: usize = 8;
 const KIND_PAIR: u64 = 24134;
 /// Max WebSocket frame/message size. NIP-AB handshake payloads are small
 /// (ephemeral pubkeys + encrypted session data), well under 4 KiB.
@@ -88,6 +112,17 @@ const ENTRY_TTL: Duration = Duration::from_secs(300);
 /// Freshness window in seconds (±).
 const FRESHNESS_SECS: i64 = 120;
 
+/// How long an accepted event is held for a later subscription. Matches the
+/// NIP-AB session timeout.
+pub const HOLD_TTL: Duration = Duration::from_secs(120);
+
+/// Held events per `#p`: one sender's full session cap. A NIP-AB session sends
+/// at most three events to either side.
+pub const HOLD_PER_P: usize = MAX_EVENTS_PER_CONN as usize;
+
+/// Held events across all `#p` values. At 4 KiB per event this is 1 MiB.
+pub const HOLD_TOTAL: usize = 256;
+
 enum OutMsg {
     Text(String),
     Pong(Vec<u8>),
@@ -101,6 +136,54 @@ struct Sub {
     writer_tx: mpsc::Sender<OutMsg>,
 }
 
+struct HeldEvent {
+    id: [u8; 32],
+    event: Value,
+}
+
+#[derive(Default)]
+struct Hold {
+    by_p: HashMap<[u8; 32], Vec<HeldEvent>>,
+    total: usize,
+}
+
+impl Hold {
+    fn has_room(&self, p_value: &[u8; 32]) -> bool {
+        self.total < HOLD_TOTAL && self.by_p.get(p_value).map_or(0, Vec::len) < HOLD_PER_P
+    }
+
+    fn remove(&mut self, p_value: &[u8; 32], id: &[u8; 32]) {
+        let Some(events) = self.by_p.get_mut(p_value) else {
+            return;
+        };
+        if let Some(pos) = events.iter().position(|h| &h.id == id) {
+            events.remove(pos);
+            self.total -= 1;
+        }
+        if events.is_empty() {
+            self.by_p.remove(p_value);
+        }
+    }
+}
+
+/// Where an accepted event went.
+#[derive(Debug, PartialEq, Eq)]
+enum Accepted {
+    /// Written to the live subscriber for its `#p`.
+    Delivered,
+    /// No live subscriber; held for the next one.
+    Held,
+}
+
+fn event_msg(sub_id: &str, event: &Value) -> Option<String> {
+    serde_json::to_string(&Value::Array(vec![
+        Value::String("EVENT".into()),
+        Value::String(sub_id.into()),
+        event.clone(),
+    ]))
+    .ok()
+}
+
 pub struct Relay {
     subs: Mutex<Vec<Sub>>,
     conn_count: AtomicU32,
@@ -109,6 +192,8 @@ pub struct Relay {
     seen_ids: Mutex<Vec<([u8; 32], tokio::time::Instant)>>,
     /// Per-#p delivery counter — entries expire after ENTRY_TTL; rejects at DELIVERED_MAP_CAP after eviction.
     delivered: Mutex<HashMap<[u8; 32], (u32, tokio::time::Instant)>>,
+    /// Accepted events, kept for HOLD_TTL. Lock order: subs, then delivered, then hold.
+    hold: Mutex<Hold>,
 }
 
 impl Default for Relay {
@@ -125,6 +210,7 @@ impl Relay {
             next_conn_id: AtomicU64::new(0),
             seen_ids: Mutex::new(Vec::new()),
             delivered: Mutex::new(HashMap::new()),
+            hold: Mutex::new(Hold::default()),
         }
     }
 
@@ -154,26 +240,12 @@ impl Relay {
         }
     }
 
-    /// Atomically check for exactly one subscriber and deliver.
-    /// Returns `Ok(true)` if delivered, `Ok(false)` if `try_send` failed,
-    /// `Err(reason)` if wrong subscriber count or budget exceeded.
-    fn deliver_single(&self, p_value: &[u8; 32], event: &Value) -> Result<bool, &'static str> {
-        // Acquire subs lock once for the entire operation.
-        let subs = self.subs.lock();
-
-        let matching: Vec<&Sub> = subs.iter().filter(|s| &s.p_value == p_value).collect();
-
-        match matching.len() {
-            0 => return Err("no live subscriber"),
-            1 => {} // exactly one — proceed
-            _ => return Err("ambiguous recipient"),
-        }
-
-        let sub = matching[0];
-
-        // Hold delivered lock for the entire check+increment (atomic budget).
-        let mut delivered = self.delivered.lock();
-
+    /// Check that the per-#p delivery budget has room for one more delivery.
+    /// [`Relay::count_delivery`] spends it.
+    fn check_budget(
+        delivered: &mut HashMap<[u8; 32], (u32, tokio::time::Instant)>,
+        p_value: &[u8; 32],
+    ) -> Result<(), &'static str> {
         // Evict entries older than ENTRY_TTL before checking capacity.
         delivered.retain(|_, (_, ts)| ts.elapsed() < ENTRY_TTL);
 
@@ -185,30 +257,133 @@ impl Relay {
         if delivered.len() >= DELIVERED_MAP_CAP && !delivered.contains_key(p_value) {
             return Err("relay at capacity");
         }
+        Ok(())
+    }
 
-        // Build the EVENT message.
-        let msg = Value::Array(vec![
-            Value::String("EVENT".into()),
-            Value::String(sub.sub_id.clone()),
-            event.clone(),
-        ]);
-        let text = match serde_json::to_string(&msg) {
-            Ok(s) => s,
-            Err(_) => return Ok(false),
+    fn count_delivery(
+        delivered: &mut HashMap<[u8; 32], (u32, tokio::time::Instant)>,
+        p_value: &[u8; 32],
+    ) {
+        // Refresh the timestamp along with the count.
+        let entry = delivered
+            .entry(*p_value)
+            .or_insert((0, tokio::time::Instant::now()));
+        entry.0 += 1;
+        entry.1 = tokio::time::Instant::now();
+    }
+
+    /// Deliver an accepted event to the live subscriber for its `#p`, and hold
+    /// it for HOLD_TTL when the hold has room. With no live subscriber the
+    /// event is only held, and is rejected if the hold is full.
+    ///
+    /// `Err(reason)` means the event went nowhere; the caller unreserves its ID.
+    fn accept_event(
+        self: &Arc<Self>,
+        p_value: [u8; 32],
+        id: [u8; 32],
+        event: &Value,
+    ) -> Result<Accepted, &'static str> {
+        let subs = self.subs.lock();
+
+        let matching: Vec<&Sub> = subs.iter().filter(|s| s.p_value == p_value).collect();
+        if matching.len() > 1 {
+            return Err("ambiguous recipient");
+        }
+
+        let mut delivered = self.delivered.lock();
+        let mut hold = self.hold.lock();
+        let hold_it = hold.has_room(&p_value);
+
+        let accepted = match matching.first() {
+            None if hold_it => Accepted::Held,
+            None => return Err("no live subscriber, hold full"),
+            Some(sub) => {
+                Self::check_budget(&mut delivered, &p_value)?;
+                let text = event_msg(&sub.sub_id, event).ok_or("delivery failed")?;
+                if sub.writer_tx.try_send(OutMsg::Text(text)).is_err() {
+                    return Err("delivery failed");
+                }
+                Self::count_delivery(&mut delivered, &p_value);
+                Accepted::Delivered
+            }
         };
 
-        // Attempt delivery.
-        if sub.writer_tx.try_send(OutMsg::Text(text)).is_ok() {
-            // Increment counter atomically (lock already held), refreshing the timestamp.
-            let entry = delivered
-                .entry(*p_value)
-                .or_insert((0, tokio::time::Instant::now()));
-            entry.0 += 1;
-            entry.1 = tokio::time::Instant::now();
-            Ok(true)
-        } else {
-            Ok(false)
+        if hold_it {
+            hold.by_p.entry(p_value).or_default().push(HeldEvent {
+                id,
+                event: event.clone(),
+            });
+            hold.total += 1;
+            let relay: Weak<Relay> = Arc::downgrade(self);
+            tokio::spawn(async move {
+                tokio::time::sleep(HOLD_TTL).await;
+                if let Some(relay) = relay.upgrade() {
+                    relay.hold.lock().remove(&p_value, &id);
+                }
+            });
         }
+        Ok(accepted)
+    }
+
+    /// Register `conn_id`'s subscription for `p_value`: send `EOSE`, replace any
+    /// subscription for the same `#p` on another connection, then replay the
+    /// hold for `p_value`. All under the subs lock, so no live event can land
+    /// between `EOSE` and the replay.
+    ///
+    /// `Err(Some(reason))` is a refusal for the client; `Err(None)` means the
+    /// connection's writer is full and the caller closes the connection.
+    fn subscribe(
+        &self,
+        conn_id: u64,
+        sub_id: &str,
+        p_value: [u8; 32],
+        writer_tx: &mpsc::Sender<OutMsg>,
+    ) -> Result<(), Option<&'static str>> {
+        let mut subs = self.subs.lock();
+        if subs.iter().any(|s| s.conn_id == conn_id) {
+            return Err(Some("error: already subscribed, send CLOSE first"));
+        }
+        // EOSE before registering, so the caller can back out with nothing changed.
+        if writer_tx.try_send(OutMsg::Text(make_eose(sub_id))).is_err() {
+            return Err(None);
+        }
+        if let Some(pos) = subs.iter().position(|s| s.p_value == p_value) {
+            let old = subs.swap_remove(pos);
+            let _ = old.writer_tx.try_send(OutMsg::Text(make_closed(
+                &old.sub_id,
+                "error: replaced by a newer subscription for this #p",
+            )));
+            eprintln!("sub replaced conn_id={} by conn_id={conn_id}", old.conn_id);
+        }
+        subs.push(Sub {
+            conn_id,
+            sub_id: sub_id.to_string(),
+            p_value,
+            writer_tx: writer_tx.clone(),
+        });
+
+        let mut delivered = self.delivered.lock();
+        let hold = self.hold.lock();
+        let Some(held) = hold.by_p.get(&p_value) else {
+            return Ok(());
+        };
+        let mut replayed = 0usize;
+        for h in held {
+            if Self::check_budget(&mut delivered, &p_value).is_err() {
+                break;
+            }
+            let Some(text) = event_msg(sub_id, &h.event) else {
+                continue;
+            };
+            // A full writer stops the replay; the events stay held for the next REQ.
+            if writer_tx.try_send(OutMsg::Text(text)).is_err() {
+                break;
+            }
+            Self::count_delivery(&mut delivered, &p_value);
+            replayed += 1;
+        }
+        eprintln!("sub replayed conn_id={conn_id} events={replayed}");
+        Ok(())
     }
 
     fn remove_sub(&self, conn_id: u64) {
@@ -722,13 +897,6 @@ async fn handle_conn(relay: Arc<Relay>, conn_id: u64, stream: WebSocketStream<To
                             )));
                             continue;
                         }
-                        if sub_id.is_some() {
-                            let _ = tx.try_send(OutMsg::Text(make_closed(
-                                &client_sub_id,
-                                "error: already subscribed, send CLOSE first",
-                            )));
-                            continue;
-                        }
                         let p_value = match validate_filter(&arr[2]) {
                             Ok(p) => p,
                             Err(reason) => {
@@ -739,31 +907,14 @@ async fn handle_conn(relay: Arc<Relay>, conn_id: u64, stream: WebSocketStream<To
                                 continue;
                             }
                         };
-                        // Atomically check #p uniqueness + register under one lock.
-                        // EOSE try_send happens inside the lock to prevent a
-                        // concurrent REQ from racing between check and push.
-                        {
-                            let mut subs = relay.subs.lock();
-                            if subs.iter().any(|s| s.p_value == p_value) {
-                                let _ = tx.try_send(OutMsg::Text(make_closed(
-                                    &client_sub_id,
-                                    "error: #p already has a live subscriber",
-                                )));
+                        match relay.subscribe(conn_id, &client_sub_id, p_value, &tx) {
+                            Ok(()) => {}
+                            Err(Some(reason)) => {
+                                let _ =
+                                    tx.try_send(OutMsg::Text(make_closed(&client_sub_id, reason)));
                                 continue;
                             }
-                            // Send EOSE before registering (still under lock).
-                            if tx
-                                .try_send(OutMsg::Text(make_eose(&client_sub_id)))
-                                .is_err()
-                            {
-                                break 'conn;
-                            }
-                            subs.push(Sub {
-                                conn_id,
-                                sub_id: client_sub_id.clone(),
-                                p_value,
-                                writer_tx: tx.clone(),
-                            });
+                            Err(None) => break 'conn,
                         }
                         sub_id = Some(client_sub_id);
                     }
@@ -828,24 +979,23 @@ async fn handle_conn(relay: Arc<Relay>, conn_id: u64, stream: WebSocketStream<To
                                     }
                                     Ok(false) => {} // reserved — proceed to delivery
                                 }
-                                // Tightening #2: atomically check subscriber and deliver.
-                                match relay.deliver_single(&p_value, &arr[1]) {
-                                    Ok(true) => {
+                                // Tightening #2: atomically check subscriber and deliver,
+                                // or hold for a subscriber that has not connected yet.
+                                match relay.accept_event(p_value, id_bytes, &arr[1]) {
+                                    Ok(Accepted::Delivered) => {
                                         // ID stays reserved (already in dedup vec).
                                         let _ =
                                             tx.try_send(OutMsg::Text(make_ok(&event_id, true, "")));
                                     }
-                                    Ok(false) => {
-                                        // Delivery failed — unreserve so ID can be retried.
-                                        relay.unreserve_id(&id_bytes);
+                                    Ok(Accepted::Held) => {
                                         let _ = tx.try_send(OutMsg::Text(make_ok(
                                             &event_id,
-                                            false,
-                                            "delivery failed",
+                                            true,
+                                            "held: no live subscriber",
                                         )));
                                     }
                                     Err(reason) => {
-                                        // Delivery rejected — unreserve so ID can be retried.
+                                        // Rejected — unreserve so ID can be retried.
                                         relay.unreserve_id(&id_bytes);
                                         let _ = tx.try_send(OutMsg::Text(make_ok(
                                             &event_id, false, reason,
@@ -1021,5 +1171,119 @@ pub async fn run_server(listener: TcpListener, relay: Arc<Relay>) {
                 eprintln!("http error: {e}");
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn key(n: usize) -> [u8; 32] {
+        let mut k = [0u8; 32];
+        k[..8].copy_from_slice(&(n as u64).to_le_bytes());
+        k
+    }
+
+    fn is_eose(msg: Result<OutMsg, mpsc::error::TryRecvError>) -> bool {
+        matches!(msg, Ok(OutMsg::Text(t)) if t.starts_with("[\"EOSE\""))
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn held_event_is_dropped_at_the_window() {
+        let relay = Arc::new(Relay::new());
+        let (p, id) = (key(1), key(2));
+        assert_eq!(
+            relay.accept_event(p, id, &json!({"n": 1})),
+            Ok(Accepted::Held)
+        );
+
+        tokio::time::sleep(HOLD_TTL - Duration::from_millis(1)).await;
+        assert_eq!(relay.hold.lock().total, 1, "dropped before the window");
+
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(relay.hold.lock().total, 0, "kept past the window");
+        assert!(relay.hold.lock().by_p.is_empty());
+
+        // A subscriber after the window gets EOSE and nothing else.
+        let (tx, mut rx) = mpsc::channel(CHANNEL_CAP);
+        relay.subscribe(1, "s", p, &tx).unwrap();
+        assert!(is_eose(rx.try_recv()));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn delivered_event_is_also_dropped_at_the_window() {
+        let relay = Arc::new(Relay::new());
+        let p = key(1);
+        let (tx, mut rx) = mpsc::channel(CHANNEL_CAP);
+        relay.subscribe(1, "s", p, &tx).unwrap();
+        assert!(is_eose(rx.try_recv()));
+
+        assert_eq!(
+            relay.accept_event(p, key(2), &json!({"n": 1})),
+            Ok(Accepted::Delivered)
+        );
+        assert_eq!(relay.hold.lock().total, 1);
+
+        tokio::time::sleep(HOLD_TTL + Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(relay.hold.lock().total, 0);
+    }
+
+    #[tokio::test]
+    async fn hold_is_capped_in_total() {
+        let relay = Arc::new(Relay::new());
+        let ev = json!({});
+        for i in 0..HOLD_TOTAL {
+            assert_eq!(
+                relay.accept_event(key(i), key(100_000 + i), &ev),
+                Ok(Accepted::Held)
+            );
+        }
+        let p = key(HOLD_TOTAL);
+        assert_eq!(
+            relay.accept_event(p, key(200_000), &ev),
+            Err("no live subscriber, hold full")
+        );
+
+        // A live subscriber still gets events while the hold is full; they
+        // just aren't held.
+        let (tx, mut rx) = mpsc::channel(CHANNEL_CAP);
+        relay.subscribe(1, "s", p, &tx).unwrap();
+        assert!(is_eose(rx.try_recv()));
+        assert_eq!(
+            relay.accept_event(p, key(200_001), &ev),
+            Ok(Accepted::Delivered)
+        );
+        assert!(rx.try_recv().is_ok());
+        assert_eq!(relay.hold.lock().total, HOLD_TOTAL);
+    }
+
+    #[tokio::test]
+    async fn replay_counts_against_the_delivery_budget() {
+        let relay = Arc::new(Relay::new());
+        let p = key(1);
+        for i in 0..3 {
+            assert_eq!(
+                relay.accept_event(p, key(10 + i), &json!({ "n": i })),
+                Ok(Accepted::Held)
+            );
+        }
+        // Four subscriptions replay 3 events each: 12, the per-#p budget.
+        for conn in 0..4u64 {
+            let (tx, mut rx) = mpsc::channel(CHANNEL_CAP);
+            relay.subscribe(conn, "s", p, &tx).unwrap();
+            assert!(is_eose(rx.try_recv()));
+            for _ in 0..3 {
+                assert!(rx.try_recv().is_ok(), "conn {conn} missed a replay");
+            }
+        }
+        // The fifth gets EOSE only.
+        let (tx, mut rx) = mpsc::channel(CHANNEL_CAP);
+        relay.subscribe(4, "s", p, &tx).unwrap();
+        assert!(is_eose(rx.try_recv()));
+        assert!(rx.try_recv().is_err());
     }
 }
