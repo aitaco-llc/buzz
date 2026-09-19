@@ -14,6 +14,7 @@ import '../../shared/crypto/nip44.dart';
 import '../../shared/relay/relay.dart';
 import '../../shared/security/sensitive_action_authorizer.dart';
 import 'pairing_crypto.dart';
+import 'pairing_link.dart';
 import 'pairing_socket.dart';
 
 /// HTTP client used by [PairingNotifier] for the validation request.
@@ -97,7 +98,7 @@ class PairingNotifier extends Notifier<PairingState> {
   final PairingCredentialValidator? _credentialValidator;
   final RelaySocketFactory _validationSocketFactory;
   RelaySocket? _validationSocket;
-  PairingSocket? _socket;
+  PairingLink? _socket;
   Timer? _sessionTimeout;
   Community? _identityExportCommunity;
   bool _identityExportBiometricOnly = false;
@@ -323,6 +324,14 @@ class PairingNotifier extends Notifier<PairingState> {
     state = const PairingState();
   }
 
+  /// The app left the foreground mid-session (for example, to confirm the
+  /// code in another app on this phone).
+  void appBackgrounded() => _socket?.appBackgrounded();
+
+  /// Back in the foreground: reconnect, re-subscribe, and let the pair relay
+  /// replay what it held for this session.
+  Future<void> appResumed() async => _socket?.appResumed();
+
   void _cleanup() {
     _pairingGeneration++;
     _validationSocket?.dispose();
@@ -390,14 +399,18 @@ class PairingNotifier extends Notifier<PairingState> {
         qr.sourcePubkey,
       );
 
-      // 4. Connect to relay with ephemeral keys.
-      final socket = _socketFactory(
+      // 4-5. Connect with ephemeral keys and subscribe for kind:24134
+      // events tagged to our ephemeral pubkey. The link reconnects and
+      // re-subscribes when the app returns to the foreground.
+      final socket = PairingLink(
+        socketFactory: _socketFactory,
         wsUrl: relayWsUrl,
         ephemeralPrivkey: _ephemeralPrivkey!,
-        onMessage: (message) {
-          if (generation == _pairingGeneration) _handleRelayMessage(message);
+        subscribePubkey: _ephemeralPubkey!,
+        onEvent: (event) {
+          if (generation == _pairingGeneration) _handlePairingEvent(event);
         },
-        onDisconnected: (error) {
+        onLost: (error) {
           if (generation == _pairingGeneration) _handleDisconnected(error);
         },
       );
@@ -408,9 +421,6 @@ class PairingNotifier extends Notifier<PairingState> {
       if (!socket.isConnected) {
         throw StateError('Pairing socket did not reach the connected state');
       }
-
-      // 5. Subscribe for kind:24134 events tagged to our ephemeral pubkey.
-      socket.subscribe('pair', 24134, _ephemeralPubkey!);
 
       // 6. Wait briefly for EOSE, then send offer.
       // (In practice, we send the offer immediately — the relay will buffer it.)
@@ -498,17 +508,6 @@ class PairingNotifier extends Notifier<PairingState> {
     }
     return 'Connection failed. Please check your internet connection '
         'and try again.';
-  }
-
-  void _handleRelayMessage(List<dynamic> data) {
-    if (data.isEmpty) return;
-    final type = data[0] as String;
-
-    if (type == 'EVENT' && data.length >= 3) {
-      final eventJson = data[2] as Map<String, dynamic>;
-      _handlePairingEvent(eventJson);
-    }
-    // Ignore EOSE, NOTICE, etc.
   }
 
   void _handlePairingEvent(Map<String, dynamic> eventJson) {
@@ -834,7 +833,7 @@ class PairingNotifier extends Notifier<PairingState> {
       createdAt: createdAt,
     );
 
-    _socket?.publishEvent(event.toMap());
+    _socket?.publish(event.toMap());
   }
 
   void _handleDisconnected(Object? error) {

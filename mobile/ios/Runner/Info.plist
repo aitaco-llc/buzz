@@ -36,6 +36,7 @@
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>buzz</string>
+				<string>co.aitaco.buzz</string>
 			</array>
 		</dict>
 	</array>

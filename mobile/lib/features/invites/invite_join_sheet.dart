@@ -5,7 +5,7 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../../shared/theme/theme.dart';
 import '../../shared/widgets/buzz_loading_indicator.dart';
 import '../../shared/widgets/modal_presentation.dart';
-import '../pairing/pairing_page.dart';
+import '../pairing/add_device_page.dart';
 import 'invite_join_provider.dart';
 
 Future<bool?> showInviteJoinSheet(BuildContext context) {
@@ -224,11 +224,11 @@ class _InviteJoinSuccess extends StatelessWidget {
                 Navigator.of(context).pop();
                 Navigator.of(context).push(
                   MaterialPageRoute<void>(
-                    builder: (_) => const PairingPage(addingCommunity: true),
+                    builder: (_) => const AddDevicePage(),
                   ),
                 );
               },
-              icon: const Icon(LucideIcons.scanLine),
+              icon: const Icon(LucideIcons.smartphone),
               label: const Text('Back it up now'),
             ),
             const SizedBox(height: Grid.xs),

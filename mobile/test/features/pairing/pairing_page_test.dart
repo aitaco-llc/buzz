@@ -99,10 +99,10 @@ void main() {
         tester.widget<Scaffold>(find.byType(Scaffold)).backgroundColor,
         Colors.transparent,
       );
-      expect(find.text('Confirm desktop code'), findsOneWidget);
+      expect(find.text('Confirm the code'), findsOneWidget);
       expect(
         find.text(
-          'Make sure the six-digit code matches on both devices. Your aitaco identity will transfer to this device. Only continue if you started this pairing from your desktop.',
+          'Make sure the six-digit code matches on both devices. Your aitaco identity will transfer to this device. Only continue if you started this pairing on your other device.',
         ),
         findsOneWidget,
       );
@@ -122,7 +122,7 @@ void main() {
       );
 
       expect(find.byType(AppBar), findsNothing);
-      expect(find.text('Pair with Desktop'), findsNothing);
+      expect(find.text('Sign in from another device'), findsNothing);
       expect(find.byIcon(LucideIcons.arrowLeft), findsNothing);
       expect(find.byKey(const Key('pairing-pop-scope')), findsOneWidget);
 
@@ -136,7 +136,7 @@ void main() {
       );
 
       expect(find.byType(AppBar), findsOneWidget);
-      expect(find.text('Pair with Desktop'), findsOneWidget);
+      expect(find.text('Sign in from another device'), findsOneWidget);
       expect(find.byIcon(LucideIcons.arrowLeft), findsOneWidget);
     });
 
@@ -443,10 +443,10 @@ void main() {
       );
 
       expect(find.byIcon(LucideIcons.shieldCheck), findsNothing);
-      expect(find.text('Confirm desktop code'), findsOneWidget);
+      expect(find.text('Confirm the code'), findsOneWidget);
       expect(
         find.text(
-          'Make sure the six-digit code matches on both devices. Your aitaco identity will transfer to this device. Only continue if you started this pairing from your desktop.',
+          'Make sure the six-digit code matches on both devices. Your aitaco identity will transfer to this device. Only continue if you started this pairing on your other device.',
         ),
         findsOneWidget,
       );
@@ -547,7 +547,7 @@ void main() {
       expect(tester.getSize(cancelFinder).height, 48);
       expect(
         find.textContaining(
-          'Only continue if you started this pairing from your desktop.',
+          'Only continue if you started this pairing on your other device.',
         ),
         findsOneWidget,
       );
@@ -617,7 +617,7 @@ void main() {
       );
       await tester.pump();
       expect(tester.takeException(), isNull);
-      expect(find.text('Confirm desktop code'), findsOneWidget);
+      expect(find.text('Confirm the code'), findsOneWidget);
       expect(find.textContaining('matches on both devices'), findsOneWidget);
       expect(
         find.textContaining('aitaco identity will transfer'),
@@ -672,6 +672,12 @@ class _ErrorPairingNotifier extends Notifier<PairingState>
 
   @override
   void denySas() {}
+
+  @override
+  void appBackgrounded() {}
+
+  @override
+  Future<void> appResumed() async {}
 }
 
 class _ConnectingPairingNotifier extends Notifier<PairingState>
@@ -697,6 +703,12 @@ class _ConnectingPairingNotifier extends Notifier<PairingState>
 
   @override
   void denySas() {}
+
+  @override
+  void appBackgrounded() {}
+
+  @override
+  Future<void> appResumed() async {}
 }
 
 class _RecordingPairingNotifier extends Notifier<PairingState>
@@ -724,6 +736,12 @@ class _RecordingPairingNotifier extends Notifier<PairingState>
 
   @override
   void denySas() {}
+
+  @override
+  void appBackgrounded() {}
+
+  @override
+  Future<void> appResumed() async {}
 }
 
 class _ConfirmingSasPairingNotifier extends Notifier<PairingState>
@@ -763,4 +781,10 @@ class _ConfirmingSasPairingNotifier extends Notifier<PairingState>
 
   @override
   void denySas() => denied = true;
+
+  @override
+  void appBackgrounded() {}
+
+  @override
+  Future<void> appResumed() async {}
 }
