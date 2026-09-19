@@ -205,6 +205,15 @@ bz owner messages send --channel "${CHANNEL}" --reply-to "${SOURCE_ROOT}" \
 put nonce "${NONCE}"
 put lookup "${LOOKUP}"
 sha256sum "${NATIVE_BIN}" > "${RUN_DIR}/native_binary"
+# With PROOF_REBRAND_ACP_BIN set, NATIVE_BIN is the acp/ host and the loop runs in rebrand-acp.
+REBRAND_ACP_BIN="${PROOF_REBRAND_ACP_BIN:-}"
+REBRAND_ACP_ARGS="${PROOF_REBRAND_ACP_ARGS:-}"
+if [[ -n "${REBRAND_ACP_BIN}" ]]; then
+  need "${REBRAND_ACP_BIN}"
+  put rebrand_acp_version "$("${REBRAND_ACP_BIN}" --version 2>&1 | head -1)"
+  put rebrand_acp_sha256 "$(sha256sum "${REBRAND_ACP_BIN}" | cut -d' ' -f1)"
+  put rebrand_acp_args "${REBRAND_ACP_ARGS}"
+fi
 env -i HOME="${HOME}" USER="${USER}" PATH="${BIN_DIR}:/usr/bin:/bin" NO_COLOR=1 \
   BUZZ_RELAY_URL="ws://localhost:${RELAY_PORT}" \
   BUZZ_PRIVATE_KEY="$(cat "${STATE}/keys/seat.sec")" \
@@ -217,6 +226,7 @@ env -i HOME="${HOME}" USER="${USER}" PATH="${BIN_DIR}:/usr/bin:/bin" NO_COLOR=1 
   BUZZ_ACP_IDLE_TIMEOUT="${TIMEOUT_S}" \
   BUZZ_ACP_MAX_TURN_DURATION="$(( TIMEOUT_S * 2 ))" \
   REBRAND_ENDPOINT="${BACKEND}" REBRAND_MODEL_ID="${MODEL_ID}" \
+  PROOF_REBRAND_ACP_BIN="${REBRAND_ACP_BIN}" PROOF_REBRAND_ACP_ARGS="${REBRAND_ACP_ARGS}" \
   PROOF_CHANNEL="${CHANNEL}" PROOF_QUESTION="${QUESTION}" \
   PROOF_TRIGGER_FILE="${RUN_DIR}/trigger_id" PROOF_NATIVE_RESULT="${RUN_DIR}/native.json" \
   RUST_LOG=buzz_acp=info \
@@ -265,4 +275,5 @@ done
 kill -TERM "${PIDS[-1]}" 2>/dev/null || true   # the seat: flushes the turn log on exit
 sleep 4
 
-python3 "${HERE}/native/summarize.py" --run-dir "${RUN_DIR}" --seat "${SEAT_PUB}" --results "${RESULTS}"
+python3 "${HERE}/native/summarize.py" --run-dir "${RUN_DIR}" --seat "${SEAT_PUB}" --results "${RESULTS}" \
+  --loop "$([[ -n "${REBRAND_ACP_BIN}" ]] && echo rebrand-acp || echo rebrand-of-agent)"

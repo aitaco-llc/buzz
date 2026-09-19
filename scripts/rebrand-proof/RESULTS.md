@@ -65,3 +65,53 @@ separation, durable publication reconciliation, membership changes, model-servic
 resource limits, packaging, and broad retrieval evaluation remain unproven.
 The signed outgoing event is saved before publication, but there is no automatic
 restart reconciliation. Codex and Claude runtime paths are unchanged.
+
+## Through `rebrand-acp`, on qwen3-8b with thinking on: 0 of 10 greedy, 3 of 10 at temperature 0.7
+
+2026-09-19, hip. Rebrand `31fc194` release builds with `--features hip`
+(`rebrand` sha256 `a58a0b70…`, `rebrand-acp` `fab95224…`, reporting
+`0.3.25+31fc194cdafa`), model `qwen3-8b-q4_k_m.gguf` sha256 `b7185b73…11d1cf`,
+`serve --max-seq-len 32768`, `rebrand-acp --max-tokens 8192`, thinking on
+(nothing on this path sends `reasoning_effort`, and serve's default for qwen3 is
+on). Two batches of ten, differing only in `--temperature`:
+
+| batch | temperature | passes | failures |
+|---|---|---|---|
+| A | 0.0 (rebrand-acp's default) | **0/10** | 9 the answer's shape, 1 the model |
+| B | 0.7 (serve's own default) | **3/10** | 2 the answer's shape, 3 the model, 2 an empty citation list refused by rebrand-acp |
+
+**Retrieval is not what failed.** Every run reached `rebrand serve`, and the
+loop, the MCP tools and the narrowing behaved as designed: `tools/list` offered
+`search_messages`, then `read_thread` with the found IDs as an `enum`, then
+nothing, and the answering turn carried the schema. The host published nothing
+in any of the 17 failures. A pass costs 20–45 s in the loop, 1.4–1.5k input and
+0.2–0.3k output tokens with 1.8–4.0k thinking tokens, and about 6.7 GB of VRAM
+over idle (1,651 → 8,403 MiB) at 32,768 sequence length; `rebrand serve` was
+ready in 1.0 s.
+
+**The answer's shape: a serve-side constraint failure, not the model.** With the
+schema in force the final string of `source_ids` never closes. The model writes
+`'` where `"` belongs, so `']}` becomes string content, and the document runs on
+until the grammar can close it:
+
+```json
+{"answer": "SOLVED-a0d7064c47bd", "source_ids": ["29885087…24f1cf']}{"
+  , "source_ids"
+  , "answer"
+  , "SOLVED-a0d7064c47bd"
+  , "29885087…24f1cf"
+  ]}
+```
+
+That is schema-valid JSON, so `rebrand-acp` returns `end_turn`, and the host
+refuses it: the citation is not an ID any `read_thread` returned. `grammar_repro.py`
+reduces it to one request — three conditions, all needed: thinking on, an array
+of strings in the schema, and greedy sampling. With `reasoning_effort: "none"`,
+or with no array in the schema, or unconstrained, the same request answers
+correctly and stops. Serve's own documentation of that transition is at
+`crates/rebrand/src/ml/serve.rs:6-19`; the constraint is built at `:289` and `:566`.
+
+**The model's own failures** are qwen3-8b not using the narrowed tool: it reads
+the `enum` as a list of candidate answers and replies that "the incident ID does
+not match any available event IDs", instead of calling `read_thread` with the one
+ID search returned. A tool description that says so explicitly is Stage 2 work.
