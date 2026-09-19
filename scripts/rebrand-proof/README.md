@@ -1,104 +1,111 @@
-# Rebrand-powered seat: end-to-end proof
+# Rebrand retrieval proof
 
-Goal: **one Buzz seat, running on a local model served by Rebrand, answers one
-mention.** It is the smallest proof that a seat can run on our own GPU instead
-of Claude. The design is in `~/.buzz/RESEARCH/BUZZ_VS_REBRAND.md` §c.
+This proof runs the real Rebrand `of-agent` loop through Buzz's existing ACP
+harness, against a real locally served model and an isolated local relay.
 
+```text
+mention → buzz-acp → native ACP worker → Rebrand of-agent → rebrand serve
+                              │
+                              ├─ search_messages → signed, channel-scoped /query
+                              ├─ read_thread     → signed, channel-scoped /query
+                              └─ validated answer → host-signed threaded /events
 ```
-owner ──mention──> local relay ──> buzz-acp ──ACP──> buzz-agent ──> llm_proxy.py ──> backend
-                         ^                              │                           (stub | Ollama | rebrand serve)
-                         └──── reply ── buzz CLI <── buzz-dev-mcp (shell tool)
-```
 
-No new adapter is involved. `buzz-agent` is already an ACP agent that speaks
-OpenAI chat completions with tools, and `rebrand serve` (single-model mode)
-accepts every field it sends.
+The model has exactly two read tools. The host publishes the final answer after
+checking its schema and citations. No `buzz-agent`, developer MCP server, shell
+tool, provider selection UI, or model-controlled publication is involved.
+Codex and Claude are unaffected and keep their native connections.
 
-## Run
+## Build and test
+
+Rebrand is private source. The proof builds outside the OSS Cargo workspace.
+The build helper resolves the two Rebrand crate manifests against the supplied
+checkout, without changing that checkout or downloading from its private registry.
+It does not copy or implement Rebrand's loop.
 
 ```bash
-# GPU-free. Proves the whole Buzz side against a strict stand-in for Rebrand.
-scripts/rebrand-proof/run.sh stub
-
-# Uses the GPU. Only when the GPU is scheduled for it.
-OLLAMA_MODEL=qwen3-8b-q4km:latest scripts/rebrand-proof/run.sh ollama   # control
-REBRAND_BIN=/path/to/rebrand REBRAND_MODEL=/path/to/model.gguf \
-  scripts/rebrand-proof/run.sh rebrand                                   # the proof
+. ./bin/activate-hermit
+export REBRAND_SOURCE=/home/lth/dev/rebrand
+export NATIVE_BUILD_DIR=/tmp/buzz-rebrand-native-build
+python3 scripts/rebrand-proof/native/build.py build
+export PROOF_NATIVE_BIN="$NATIVE_BUILD_DIR/target/debug/buzz-rebrand-proof"
+python3 scripts/rebrand-proof/native/build.py test
+python3 scripts/rebrand-proof/native/test_protocol.py -v
 ```
 
-Each run does the following:
+The protocol tests launch that actual binary and Rebrand loop against controlled
+HTTP responses. They cover normal ACP execution, cancellation, forged citations,
+cross-channel data, a model error carried inside HTTP 200, one recoverable empty
+turn, and repeated empty completion. Failed/cancelled
+runs must publish nothing. The fake server is only for these failure tests;
+it cannot establish real-model quality.
 
-- In `ollama` and `rebrand` mode, refuses to start (exit 75) if the card's VRAM in use is above `PROOF_VRAM_IDLE_MAX_MIB`. The card is shared, and this keeps a run from starting on top of someone else's.
-- Starts its own Postgres, Redis and MinIO containers (`rebrand-proof-*`) and its own relay on `localhost:3950`. MinIO keeps its data in RAM and is recreated every run, because MinIO refuses every write once its disk is 99% full.
-- Admits the throwaway seat with `buzz relay members add`, the way `agentctl add-seat` does.
-- Starts the backend and the recording proxy, then the seat, using the installed fleet binaries from `~/.local/bin`.
-- Runs the seat in its own empty directory, `<run dir>/seat-cwd`, whatever directory you start the script from. The agent's shell tools work there, and its hint loader reads `AGENTS.md` from there and from `~`. So the prompt contains no hints unless you set `PROOF_SEAT_AGENTS_MD`.
-- Sends one top-level mention: "@probe Reply in this thread with exactly: PONG-<nonce>".
-- Waits for the reply, then tears everything down and appends one JSON line to `results.jsonl`.
+## Run against a real model
 
-All state lives in `$PROOF_STATE`, which defaults to `$BUZZ_AGENT_SCRATCH/rebrand-proof`. The script never touches `wss://buzz.aitaco.co`.
+Use an available GPU time slot. The script starts only its own processes and
+named Docker containers; do not point it at a production relay.
 
-Set `CARGO_TARGET_DIR` (or `PROOF_RELAY_BIN` and `PROOF_ADMIN_BIN`) when the relay binaries were built outside this checkout.
+```bash
+PROOF_NATIVE_BIN="$NATIVE_BUILD_DIR/target/debug/buzz-rebrand-proof" \
+PROOF_RELAY_BIN=/home/lth/dev/buzz/target/debug/buzz-relay \
+PROOF_ADMIN_BIN=/home/lth/dev/buzz/target/debug/buzz-admin \
+REBRAND_BIN=/home/lth/dev/rebrand/target/release/rebrand \
+REBRAND_MODEL=/data/rebrand-cdn/llm/qwen2.5-3b-instruct-q4_k_m.gguf \
+REBRAND_PORT=18077 \
+  bash scripts/rebrand-proof/run.sh
+```
 
-The main knobs:
+`PROOF_BIN_DIR` supplies `buzz` and `buzz-acp` (default `~/.local/bin`). The
+proof records their hashes; it does not imply these installed binaries match
+this checkout. The native worker is built from source as above. Rebrand engine
+version and model path are recorded separately from the loop library source.
 
-| setting | default |
-|---|---|
-| `PROOF_MAX_SEQ_LEN` | 32768 (passed to `rebrand serve --max-seq-len` and to `BUZZ_AGENT_MAX_CONTEXT_TOKENS`) |
-| `PROOF_MAX_OUTPUT_TOKENS` | 2048 |
-| `PROOF_MAX_ROUNDS` | 8 |
-| `PROOF_TIMEOUT_S` | 900 |
-| `REBRAND_EXTRA_ARGS` | none (e.g. `--max-batch-size 1`) |
-| `PROOF_SEAT_AGENTS_MD` | none. A file to copy in as the seat's `AGENTS.md`, e.g. `~/.buzz/AGENTS.md` to match a fleet seat's prompt |
-| `PROOF_VRAM_IDLE_MAX_MIB` | 3500. hip's idle baseline is about 1.7–3.3 GB |
+The script uses Postgres, Redis and MinIO containers with the prefix
+`rebrand-native-proof`; state defaults to `/tmp/rebrand-native-proof`. Override
+`PROOF_CONTAINER_PREFIX` and `PROOF_STATE` together for a fresh isolated run.
+Ports default to relay 3967, Postgres 55467, Redis 56367, MinIO 59067, health
+18067 and metrics 19167. Each has a `PROOF_*_PORT` override. Stop is automatic;
+containers and state are retained for inspection. Never reuse another task's
+prefix or state directory.
 
-## What it records
+## What constitutes a pass
 
-One line per run, written by `summarize.py`. The field meanings are in its docstring.
+The host seeds a random incident identifier in a heading and a different random
+recovery code in a reply. The question contains only the incident identifier.
+The recovery reply deliberately does not contain the search identifier, so the
+model must search for the heading and read its thread to learn the answer.
+The trigger itself is excluded from retrieval results.
 
-| group | fields |
-|---|---|
-| verdict | `pass`, which requires all four: the reply carries the nonce, it is threaded under the mention, it came from the seat, and the turn outcome is `ok`. Also `reply_threaded`, `turn_outcome`, `reply_text` |
-| latency | `mention_to_reply_s`, `mention_to_turn_start_s`, `turn_s`; `llm_s_first` (cold prefill of the whole system prompt), `llm_s_total`, `llm_s_max`; `serve_ready_s` (rebrand only) |
-| size | `llm_calls`, `tool_calls`, `prompt_tokens_first` and `prompt_tokens_max` (as the backend reports them), `completion_tokens_total`, `prompt_chars_first`, `request_bytes_max` |
-| contract | `unknown_fields` (request fields Rebrand would reject), `http_errors`, `finish_reasons` |
-| GPU | `vram_baseline_mib`, `vram_peak_mib` (amdgpu sysfs, sampled at 1 Hz) |
-| thinking | `reasoning_chars_total` (characters returned as `reasoning_content`, or as `reasoning` from Ollama) |
-| provenance | `mode`, `model_id`, `model_path`, `model_bytes`, `model_sha256`, `backend_version`, `backend_sha256` (rebrand), `backend_context_len` (the context Ollama actually loaded, or rebrand's `--max-seq-len`), `max_seq_len`, `max_output_tokens`, the sha256 of each seat binary, `repo_commit` |
+All checks must pass:
 
-In `ollama` mode the model's path, bytes and sha256 come from the Ollama blob behind the tag, and the kit unloads the model when the run ends, unless it was already loaded when the run started. On hip, `qwen3-8b-q4km` is blob `sha256-b7185b73…11d1cf`. That is the same file as `/data/rebrand-cdn/llm/qwen3-8b-q4_k_m.gguf`, so the control and a Rebrand run on that file serve byte-identical weights.
-| prompt inputs | `seat_cwd`; `hint_agents_md` (each `AGENTS.md` the hint loader reads, with its bytes); `hint_bytes`; `hint_skill_files` |
+- The signed reply comes from the test agent and replies to the triggering event.
+- Its answer contains the recovery code and a link to the exact resolution event.
+- The resolution event was returned by the completed thread reader.
+- The real Rebrand loop ran, both read operations occurred, the relay accepted
+  publication, and the Buzz harness recorded a successful turn.
 
-Everything else stays in the run directory:
+`native.json` records model calls, token usage, duration and retrieved sources.
+`native.json.event.json` preserves the signed outgoing event before publication.
+`seat.log` contains actual tool calls and results. The harness turn log captures
+ACP traffic; `results.jsonl` stores the pass/fail verdict. See `RESULTS.md` for
+measured runs and the failures that shaped the final proof.
 
-- `llm_calls.jsonl`: one line per model call
-- `turnlog/`: the harness turn log, which holds the exact prompt and tool calls
-- `seat.log`, `backend.log`, `relay.log`, `vram.tsv`
+## Deliberate scope
 
-## Stub baseline (2026-09-18)
+This is a one-turn, fixed-channel proof worker, not a supported production runtime.
+Its host owns the signing key and tools inside one trusted process. It only
+accepts the configured fixture question from the ACP prompt. This avoids
+mistaking text extracted from a general coding prompt for trusted channel or
+reply authority. General request binding, multiple sessions, broker separation,
+publication reconciliation after restart, membership-revocation races, model
+service resource limits and desktop packaging remain implementation work.
 
-A `run.sh stub` run with fleet `buzz-acp` `e1750044`, `buzz-agent` `461635ba` and `buzz-dev-mcp` `a3f19606`:
+The two tools are exposed progressively using Rebrand's existing `ToolProvider`:
+search first, read a retrieved thread next, then produce structured answer text.
+This prevents a small model guessing future event IDs or requiring an artificial
+completion tool. Host validation accepts normal tool-free completion only after
+checking the answer and sources; truncation and exhaustion are failures.
 
-- **Verdict:** `pass: true`. The reply was threaded under the mention and the turn outcome was `ok`.
-- **Calls:** 2 LLM calls (a tool call, then `stop`) and 1 shell tool call.
-- **Contract:** `unknown_fields: []` and no HTTP errors. So `buzz-agent`'s request is valid under Rebrand's `deny_unknown_fields` request struct (`rebrand_schema.py`).
-- **Request size (2026-09-19, seat in its own directory):** the first request had 2 messages and 6 tools. The two cases:
-
-  | seat hints | run | prompt characters | request size | ≈ tokens at 4 chars per token |
-  |---|---|---|---|---|
-  | none (the default) | `20260919T004452Z-stub` | 20,531 | 26.9 KB | 5.1k |
-  | the nest's `AGENTS.md`, 3,659 bytes (`PROOF_SEAT_AGENTS_MD`) | `20260919T004516Z-stub` | 24,209 | 30.7 KB | 6.1k |
-
-  Both are too big for `rebrand serve`'s default `--max-seq-len 4096`. The token figures are the stub's estimate (`stub_llm.py:50`), not a tokenizer's count.
-- **Superseded:** the 2026-09-18 figure of 25,293 characters came from a seat that ran in the caller's directory, which was the nest. So the nest's `AGENTS.md` was in the prompt by accident.
-
-## Open questions for Rebrand (for neil, when the GPU is scheduled)
-
-1. **Build and model:** which `rebrand` build and which model and quantization to serve on HIP for a tool-calling chat seat.
-   - On disk as GGUF: `~/.bernard/models/qwen2.5-3b-instruct-q4_k_m.gguf` and `~/.abracade/models/gemma-4-e2b-it-q4_k_m.gguf`.
-   - Only as safetensors under `~/.cache/rebrand/hf-cache`: gemma-4-12B-it, Qwen3.8-27B, Muse-Glimmer-30B.
-   - The `rebrand` binary at `~/dev/rebrand/target/release` is 0.3.17, built 2026-09-06.
-2. **Serve flags:** anything besides `--max-seq-len 32768` that serve needs for this workload.
-3. **Later, only if the proof works:**
-   - prefix-cache reuse on HIP (each tool round re-prefills the whole transcript today)
-   - a non-2xx status for request-level errors (today `finish_reason: "error"` comes back with HTTP 200)
+The earlier general-agent PONG proof is preserved in git history at `94906e814`.
+It established a different path: Buzz's own loop plus a shell tool. The supported
+proof entry point here tests the replacement loop directly.
