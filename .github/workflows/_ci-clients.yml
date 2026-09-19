@@ -135,6 +135,11 @@ jobs:
         run: swift build -c release --package-path mobile/ios/BuzzPushKit
       - name: Test
         run: swift test --package-path mobile/ios/BuzzPushKit
+      # swift-secp256k1 >= 0.22 ships the SwiftPM build-tool plugin
+      # SharedSourcesPlugin, and xcodebuild refuses untrusted plugins. Trust
+      # them on this ephemeral runner (the key's misspelling is Apple's).
+      - name: Trust SwiftPM build-tool plugins
+        run: defaults write com.apple.dt.Xcode IDESkipPackagePluginFingerprintValidatation -bool YES
       - name: Build complete iOS simulator app
         run: cd mobile && flutter build ios --simulator --debug --no-pub
       - name: Build complete unsigned iOS release
