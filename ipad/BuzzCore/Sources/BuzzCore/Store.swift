@@ -258,6 +258,7 @@ public actor Outbox {
   private let store: LocalStore
   private let relay: any RelayTransport
   private var sending = false
+  private var rerun = false
 
   /// Binds one community store to its matching authenticated transport.
   public init(store: LocalStore, relay: any RelayTransport) {
@@ -266,20 +267,35 @@ public actor Outbox {
   }
 
   /// Attempts each queued action once. Call on explicit retry or a later successful reconnect.
+  ///
+  /// A failed action keeps its error and stays queued, but does not hold back
+  /// the actions after it: a relay that permanently rejects one event must not
+  /// stall every later send. The first error is rethrown once all were tried.
+  /// A flush requested while one is running runs again afterwards, so an
+  /// action queued mid-flush is not left waiting for the next retry.
   public func flush() async throws {
-    guard !sending else { return }
+    guard !sending else {
+      rerun = true
+      return
+    }
     sending = true
     defer { sending = false }
-    let snapshot = await store.intentSnapshot()
-    for action in snapshot.pending {
-      try Task.checkCancellation()
-      do {
-        try await relay.publish(action.event)
-      } catch {
-        try await store.recordFailure(id: action.id, message: error.localizedDescription)
-        throw error
+    var firstError: (any Error)?
+    repeat {
+      rerun = false
+      let snapshot = await store.intentSnapshot()
+      for action in snapshot.pending {
+        try Task.checkCancellation()
+        do {
+          try await relay.publish(action.event)
+        } catch {
+          try await store.recordFailure(id: action.id, message: error.localizedDescription)
+          firstError = firstError ?? error
+          continue
+        }
+        try await store.acknowledge(action.event)
       }
-      try await store.acknowledge(action.event)
-    }
+    } while rerun
+    if let firstError { throw firstError }
   }
 }

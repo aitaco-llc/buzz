@@ -56,31 +56,13 @@ struct HuddleView: View {
           }
           .buttonStyle(.borderedProminent).disabled(busy)
         } else {
-          Text("Start a huddle in \(workspace.channelName(channel))")
+          // Starting is hidden until the iPad creates the huddle's private
+          // ephemeral backing stream first. Without it the relay rejects the
+          // start event (crates/buzz-relay/src/handlers/ingest.rs).
+          Text("No huddle in \(workspace.channelName(channel))")
             .font(.title2.weight(.semibold)).multilineTextAlignment(.center)
-          Text(
-            "Starting publishes a signed lifecycle event. Microphone admission is unavailable until the room transport connects."
-          )
-          .multilineTextAlignment(.center).foregroundStyle(.secondary)
-          Button("Start huddle", systemImage: "phone.fill") {
-            busy = true
-            Task {
-              guard let started = await workspace.startHuddle(in: channel) else {
-                busy = false
-                return
-              }
-              session = started
-              let nextTransport = NativeHuddleTransport(workspace: workspace, session: started)
-              transport = nextTransport
-              do {
-                try await nextTransport.connectAndStartAudio()
-              } catch {
-                _ = await workspace.endHuddle(started)
-              }
-              busy = false
-            }
-          }
-          .buttonStyle(.borderedProminent).disabled(busy)
+          Text("Start a huddle from your phone or desktop, then join it here.")
+            .multilineTextAlignment(.center).foregroundStyle(.secondary)
         }
       }
       .padding(32).frame(maxWidth: 560)
