@@ -1,0 +1,42 @@
+{
+  "pass": true,
+  "checks": {
+    "correct_author": true,
+    "retrieved_secret": true,
+    "cited_source": true,
+    "threaded": true,
+    "source_read_from_thread": true,
+    "actual_rebrand_loop": true,
+    "both_read_tools": true,
+    "accepted": true,
+    "turn_completed": true
+  },
+  "run_dir": "/tmp/buzz-native-strict-proof/runs/20260919T003828Z-rebrand",
+  "model": "qwen2",
+  "backend_version": "rebrand 0.3.17",
+  "native_binary": "fa9c9557d0a226dc626f7add0108f1986318cbba9ce98d745757c0687b62e9a2  /tmp/buzz-rebrand-native-build/target/debug/buzz-rebrand-proof",
+  "run": {
+    "loop": "rebrand-of-agent",
+    "iterations": 3,
+    "usage": {
+      "input_tokens": 1502,
+      "output_tokens": 297,
+      "reasoning_tokens": 0,
+      "cached_tokens": 0
+    },
+    "reads": [
+      "search_messages",
+      "read_thread"
+    ],
+    "source_ids": [
+      "93e888829465209d8450b401d796beee3bf37978735cda8b8657eb1a393de5dd",
+      "0771ed95aee1830822dbb8045d4a3e9e682de3cc091fac207ad3ade49eb0132a"
+    ],
+    "thread_source_ids": [
+      "93e888829465209d8450b401d796beee3bf37978735cda8b8657eb1a393de5dd",
+      "0771ed95aee1830822dbb8045d4a3e9e682de3cc091fac207ad3ade49eb0132a"
+    ],
+    "duration_ms": 2038
+  },
+  "reply": "SOLVED-9a581ddeed90\n\nSources:\nbuzz://message?channel=42e413aa-718a-4e6e-b580-d1e53e41ea6c&id=0771ed95aee1830822dbb8045d4a3e9e682de3cc091fac207ad3ade49eb0132a\nbuzz://message?channel=42e413aa-718a-4e6e-b580-d1e53e41ea6c&id=93e888829465209d8450b401d796beee3bf37978735cda8b8657eb1a393de5dd"
+}
