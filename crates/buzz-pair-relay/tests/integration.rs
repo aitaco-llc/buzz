@@ -198,38 +198,33 @@ async fn subscribe(ws: &mut WS, sub_id: &str, p_hex: &str) {
     assert_eq!(eose[1], sub_id);
 }
 
-/// 1. No replay: events published before a subscription are not delivered.
-///    With tightening #2, publishing with no live subscriber is rejected
-///    ("no live subscriber"), so the publisher gets OK false.
+/// 1. Hold: an event published before its subscriber connects is held, and
+///    the subscriber gets it right after EOSE.
 #[tokio::test]
-async fn test_no_replay() {
+async fn test_event_before_subscriber_is_held() {
     let url = start_relay().await;
     let (sk, pk) = gen_keypair();
 
-    // Publish first — no subscriber yet, so relay rejects with "no live subscriber".
+    // Publish first — no subscriber yet, so the relay holds it.
     let mut pub_ws = connect(&url).await;
-    send(
-        &mut pub_ws,
-        &json!(["EVENT", make_signed_event(&sk, &pk, P_A, 0)]),
-    )
-    .await;
+    let ev = make_signed_event(&sk, &pk, P_A, 0);
+    send(&mut pub_ws, &json!(["EVENT", ev])).await;
     let ok = recv(&mut pub_ws).await;
     assert_eq!(ok[0], "OK");
-    assert_eq!(ok[2], false, "expected rejection with no live subscriber");
-    assert!(
-        ok[3].as_str().unwrap_or("").contains("no live subscriber"),
-        "unexpected message: {}",
-        ok[3]
-    );
+    assert_eq!(ok[1], ev["id"]);
+    assert_eq!(ok[2], true, "expected the event to be held: {}", ok[3]);
+    assert_eq!(ok[3], "held: no live subscriber");
 
-    // Subscribe — should only get EOSE, no EVENT.
+    // Subscribe — EOSE, then the held event.
     let mut sub_ws = connect(&url).await;
-    send(&mut sub_ws, &json!(["REQ", "s1", {"#p": [P_A]}])).await;
-    let first = recv(&mut sub_ws).await;
-    assert_eq!(first[0], "EOSE", "expected EOSE, got {first}");
+    subscribe(&mut sub_ws, "s1", P_A).await;
+    let ev_msg = recv(&mut sub_ws).await;
+    assert_eq!(ev_msg[0], "EVENT");
+    assert_eq!(ev_msg[1], "s1");
+    assert_eq!(ev_msg[2], ev);
     assert!(
         try_recv(&mut sub_ws).await.is_none(),
-        "received unexpected message after EOSE"
+        "received unexpected message after the held event"
     );
 }
 
@@ -259,7 +254,7 @@ async fn test_live_delivery() {
     assert_eq!(ev_msg[0], "EVENT");
     assert_eq!(ev_msg[1], "s1");
 
-    // Publish to a different p-tag — no subscriber for P_B, so OK false.
+    // Publish to a different p-tag — no subscriber for P_B, so it is held.
     send(
         &mut pub_ws,
         &json!(["EVENT", make_signed_event(&sk, &pk, P_B, 1)]),
@@ -267,7 +262,7 @@ async fn test_live_delivery() {
     .await;
     let ok2 = recv(&mut pub_ws).await;
     assert_eq!(ok2[0], "OK");
-    assert_eq!(ok2[2], false, "expected rejection for unsubscribed p-tag");
+    assert_eq!(ok2[3], "held: no live subscriber");
 
     assert!(
         try_recv(&mut sub_ws).await.is_none(),
@@ -742,7 +737,7 @@ async fn test_close_removes_sub() {
     // Give the relay a moment to process the CLOSE.
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Publish a matching event — no subscriber, so OK false.
+    // Publish a matching event — no subscriber, so it is held.
     let mut pub_ws = connect(&url).await;
     send(
         &mut pub_ws,
@@ -751,8 +746,8 @@ async fn test_close_removes_sub() {
     .await;
     let ok = recv(&mut pub_ws).await;
     assert_eq!(ok[0], "OK");
-    // No subscriber after CLOSE, so event is rejected.
-    assert_eq!(ok[2], false);
+    // No subscriber after CLOSE, so the event is held, not delivered.
+    assert_eq!(ok[3], "held: no live subscriber");
 
     // Original subscriber must not receive anything.
     assert!(
@@ -844,7 +839,7 @@ async fn test_no_events_after_close() {
         &json!(["EVENT", make_signed_event(&sk, &pk, P_A, 0)]),
     )
     .await;
-    recv(&mut pub_ws).await; // consume OK (will be false — no subscriber)
+    recv(&mut pub_ws).await; // consume OK (held — no subscriber)
 
     assert!(
         try_recv(&mut ws).await.is_none(),
@@ -1067,14 +1062,14 @@ async fn test_no_client_data_in_logs() {
     // The connection may or may not still be open.
 }
 
-/// 38. EOSE arrives before any EVENT in normal flow.
-///     Publishing with no live subscriber is rejected (tightening #2).
+/// 38. EOSE arrives before any EVENT, held events included. Clients that wait
+///     for EOSE discard what comes before it (Desktop's `wait_for_eose`).
 #[tokio::test]
 async fn test_eose_try_send_failure() {
     let url = start_relay().await;
     let (sk, pk) = gen_keypair();
 
-    // Publisher sends an event before the subscriber connects — rejected.
+    // Publisher sends an event before the subscriber connects — held.
     let mut pub_ws = connect(&url).await;
     send(
         &mut pub_ws,
@@ -1083,19 +1078,17 @@ async fn test_eose_try_send_failure() {
     .await;
     let ok = recv(&mut pub_ws).await;
     assert_eq!(ok[0], "OK");
-    assert_eq!(ok[2], false, "expected rejection with no live subscriber");
+    assert_eq!(ok[2], true, "expected the event to be held: {}", ok[3]);
 
-    // Subscriber connects after the event — should see EOSE first (no EVENT,
-    // since there is no persistence).
+    // Subscriber connects after the event — EOSE first, then the held EVENT.
     let mut sub_ws = connect(&url).await;
     send(&mut sub_ws, &json!(["REQ", "s1", {"#p": [P_A]}])).await;
     let first = recv(&mut sub_ws).await;
     assert_eq!(first[0], "EOSE", "first message must be EOSE, got {first}");
-
-    // No further messages (no stored events).
-    assert!(
-        try_recv(&mut sub_ws).await.is_none(),
-        "received unexpected message after EOSE"
+    let second = recv(&mut sub_ws).await;
+    assert_eq!(
+        second[0], "EVENT",
+        "held event must follow EOSE, got {second}"
     );
 }
 
@@ -1204,29 +1197,51 @@ async fn test_graceful_close() {
     assert_closed(&mut ws).await;
 }
 
-/// 44. Multiple subscribers on the same #p value: event is rejected with
-///     "ambiguous recipient" (tightening #2 — exactly one subscriber required).
+/// 44. A second subscriber on the same #p replaces the first, which gets
+///     CLOSED. There is still at most one subscriber per #p (tightening #2).
 #[tokio::test]
 async fn test_multiple_subscribers_same_p() {
     let url = start_relay().await;
+    let (sk, pk) = gen_keypair();
 
-    // First subscriber on #p succeeds.
     let mut sub1 = connect(&url).await;
     subscribe(&mut sub1, "s1", P_A).await;
 
-    // Second subscriber on the SAME #p is rejected at REQ time.
+    // Second subscriber on the SAME #p takes over.
     let mut sub2 = connect(&url).await;
-    send(&mut sub2, &json!(["REQ", "s2", {"#p": [P_A]}])).await;
-    let resp = recv(&mut sub2).await;
-    assert_eq!(resp[0], "CLOSED");
+    subscribe(&mut sub2, "s2", P_A).await;
+    let closed = recv(&mut sub1).await;
+    assert_eq!(closed[0], "CLOSED");
+    assert_eq!(closed[1], "s1");
     assert!(
-        resp[2]
-            .as_str()
-            .unwrap_or("")
-            .contains("already has a live subscriber"),
+        closed[2].as_str().unwrap_or("").contains("replaced"),
         "unexpected message: {}",
-        resp[2]
+        closed[2]
     );
+
+    // Live events go to the newer subscriber only.
+    let mut pub_ws = connect(&url).await;
+    send(
+        &mut pub_ws,
+        &json!(["EVENT", make_signed_event(&sk, &pk, P_A, 0)]),
+    )
+    .await;
+    let ok = recv(&mut pub_ws).await;
+    assert_eq!(ok[2], true, "event rejected: {}", ok[3]);
+    assert_eq!(ok[3], "");
+    let ev_msg = recv(&mut sub2).await;
+    assert_eq!(ev_msg[0], "EVENT");
+    assert_eq!(ev_msg[1], "s2");
+    assert!(
+        try_recv(&mut sub1).await.is_none(),
+        "replaced subscriber received an event"
+    );
+
+    // The replaced connection stays open and may subscribe again.
+    send(&mut sub1, &json!(["REQ", "s3", {"#p": [P_B]}])).await;
+    let eose = recv(&mut sub1).await;
+    assert_eq!(eose[0], "EOSE");
+    assert_eq!(eose[1], "s3");
 }
 
 /// 45. Uppercase hex in #p filter value is rejected.
@@ -1390,4 +1405,169 @@ async fn test_event_tag_string_too_long() {
         "unexpected message: {}",
         resp[3]
     );
+}
+
+// ── Hold ─────────────────────────────────────────────────────────────────
+
+/// Pull the next message and assert it is an EVENT for `sub_id` carrying `ev`.
+async fn expect_event(ws: &mut WS, sub_id: &str, ev: &Value) {
+    let msg = recv(ws).await;
+    assert_eq!(msg[0], "EVENT", "expected EVENT, got {msg}");
+    assert_eq!(msg[1], sub_id);
+    assert_eq!(&msg[2], ev);
+}
+
+/// 52. Held events replay in the order they arrived.
+#[tokio::test]
+async fn test_hold_replays_in_arrival_order() {
+    let url = start_relay().await;
+    let (sk, pk) = gen_keypair();
+
+    let mut pub_ws = connect(&url).await;
+    let evs: Vec<Value> = (0..3u64)
+        .map(|i| make_signed_event(&sk, &pk, P_A, i))
+        .collect();
+    for ev in &evs {
+        send(&mut pub_ws, &json!(["EVENT", ev])).await;
+        let ok = recv(&mut pub_ws).await;
+        assert_eq!(ok[3], "held: no live subscriber");
+    }
+
+    let mut sub_ws = connect(&url).await;
+    subscribe(&mut sub_ws, "s1", P_A).await;
+    for ev in &evs {
+        expect_event(&mut sub_ws, "s1", ev).await;
+    }
+    assert!(try_recv(&mut sub_ws).await.is_none());
+}
+
+/// 53. The hold for one #p is capped at 6 events. The 7th is rejected as it
+///     was before the hold existed, and its ID stays retryable.
+#[tokio::test]
+async fn test_hold_per_p_cap() {
+    let url = start_relay().await;
+    let (sk, pk) = gen_keypair();
+
+    // Six events fill one connection's session cap and the #p's hold.
+    let mut pub1 = connect(&url).await;
+    for i in 0..6u64 {
+        send(
+            &mut pub1,
+            &json!(["EVENT", make_signed_event(&sk, &pk, P_A, i)]),
+        )
+        .await;
+        let ok = recv(&mut pub1).await;
+        assert_eq!(ok[2], true, "event {i} rejected: {}", ok[3]);
+    }
+
+    let mut pub2 = connect(&url).await;
+    let seventh = make_signed_event(&sk, &pk, P_A, 6);
+    send(&mut pub2, &json!(["EVENT", seventh])).await;
+    let ok = recv(&mut pub2).await;
+    assert_eq!(ok[2], false);
+    assert_eq!(ok[3], "no live subscriber, hold full");
+
+    // Another #p still has room.
+    send(
+        &mut pub2,
+        &json!(["EVENT", make_signed_event(&sk, &pk, P_B, 7)]),
+    )
+    .await;
+    let ok = recv(&mut pub2).await;
+    assert_eq!(ok[3], "held: no live subscriber");
+
+    // Once a subscriber is live, the rejected event can be sent again.
+    let mut sub_ws = connect(&url).await;
+    subscribe(&mut sub_ws, "s1", P_A).await;
+    for _ in 0..6 {
+        assert_eq!(recv(&mut sub_ws).await[0], "EVENT");
+    }
+    send(&mut pub2, &json!(["EVENT", seventh])).await;
+    let ok = recv(&mut pub2).await;
+    assert_eq!(ok[2], true, "retry rejected: {}", ok[3]);
+    expect_event(&mut sub_ws, "s1", &seventh).await;
+}
+
+/// 54. A subscriber that reconnects gets every event for its #p again,
+///     including events already written to its old connection. The relay
+///     can't tell a suspended socket from a live one.
+#[tokio::test]
+async fn test_hold_replays_delivered_events_on_resubscribe() {
+    let url = start_relay().await;
+    let (sk, pk) = gen_keypair();
+
+    let mut old_ws = connect(&url).await;
+    subscribe(&mut old_ws, "s1", P_A).await;
+
+    let mut pub_ws = connect(&url).await;
+    let ev = make_signed_event(&sk, &pk, P_A, 0);
+    send(&mut pub_ws, &json!(["EVENT", ev])).await;
+    let ok = recv(&mut pub_ws).await;
+    assert_eq!(ok[2], true);
+    assert_eq!(ok[3], "", "expected live delivery");
+    // The old connection never reads it, as a suspended app wouldn't.
+    drop(old_ws);
+
+    let mut new_ws = connect(&url).await;
+    subscribe(&mut new_ws, "s1", P_A).await;
+    expect_event(&mut new_ws, "s1", &ev).await;
+}
+
+/// 55. The two-apps-on-one-phone handshake. Each side spends part of the
+///     session in the background: first with its socket closed, then with a
+///     socket that is still open but no longer read (suspended). Every message
+///     still arrives after the side reconnects.
+#[tokio::test]
+async fn test_two_apps_one_phone_handshake() {
+    let url = start_relay().await;
+    let (source_sk, source_pk) = gen_keypair();
+    let (target_sk, target_pk) = gen_keypair();
+
+    // Source (app A) shows the code, then goes to the background: socket closed.
+    let mut source = connect(&url).await;
+    subscribe(&mut source, "pair", &source_pk).await;
+    source.close(None).await.unwrap();
+    drop(source);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Target (app B) subscribes and sends its offer while A is away.
+    let mut target = connect(&url).await;
+    subscribe(&mut target, "pair", &target_pk).await;
+    let offer = make_signed_event(&target_sk, &target_pk, &source_pk, 0);
+    send(&mut target, &json!(["EVENT", offer])).await;
+    let ok = recv(&mut target).await;
+    assert_eq!(ok[3], "held: no live subscriber");
+
+    // B goes to the background: its socket stays open but is never read again.
+    let _suspended_target = target;
+
+    // A comes back, reconnects, and gets the offer.
+    let mut source = connect(&url).await;
+    subscribe(&mut source, "pair", &source_pk).await;
+    expect_event(&mut source, "pair", &offer).await;
+
+    // A confirms the code and sends sas-confirm and the payload. The relay
+    // writes both into B's suspended socket.
+    let sas_confirm = make_signed_event(&source_sk, &source_pk, &target_pk, 1);
+    let payload = make_signed_event(&source_sk, &source_pk, &target_pk, 2);
+    for ev in [&sas_confirm, &payload] {
+        send(&mut source, &json!(["EVENT", ev])).await;
+        let ok = recv(&mut source).await;
+        assert_eq!(ok[2], true, "rejected: {}", ok[3]);
+    }
+
+    // B comes back on a new connection, replaces its dead subscription, and
+    // gets both, in order.
+    let mut target = connect(&url).await;
+    subscribe(&mut target, "pair", &target_pk).await;
+    expect_event(&mut target, "pair", &sas_confirm).await;
+    expect_event(&mut target, "pair", &payload).await;
+
+    // B sends complete; A is live and gets it directly.
+    let complete = make_signed_event(&target_sk, &target_pk, &source_pk, 3);
+    send(&mut target, &json!(["EVENT", complete])).await;
+    let ok = recv(&mut target).await;
+    assert_eq!(ok[2], true);
+    assert_eq!(ok[3], "");
+    expect_event(&mut source, "pair", &complete).await;
 }
