@@ -131,8 +131,10 @@ simulator; local **Buzz Studio fixture**, not a live production community.
   exchanges, a live subscription exchange, membership/discovery and atomic storage
   failure injection.
 - Shared BuzzPushKit: 79 XCTest cases and 42 Swift Testing cases pass.
-- Native app: 36 non-Keychain tests pass (3 Keychain tests currently fail at the
-  simulator `SecItemAdd` boundary with `errSecMissingEntitlement`; 7 scanner
+- Native app: 36 non-Keychain tests pass. (The 3 `CredentialsTests` Keychain tests
+  failed here at the simulator `SecItemAdd` boundary with `errSecMissingEntitlement`.
+  They pass on a freshly created iPad Pro 13-inch (M5), iPadOS 26.5 simulator as of
+  2026-09-19; see below.) 7 scanner
   lifecycle, 5 membership recovery,
   6 history/live-thread recovery, 3 reaction actions, 1 emoji image loader,
   1 encrypted read-state workflow, 1 mention-tag send workflow and 1 DM
@@ -151,6 +153,12 @@ simulator; local **Buzz Studio fixture**, not a live production community.
   retained as xcresult attachments.
 - Swift formatting/lint passes. Unsigned iOS device Release build succeeds.
 - CI workflow has been added but has not run remotely.
+Evidence (2026-09-19, Xcode 27.0, fresh iPad Pro 13-inch (M5) iPadOS 26.5 simulator,
+`ipad/scripts/check.sh`): BuzzCore 55, BuzzPushKit 79 XCTest + 42 Swift Testing,
+native app 50 including the 3 Keychain tests, native UI 6, all pass. The UI suite
+had been timing out with "main thread busy for 30.0s": `typingNames` wrote
+observable state during `body`, so an open conversation re-rendered without end.
+
 A passing fixture test does not prove live relay compatibility or device push,
 audio, camera, background behavior, accessibility, or full mobile feature parity.
 
