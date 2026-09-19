@@ -12,7 +12,11 @@ use of_agent::{Agent, AgentConfig, AgentState, Budget, ReadOnly, Termination};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::{collections::HashSet, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::Duration,
+};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     sync::Mutex,
@@ -77,7 +81,8 @@ struct Host {
     relay: String,
     channel: String,
     seen: Mutex<HashSet<String>>,
-    thread_seen: Mutex<HashSet<String>>,
+    /// Every message a completed read_thread returned: event ID -> content.
+    thread_seen: Mutex<HashMap<String, String>>,
     exclude: Mutex<Option<String>>,
     reads: Mutex<Vec<String>>,
 }
@@ -225,17 +230,31 @@ impl ReadTool {
                 }
                 let replies = self.host.query(json!({"#e": [root]})).await?;
                 rows.extend(replies);
-                self.host.thread_seen.lock().await.extend(
-                    rows.iter()
-                        .filter_map(|row| row["id"].as_str().map(str::to_owned)),
-                );
+                self.host.thread_seen.lock().await.extend(rows.iter().filter_map(|row| {
+                    let id = row["id"].as_str()?.to_owned();
+                    Some((id, row["content"].as_str().unwrap_or_default().to_owned()))
+                }));
                 Ok(ToolResponse::content(serde_json::to_string(&rows)?))
             }
         }
     }
 }
 
-fn validate_answer(answer: &Answer, seen: &HashSet<String>) -> Result<()> {
+/// Words in an answer that look like identifiers (a digit and at least four
+/// characters) and that no cited text contains verbatim. Checking where a
+/// citation came from is not enough: a model that invents a code can still
+/// cite the real message.
+fn ungrounded(answer: &str, cited: &[&str]) -> Vec<String> {
+    answer
+        .split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_'))
+        .map(|word| word.trim_matches(|c| c == '-' || c == '_'))
+        .filter(|word| word.chars().count() >= 4 && word.chars().any(|c| c.is_ascii_digit()))
+        .filter(|word| !cited.iter().any(|text| text.contains(word)))
+        .map(str::to_owned)
+        .collect()
+}
+
+fn validate_answer(answer: &Answer, seen: &HashMap<String, String>) -> Result<()> {
     ensure!(
         !answer.answer.trim().is_empty() && answer.answer.len() <= 4096,
         "answer must be 1–4096 bytes"
@@ -245,8 +264,18 @@ fn validate_answer(answer: &Answer, seen: &HashSet<String>) -> Result<()> {
         "cite 1–5 retrieved sources"
     );
     ensure!(
-        answer.source_ids.iter().all(|id| seen.contains(id)),
+        answer.source_ids.iter().all(|id| seen.contains_key(id)),
         "citation must come from a completed read_thread result"
+    );
+    let cited: Vec<&str> = answer
+        .source_ids
+        .iter()
+        .flat_map(|id| [id.as_str(), seen[id].as_str()])
+        .collect();
+    let missing = ungrounded(&answer.answer, &cited);
+    ensure!(
+        missing.is_empty(),
+        "answer names {missing:?}, which no cited message contains"
     );
     Ok(())
 }
@@ -376,7 +405,8 @@ async fn retrieve(host: Arc<Host>, question: &str) -> Result<(String, Value)> {
         .collect::<Vec<_>>()
         .join("\n");
     let rendered = format!("{}\n\nSources:\n{links}", answer.answer);
-    let report = json!({"loop":"rebrand-of-agent", "iterations":outcome.iterations, "usage":outcome.usage, "reads":*host.reads.lock().await, "source_ids":*host.seen.lock().await, "thread_source_ids":*host.thread_seen.lock().await, "duration_ms":outcome.duration.as_millis()});
+    let thread_ids: Vec<String> = host.thread_seen.lock().await.keys().cloned().collect();
+    let report = json!({"loop":"rebrand-of-agent", "iterations":outcome.iterations, "usage":outcome.usage, "reads":*host.reads.lock().await, "source_ids":*host.seen.lock().await, "thread_source_ids":thread_ids, "duration_ms":outcome.duration.as_millis()});
     Ok((rendered, report))
 }
 
@@ -405,7 +435,7 @@ async fn run() -> Result<()> {
         relay: relay.trim_end_matches('/').into(),
         channel,
         seen: Mutex::new(HashSet::new()),
-        thread_seen: Mutex::new(HashSet::new()),
+        thread_seen: Mutex::new(HashMap::new()),
         exclude: Mutex::new(None),
         reads: Mutex::new(Vec::new()),
     });
@@ -537,7 +567,28 @@ mod tests {
             answer: "fact".into(),
             source_ids: vec!["invented".into()],
         };
-        assert!(validate_answer(&answer, &HashSet::new()).is_err());
+        assert!(validate_answer(&answer, &HashMap::new()).is_err());
+    }
+    #[test]
+    fn answer_identifiers_must_appear_in_a_cited_message() {
+        let source = "b".repeat(64);
+        let seen = HashMap::from([(
+            source.clone(),
+            "Resolution: restart the worker using recovery code SOLVED-9bf89012805c.".to_owned(),
+        )]);
+        let answer = |text: &str| Answer {
+            answer: text.into(),
+            source_ids: vec![source.clone()],
+        };
+        assert!(validate_answer(&answer("SOLVED-9bf89012805c"), &seen).is_ok());
+        assert!(validate_answer(&answer("The code is `SOLVED-9bf89012805c`."), &seen).is_ok());
+        assert!(validate_answer(&answer("Restart the worker."), &seen).is_ok());
+        // A real citation does not launder an invented code.
+        assert!(validate_answer(&answer("SOLVED-123456"), &seen).is_err());
+        assert_eq!(
+            ungrounded("use 123456 or SOLVED-9bf89012805c", &[&seen[&source]]),
+            vec!["123456"]
+        );
     }
     #[test]
     fn scoped_results_require_actual_channel_tags() {

@@ -12,7 +12,9 @@ mention → buzz-acp → native ACP worker → Rebrand of-agent → rebrand serv
 ```
 
 The model has exactly two read tools. The host publishes the final answer after
-checking its schema and citations. No `buzz-agent`, developer MCP server, shell
+checking its schema and citations. Every cited message must come from a completed
+`read_thread`, and every identifier in the answer (a word with a digit, four or
+more characters) must appear verbatim in a cited message. No `buzz-agent`, developer MCP server, shell
 tool, provider selection UI, or model-controlled publication is involved.
 Codex and Claude are unaffected and keep their native connections.
 
@@ -35,6 +37,7 @@ python3 scripts/rebrand-proof/native/test_protocol.py -v
 
 The protocol tests launch that actual binary and Rebrand loop against controlled
 HTTP responses. They cover normal ACP execution, cancellation, forged citations,
+an invented code behind a real citation,
 cross-channel data, a model error carried inside HTTP 200, one recoverable empty
 turn, and repeated empty completion. Failed/cancelled
 runs must publish nothing. The fake server is only for these failure tests;
