@@ -66,9 +66,10 @@ scripts/aitaco/desktop-release.sh 1.0.0 --publish  # also tag, create the releas
 
 **Before it builds, the script checks:**
 - it is on an Apple Silicon Mac
-- the tree is clean and `HEAD` is on `aitaco-llc/buzz` `main`
-- the tag is new and the version is above the one published
+- the tree is clean
+- the version is above the one published
 - all signing variables are set, for team `5F7YLJS4YR`
+- with `--publish` only: `HEAD` is on `aitaco-llc/buzz` `main` and the tag is new. A build-only run may test a branch.
 
 **It builds:**
 - the six sidecars

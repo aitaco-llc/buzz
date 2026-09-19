@@ -42,12 +42,14 @@ done
   || die "APPLE_SIGNING_IDENTITY must be a Developer ID for team ${TEAM}"
 [[ -z "$(git status --porcelain --untracked-files=no)" ]] || die "working tree has changes"
 
-git fetch --quiet "$REPO_URL" main
-git merge-base --is-ancestor HEAD FETCH_HEAD || die "HEAD is not on ${REPO} main"
 SHA="$(git rev-parse HEAD)"
-
-if git ls-remote --exit-code --tags "$REPO_URL" "refs/tags/${TAG}" >/dev/null; then
-  die "tag ${TAG} already exists"
+# Publishing needs a commit on main and a new tag; a build-only run may test a branch.
+if [[ "$PUBLISH" == "1" ]]; then
+  git fetch --quiet "$REPO_URL" main
+  git merge-base --is-ancestor HEAD FETCH_HEAD || die "HEAD is not on ${REPO} main"
+  if git ls-remote --exit-code --tags "$REPO_URL" "refs/tags/${TAG}" >/dev/null; then
+    die "tag ${TAG} already exists"
+  fi
 fi
 # Versions only go up within this lane. The feed is absent before the first release.
 PUBLISHED="$(curl -fsSL "$ENDPOINT" 2>/dev/null | jq -r '.version // empty' || true)"
