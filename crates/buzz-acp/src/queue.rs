@@ -964,20 +964,35 @@ impl EventQueue {
     /// Called on `SteerAck::Success` — the agent received the steer, so the
     /// event has been "delivered" via the non-cancelling path and must not
     /// be redelivered via normal dispatch. Idempotent across both stores.
-    pub fn remove_event<K: IntoScope>(&mut self, scope: K, event_id: &str) {
+    /// Returns the removed event, if either store held it.
+    pub fn remove_event<K: IntoScope>(&mut self, scope: K, event_id: &str) -> Option<Event> {
         let scope = scope.into_scope();
+        let mut removed = None;
         if let Some(entries) = self.withheld_native_steer.get_mut(&scope) {
-            entries.retain(|qe| qe.event.id.to_hex() != event_id);
+            entries.retain(|qe| {
+                let keep = qe.event.id.to_hex() != event_id;
+                if !keep {
+                    removed = Some(qe.event.clone());
+                }
+                keep
+            });
             if entries.is_empty() {
                 self.withheld_native_steer.remove(&scope);
             }
         }
         if let Some(q) = self.queues.get_mut(&scope) {
-            q.retain(|qe| qe.event.id.to_hex() != event_id);
+            q.retain(|qe| {
+                let keep = qe.event.id.to_hex() != event_id;
+                if !keep {
+                    removed = Some(qe.event.clone());
+                }
+                keep
+            });
             if q.is_empty() {
                 self.queues.remove(&scope);
             }
         }
+        removed
     }
 
     /// Bulk-release every withheld event for `channel_id` back to the queue
@@ -5771,6 +5786,25 @@ mod tests {
             q.withheld_native_steer.get(&conv(ch)).map(|v| v.len()),
             Some(1)
         );
+    }
+
+    /// `Success` consumes the withheld event and hands it back, so the caller
+    /// can add it to the running turn's ✅ targets. A second removal, or an
+    /// unknown id, returns nothing.
+    #[test]
+    fn test_remove_event_returns_the_withheld_event_once() {
+        let mut q = EventQueue::new(DedupMode::Queue);
+        let ch = Uuid::new_v4();
+        let qe = make_queued(ch, "hello");
+        let event_id = qe.event.id.to_hex();
+        q.push(qe);
+        assert!(q.mark_native_steer_pending(ch, &event_id));
+
+        let removed = q.remove_event(ch, &event_id).expect("withheld event");
+        assert_eq!(removed.id.to_hex(), event_id);
+        assert!(q.remove_event(ch, &event_id).is_none());
+        assert!(q.remove_event(ch, &"f".repeat(64)).is_none());
+        assert!(!q.withheld_native_steer.contains_key(&conv(ch)));
     }
 
     /// Earlier events on the same channel must flush normally during the

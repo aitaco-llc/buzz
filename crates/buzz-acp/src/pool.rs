@@ -90,6 +90,8 @@ pub struct TaskMeta {
     /// live session. The session ID prevents a late ack from contaminating a
     /// replacement session after task return.
     pub successful_steer_deliveries: HashSet<SuccessfulSteerDelivery>,
+    /// Events this turn may answer, for ✅ on success. Empty for heartbeats.
+    pub answer: AnswerLedger,
 }
 
 /// Agent-level model capabilities. Populated on first session creation.
@@ -384,6 +386,9 @@ pub struct AgentPool {
     /// `Thread` scopes (the sole variant [`hold_decision`](Self::hold_decision)
     /// stamps).
     held_since: HashMap<SessionScope, tokio::time::Instant>,
+    /// Unix second in which the most recent turn result arrived. Bounds ✅
+    /// detection for the next dispatch (see [`answer_since`](Self::answer_since)).
+    last_turn_end_secs: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -879,6 +884,34 @@ impl AgentPool {
             session_owners: HashMap::new(),
             next_scope_owner_generation: 1,
             held_since: HashMap::new(),
+            last_turn_end_secs: 0,
+        }
+    }
+
+    /// Inclusive lower bound, in unix seconds, for detecting a dispatching
+    /// turn's replies. Nostr timestamps are whole seconds, so a reply the
+    /// previous turn sent in this same second would look like this turn's.
+    /// When a turn ended in the current second, start at the next one: a
+    /// real turn does not reply within the second it was dispatched, and
+    /// missing a ✅ is safer than a false one.
+    pub fn answer_since(&self) -> u64 {
+        answer_since_at(nostr::Timestamp::now().as_secs(), self.last_turn_end_secs)
+    }
+
+    /// Record that a turn result arrived now. Called for every result.
+    pub fn note_turn_end(&mut self) {
+        self.last_turn_end_secs = nostr::Timestamp::now().as_secs();
+    }
+
+    /// Add an event steered into `scope`'s running turn to that turn's ✅
+    /// targets. No-op when the turn has already returned.
+    pub fn record_steered_answer_target(&mut self, scope: &SessionScope, event: &nostr::Event) {
+        if let Some(meta) = self
+            .task_map
+            .values_mut()
+            .find(|meta| meta.scope.as_ref() == Some(scope))
+        {
+            meta.answer.targets.push(AnswerTarget::for_event(event));
         }
     }
 
@@ -4872,9 +4905,11 @@ fn record_scope_delivery_success(
 }
 
 //
-// Two-phase lifecycle visible to users:
-//   👀  "seen"    — event was queued and an agent will handle it
-//   💬  "working" — agent is actively prompting
+// Lifecycle visible to users:
+//   👀  "seen"     — event was queued and an agent will handle it
+//   💬  "working"  — agent is actively prompting
+//   ✅  "answered" — a successful turn published a reply in the event's
+//                    thread; stays (see `AnswerLedger`)
 //
 // 💬 is awaited inline in `run_prompt_task` before the prompt fires, so
 // add-before-remove ordering is structural. 👀 is fire-and-forget from
@@ -4883,6 +4918,7 @@ fn record_scope_delivery_success(
 // leaving a cosmetic stale 👀 (see `ReactionGuard` docs).
 //
 // Cleanup is fire-and-forget via `ReactionGuard` (spawned on drop).
+// ✅ is added by the main loop once the turn's result shows success.
 // Failures are debug-logged and ignored — reactions are cosmetic.
 
 /// Drop guard that spawns reaction cleanup on any exit path.
@@ -5265,6 +5301,188 @@ async fn publish_agent_turn_metric(
 
 const REACTION_SEEN: &str = "👀";
 const REACTION_WORKING: &str = "💬";
+const REACTION_ANSWERED: &str = "✅";
+
+/// Kinds that count as a reply for ✅: channel messages (both versions), diff
+/// messages and forum comments. Reactions (kind 7) are excluded on purpose:
+/// our own 💬 carries the trigger's id in its `e` tag.
+const ANSWER_REPLY_KINDS: [u32; 4] = [
+    buzz_core::kind::KIND_STREAM_MESSAGE,
+    buzz_core::kind::KIND_STREAM_MESSAGE_V2,
+    buzz_core::kind::KIND_STREAM_MESSAGE_DIFF,
+    buzz_core::kind::KIND_FORUM_COMMENT,
+];
+
+/// Opening of every dead-letter notice the harness posts (`lib.rs`). A notice
+/// lands in the trigger's thread under the seat's key, yet it reports the
+/// opposite of an answer, so reply detection skips it.
+pub(crate) const FAILURE_NOTICE_PREFIX: &str = "⚠️ I couldn't process the last request";
+
+/// A triggering event and the thread a reply to it lands in.
+///
+/// A trigger inside a thread is answered by a reply anywhere in that thread.
+/// A top-level trigger is answered by a reply to it, which opens a thread
+/// rooted at the trigger. Either way the reply carries `thread_key` in an `e`
+/// tag, whatever NIP-10 markers it uses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AnswerTarget {
+    event_id: String,
+    thread_key: String,
+}
+
+impl AnswerTarget {
+    pub(crate) fn for_event(event: &nostr::Event) -> Self {
+        let event_id = event.id.to_hex();
+        let thread_key = crate::queue::parse_thread_tags(event)
+            .root_event_id
+            .unwrap_or_else(|| event_id.clone());
+        Self {
+            event_id,
+            thread_key,
+        }
+    }
+}
+
+/// What the main loop needs to add ✅ when an in-flight turn succeeds. Lives
+/// in [`TaskMeta`]; `handle_prompt_result` consumes it.
+///
+/// Targets are every event the turn was asked to handle: the batch, the
+/// cancelled events a merged re-prompt carries, and every event steered into
+/// the running turn. Each is judged on its own `thread_key`, so one reply in
+/// a thread marks every target in that thread, and a reply to one top-level
+/// post marks that post and no other.
+#[derive(Debug, Clone, Default)]
+pub struct AnswerLedger {
+    targets: Vec<AnswerTarget>,
+    /// Inclusive lower bound (unix seconds) for the turn's replies. See
+    /// [`AgentPool::answer_since`].
+    since: u64,
+}
+
+impl AnswerLedger {
+    pub(crate) fn for_batch(batch: &FlushBatch, since: u64) -> Self {
+        Self {
+            targets: batch
+                .events
+                .iter()
+                .chain(batch.cancelled_events.iter())
+                .map(|be| AnswerTarget::for_event(&be.event))
+                .collect(),
+            since,
+        }
+    }
+}
+
+fn answer_since_at(now_secs: u64, last_turn_end_secs: u64) -> u64 {
+    if last_turn_end_secs >= now_secs {
+        now_secs + 1
+    } else {
+        now_secs
+    }
+}
+
+/// The targets answered by `replies`, a relay query result holding our own
+/// reply-kind events since the turn started. Order follows `targets`; each id
+/// appears once.
+fn answered_event_ids(targets: &[AnswerTarget], replies: &serde_json::Value) -> Vec<String> {
+    let mut thread_keys: HashSet<&str> = HashSet::new();
+    for reply in replies.as_array().into_iter().flatten() {
+        let content = reply.get("content").and_then(|c| c.as_str()).unwrap_or("");
+        if content.starts_with(FAILURE_NOTICE_PREFIX) {
+            continue;
+        }
+        let tags = reply.get("tags").and_then(|t| t.as_array());
+        for tag in tags.into_iter().flatten() {
+            let Some(parts) = tag.as_array() else {
+                continue;
+            };
+            if parts.first().and_then(|v| v.as_str()) == Some("e") {
+                if let Some(id) = parts.get(1).and_then(|v| v.as_str()) {
+                    thread_keys.insert(id);
+                }
+            }
+        }
+    }
+    let mut answered: Vec<String> = Vec::new();
+    for target in targets {
+        if thread_keys.contains(target.thread_key.as_str()) && !answered.contains(&target.event_id)
+        {
+            answered.push(target.event_id.clone());
+        }
+    }
+    answered
+}
+
+/// The relay query for the seat's own replies in any target's thread since
+/// the turn started.
+fn answered_reply_filter(author: nostr::PublicKey, ledger: &AnswerLedger) -> nostr::Filter {
+    use nostr::{Alphabet, SingleLetterTag};
+
+    let mut thread_keys: Vec<&str> = ledger
+        .targets
+        .iter()
+        .map(|t| t.thread_key.as_str())
+        .collect();
+    thread_keys.sort_unstable();
+    thread_keys.dedup();
+    nostr::Filter::new()
+        .kinds(
+            ANSWER_REPLY_KINDS
+                .iter()
+                .map(|kind| nostr::Kind::Custom(*kind as u16)),
+        )
+        .author(author)
+        .custom_tags(SingleLetterTag::lowercase(Alphabet::E), thread_keys)
+        .since(nostr::Timestamp::from(ledger.since))
+}
+
+/// Fire-and-forget: add ✅ to every target a successful turn answered. ✅ is
+/// never removed. Called by the main loop only for `PromptOutcome::Ok`, so a
+/// turn that failed after an interim reply ("on it") leaves no ✅.
+///
+/// Detection reads the relay, not the agent's tool calls: one query for our
+/// own reply-kind events created since the turn started that carry a target's
+/// thread key in an `e` tag. Agents publish with `buzz messages send`, which
+/// returns only once the relay has accepted the event, so every reply a turn
+/// sent is queryable by the time its result reaches the main loop. A turn
+/// that heard a post and stayed out published nothing there and adds no ✅.
+pub(crate) fn spawn_answered_reactions(rest: &RestClient, ledger: AnswerLedger) {
+    if ledger.targets.is_empty() {
+        return;
+    }
+    let rest = rest.clone();
+    tokio::spawn(async move {
+        let filter = answered_reply_filter(rest.keys.public_key(), &ledger);
+        let replies = match timeout(Duration::from_millis(1_000), rest.query(&[filter])).await {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => {
+                tracing::debug!("answered reaction: reply query failed: {e}");
+                return;
+            }
+            Err(_) => {
+                tracing::debug!("answered reaction: reply query timed out");
+                return;
+            }
+        };
+        let answered = answered_event_ids(&ledger.targets, &replies);
+        if answered.is_empty() {
+            tracing::debug!(
+                targets = ledger.targets.len(),
+                "answered reaction: no reply in any target's thread"
+            );
+            return;
+        }
+        tracing::info!(event_ids = ?answered, "answered reaction: ✅ on answered triggers");
+        for chunk in answered.chunks(REACTION_CONCURRENCY) {
+            futures_util::future::join_all(
+                chunk
+                    .iter()
+                    .map(|eid| reaction_add(&rest, eid, REACTION_ANSWERED)),
+            )
+            .await;
+        }
+    });
+}
 
 /// Best-effort timeout for a single reaction REST call.
 const REACTION_TIMEOUT: Duration = Duration::from_millis(500);
@@ -5331,6 +5549,8 @@ pub(crate) async fn post_failure_notice(
     thread_tags: &ThreadTags,
     content: &str,
 ) {
+    // `react_answered` tells a notice from a reply by this prefix.
+    debug_assert!(content.starts_with(FAILURE_NOTICE_PREFIX));
     let thread_ref = thread_tags.root_event_id.as_deref().and_then(|root| {
         let root_id = nostr::EventId::from_hex(root).ok()?;
         let parent_id = thread_tags
@@ -8107,6 +8327,214 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             .unwrap()
     }
 
+    fn reply_value(content: &str, e_tags: &[(&str, &str)]) -> serde_json::Value {
+        let tags: Vec<serde_json::Value> = e_tags
+            .iter()
+            .map(|(id, marker)| json!(["e", id, "", marker]))
+            .collect();
+        json!({ "kind": 9, "content": content, "tags": tags })
+    }
+
+    fn target(event_id: &str, thread_key: &str) -> AnswerTarget {
+        AnswerTarget {
+            event_id: event_id.to_string(),
+            thread_key: thread_key.to_string(),
+        }
+    }
+
+    #[test]
+    fn answer_target_keys_top_level_trigger_to_itself() {
+        let ev = signed_event_with_tags(vec![vec!["h".into(), Uuid::new_v4().to_string()]]);
+        let t = AnswerTarget::for_event(&ev);
+        assert_eq!(t.event_id, ev.id.to_hex());
+        assert_eq!(t.thread_key, ev.id.to_hex());
+    }
+
+    #[test]
+    fn answer_target_keys_thread_reply_to_its_root() {
+        let root = "a".repeat(64);
+        let ev = signed_event_with_tags(vec![vec![
+            "e".into(),
+            root.clone(),
+            String::new(),
+            "reply".into(),
+        ]]);
+        let t = AnswerTarget::for_event(&ev);
+        assert_eq!(t.event_id, ev.id.to_hex());
+        assert_eq!(t.thread_key, root);
+    }
+
+    #[test]
+    fn answered_ids_mark_only_triggers_whose_thread_got_a_reply() {
+        let (top, thread_root, threaded, unanswered) = (
+            "a".repeat(64),
+            "b".repeat(64),
+            "c".repeat(64),
+            "d".repeat(64),
+        );
+        let targets = [
+            target(&top, &top),
+            target(&threaded, &thread_root),
+            target(&unanswered, &unanswered),
+        ];
+        let replies = json!([
+            // Reply to a top-level trigger: a lone `reply` marker on it.
+            reply_value("done", &[(&top, "reply")]),
+            // Nested reply inside the thread: root plus a different parent.
+            reply_value(
+                "also done",
+                &[(&thread_root, "root"), (&"e".repeat(64), "reply")]
+            ),
+        ]);
+        assert_eq!(
+            answered_event_ids(&targets, &replies),
+            vec![top.clone(), threaded.clone()]
+        );
+    }
+
+    #[test]
+    fn answered_ids_skip_the_harness_failure_notice() {
+        let root = "a".repeat(64);
+        let targets = [target(&"b".repeat(64), &root)];
+        let notice = format!(
+            "{FAILURE_NOTICE_PREFIX} after multiple retries (boom). Please re-send if it's still needed."
+        );
+        let replies = json!([reply_value(&notice, &[(&root, "reply")])]);
+        assert!(answered_event_ids(&targets, &replies).is_empty());
+    }
+
+    #[test]
+    fn answered_ids_mark_every_batched_trigger_in_the_thread_once() {
+        let root = "a".repeat(64);
+        let (first, second) = ("b".repeat(64), "c".repeat(64));
+        // `first` appears twice, as it would when a cancelled batch is merged.
+        let targets = [
+            target(&first, &root),
+            target(&second, &root),
+            target(&first, &root),
+        ];
+        let replies = json!([reply_value("one answer", &[(&root, "reply")])]);
+        assert_eq!(
+            answered_event_ids(&targets, &replies),
+            vec![first.clone(), second.clone()]
+        );
+    }
+
+    #[test]
+    fn answered_ids_empty_for_no_replies_or_unexpected_shapes() {
+        let key = "a".repeat(64);
+        let targets = [target(&key, &key)];
+        assert!(answered_event_ids(&targets, &json!([])).is_empty());
+        assert!(answered_event_ids(&targets, &json!({"error": "nope"})).is_empty());
+        assert!(answered_event_ids(&targets, &json!([{"tags": "garbage"}])).is_empty());
+        // A top-level post of ours that mentions nothing does not answer.
+        let bare = json!([{ "kind": 9, "content": "hello", "tags": [["h", "x"]] }]);
+        assert!(answered_event_ids(&targets, &bare).is_empty());
+    }
+
+    #[test]
+    fn answered_reply_filter_asks_for_our_replies_in_target_threads_since_dispatch() {
+        let (top, root) = ("a".repeat(64), "b".repeat(64));
+        let ledger = AnswerLedger {
+            targets: vec![
+                target(&top, &top),
+                target(&"c".repeat(64), &root),
+                target(&"d".repeat(64), &root),
+            ],
+            since: 1_790_000_000,
+        };
+        let me = Keys::generate().public_key();
+        let filter = serde_json::to_value(answered_reply_filter(me, &ledger)).unwrap();
+
+        let mut kinds: Vec<u64> = filter["kinds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| k.as_u64().unwrap())
+            .collect();
+        kinds.sort_unstable();
+        assert_eq!(kinds, vec![9, 40002, 40008, 45003], "reply kinds, never 7");
+        assert_eq!(filter["authors"], json!([me.to_hex()]));
+        let mut keys: Vec<&str> = filter["#e"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| k.as_str().unwrap())
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![top.as_str(), root.as_str()],
+            "one key per thread"
+        );
+        assert_eq!(filter["since"], json!(1_790_000_000u64));
+    }
+
+    #[test]
+    fn answer_since_skips_a_second_in_which_a_turn_ended() {
+        assert_eq!(answer_since_at(100, 0), 100, "no turn has ended yet");
+        assert_eq!(answer_since_at(100, 99), 100, "previous turn ended earlier");
+        assert_eq!(
+            answer_since_at(100, 100),
+            101,
+            "previous turn ended this second"
+        );
+        assert_eq!(answer_since_at(100, 101), 101, "clock stepped back");
+    }
+
+    #[test]
+    fn answer_ledger_covers_the_batch_and_its_merged_cancelled_events() {
+        let ch = Uuid::new_v4();
+        let root = "a".repeat(64);
+        let fresh = signed_event_with_tags(vec![vec![
+            "e".into(),
+            root.clone(),
+            String::new(),
+            "reply".into(),
+        ]]);
+        let cancelled = signed_event_with_tags(vec![vec!["h".into(), ch.to_string()]]);
+        let mut batch = batch_with_scope(thread_scope(ch, &root), fresh.clone());
+        batch.cancelled_events.push(crate::queue::BatchEvent {
+            event: cancelled.clone(),
+            prompt_tag: "t".into(),
+            received_at: std::time::Instant::now(),
+        });
+        let ledger = AnswerLedger::for_batch(&batch, 42);
+        assert_eq!(ledger.since, 42);
+        assert_eq!(
+            ledger.targets,
+            vec![
+                target(&fresh.id.to_hex(), &root),
+                target(&cancelled.id.to_hex(), &cancelled.id.to_hex()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn steered_event_joins_only_its_own_running_turns_answer_targets() {
+        let ch = Uuid::new_v4();
+        let running = thread_scope(ch, &"a".repeat(64));
+        let other = thread_scope(ch, &"b".repeat(64));
+        let mut pool = AgentPool::from_slots(vec![None]);
+        mark_agent_busy(&mut pool, 0, running.clone());
+        let steered = signed_event_with_tags(vec![vec![
+            "e".into(),
+            "a".repeat(64),
+            String::new(),
+            "reply".into(),
+        ]]);
+
+        pool.record_steered_answer_target(&other, &steered);
+        pool.record_steered_answer_target(&running, &steered);
+
+        let targets: Vec<AnswerTarget> = pool
+            .task_map()
+            .values()
+            .flat_map(|meta| meta.answer.targets.clone())
+            .collect();
+        assert_eq!(targets, vec![target(&steered.id.to_hex(), &"a".repeat(64))]);
+    }
+
     #[test]
     fn context_target_uses_thread_scope_root_not_last_event_tags() {
         let ch = Uuid::new_v4();
@@ -8335,6 +8763,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
                 recoverable_batch: None,
                 control_tx: None,
                 steer_tx: None,
+                answer: Default::default(),
                 successful_steer_deliveries: HashSet::new(),
             },
         );
