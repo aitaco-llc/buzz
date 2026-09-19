@@ -7,6 +7,8 @@ This lane builds our own macOS Buzz Desktop from `aitaco-llc/buzz`. It is signed
 
 Status: written on hip, where nothing Apple can be built. The first run on the Mac settles the items under "Unverified".
 
+**Blocked (2026-09-19): no Developer ID Application certificate.** The build Mac has none for any team. The only `5F7YLJS4YR` identity there is `Apple Development` (jessie, #buzz-platform). Getting one is Lloyd's call, or woody's as the team's portal admin. Everything else in "One-time setup" is done except the environment file.
+
 ## Identity
 
 | | Value | Why |
@@ -38,10 +40,12 @@ Status: written on hip, where nothing Apple can be built. The first run on the M
 
 1. **Signing identity.** `security find-identity -v -p codesigning` must list a `Developer ID Application: … (5F7YLJS4YR)`. If none exists, stop. Creating one is Lloyd's call.
 2. **Notarization key.** An App Store Connect API key (`.p8`) with its key id and issuer id, for `notarytool` through Tauri.
-3. **Updater keypair.** Generate it on the Mac with `cd desktop && pnpm tauri signer generate -w ~/.tauri/aitaco-buzz-updater.key`.
-   - The private key and its password stay on the Mac.
-   - The public key goes into `BUZZ_UPDATER_PUBLIC_KEY`, and to aldrin for the record.
-   - **Losing the private key strands every installed copy.** They would only accept updates signed by it. Back it up where Lloyd keeps secrets.
+3. **Updater keypair: done 2026-09-19 by jessie.** She ran `node_modules/.bin/tauri signer generate`, not `pnpm tauri`, because the pnpm wrapper echoes the password.
+   - **Key id `77A198D97C39AD51`.** The script pins it (`AITACO_UPDATER_KEY_ID`). It refuses a public key or an updater signature from any other key.
+   - **Public key** (for `BUZZ_UPDATER_PUBLIC_KEY`):
+     `dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc3QTE5OEQ5N0MzOUFENTEKUldSUnJUbDgyWmloZDRXUUZ6bUE2aXlORzRGdzQwMHE3YUJHa21aQnA0NnZSaGpET2RBL21ZK1IK`
+   - **Private key:** `~/.tauri/aitaco-buzz-updater.key` on the Mac (mode 600). Its password is in the login keychain, service `aitaco-buzz-updater-key-password`.
+   - **Losing the private key strands every installed copy,** because they only accept updates signed by it. It is not backed up anywhere yet. Back it up where Lloyd keeps secrets.
 4. **Tools.** `jq`, `gh` (logged in with release rights on `aitaco-llc/buzz`), Xcode command-line tools. Hermit supplies Rust, Node, pnpm and just.
 5. **Environment file.** Create it outside the repo, e.g. `~/.config/aitaco/desktop-lane.env`, mode `600`:
    ```bash
@@ -66,9 +70,12 @@ scripts/aitaco/desktop-release.sh 1.0.0 --publish  # also tag, create the releas
 
 **Before it builds, the script checks:**
 - it is on an Apple Silicon Mac
-- the tree is clean
-- the version is above the one published
+- the tree is clean, with no untracked files either
+- the version is above the one published. The feed must answer: only a 404 counts as "no feed yet".
 - all signing variables are set, for team `5F7YLJS4YR`
+- the updater public key is key `77A198D97C39AD51`
+
+It then builds with every `BUZZ_*` variable cleared except the updater's. `build.rs` would otherwise bake `BUZZ_RELAY_URL` and `BUZZ_BUILD_*` from the shell into the app.
 - with `--publish` only: `HEAD` is on `aitaco-llc/buzz` `main` and the tag is new. A build-only run may test a branch.
 
 **It builds:**
@@ -82,9 +89,16 @@ scripts/aitaco/desktop-release.sh 1.0.0 --publish  # also tag, create the releas
 - `spctl` accepts the app
 - the stapled ticket validates
 - the entitlements pass `desktop/scripts/verify-macos-entitlements.sh`
-- the updater archive and its signature exist
+- the updater archive and its signature exist, and the signature is from key `77A198D97C39AD51`
+- the DMG, which Tauri signs but does not notarize, is notarized, stapled and accepted by `spctl`
 
-After `--publish`, the script confirms the feed serves the new version. Then post it in #buzz-platform: version, commit, identifier, and one line on what changed.
+**Artifacts** stay in `~/.local/state/aitaco-desktop-releases/<version>/`.
+
+**`--publish` steps:**
+1. It creates the release as a draft, then publishes it. A draft makes no tag, so a failed upload can be deleted and the run repeated.
+2. It checks the feed again, then moves it.
+
+If moving the feed fails, finish by hand with `gh release upload aitaco-desktop-latest -R aitaco-llc/buzz ~/.local/state/aitaco-desktop-releases/<version>/latest.json --clobber`. The script confirms the feed serves the new version. Then post the release in #buzz-platform: version, commit, identifier, and one line on what changed.
 
 ## First install on Lloyd's Mac (from Block's Buzz)
 

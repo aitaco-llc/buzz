@@ -24,23 +24,53 @@ TAG="aitaco-desktop-v${VERSION}"
 FEED_TAG="aitaco-desktop-latest"
 ENDPOINT="https://github.com/${REPO}/releases/download/${FEED_TAG}/latest.json"
 PLATFORM="darwin-aarch64"
+# The updater key every installed copy trusts (minisign key id). A build signed
+# with any other key, or embedding any other public key, strands installs.
+UPDATER_KEY_ID="${AITACO_UPDATER_KEY_ID:-77A198D97C39AD51}"
+OUT="${HOME}/.local/state/aitaco-desktop-releases/${VERSION}"
 
 die() { echo "desktop-release: $*" >&2; exit 1; }
+# Minisign key id (as minisign prints it) of a base64-encoded minisign file:
+# a public key, or a Tauri .sig. Line 2 decodes to 2 algorithm bytes, then the
+# 8-byte key id, little-endian.
+key_id() {
+  python3 -c 'import base64,sys; t=base64.b64decode(sys.argv[1]).decode(); b=base64.b64decode(t.splitlines()[1]); print(b[2:10][::-1].hex().upper())' "$1"
+}
+# The version latest.json serves; empty only when the feed does not exist (404).
+# Any other failure stops the run: a skipped check could move the feed backwards.
+feed_version() {
+  local body code
+  body="$(mktemp)"
+  code="$(curl -sSL -o "$body" -w '%{http_code}' "$ENDPOINT")" || { rm -f "$body"; die "cannot reach ${ENDPOINT}"; }
+  case "$code" in
+    404) rm -f "$body"; echo "" ;;
+    200) jq -er '.version' "$body" || { rm -f "$body"; die "${ENDPOINT} has no version"; }; rm -f "$body" ;;
+    *) rm -f "$body"; die "${ENDPOINT} answered HTTP ${code}" ;;
+  esac
+}
 
 # ── preflight ────────────────────────────────────────────────────────────────
 [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]] || die "run this on an Apple Silicon Mac"
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "usage: $0 <X.Y.Z> [--publish]"
 cd "$(git rev-parse --show-toplevel)"
-for tool in jq gh git curl codesign spctl xcrun; do
+for tool in jq gh git curl codesign spctl xcrun python3; do
   command -v "$tool" >/dev/null || die "missing tool: $tool"
 done
 for var in APPLE_SIGNING_IDENTITY APPLE_API_ISSUER APPLE_API_KEY APPLE_API_KEY_PATH \
-           TAURI_SIGNING_PRIVATE_KEY BUZZ_UPDATER_PUBLIC_KEY; do
+           TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD BUZZ_UPDATER_PUBLIC_KEY; do
   [[ -n "${!var:-}" ]] || die "missing environment variable: $var (see the runbook)"
 done
 [[ "$APPLE_SIGNING_IDENTITY" == *"(${TEAM})" ]] \
   || die "APPLE_SIGNING_IDENTITY must be a Developer ID for team ${TEAM}"
-[[ -z "$(git status --porcelain --untracked-files=no)" ]] || die "working tree has changes"
+[[ "$(key_id "$BUZZ_UPDATER_PUBLIC_KEY")" == "$UPDATER_KEY_ID" ]] \
+  || die "BUZZ_UPDATER_PUBLIC_KEY is key $(key_id "$BUZZ_UPDATER_PUBLIC_KEY"), expected ${UPDATER_KEY_ID}"
+# Untracked files count too: Vite and Tauri read some (.env.production, *.conf.json) on their own.
+[[ -z "$(git status --porcelain)" ]] || die "working tree has changes or untracked files"
+# Build from a clean BUZZ_* environment, as release.yml does: build.rs bakes
+# BUZZ_RELAY_URL, BUZZ_RELAY_HTTP and BUZZ_BUILD_* into the app.
+updater_public_key="$BUZZ_UPDATER_PUBLIC_KEY"
+while IFS= read -r name; do unset "$name"; done < <(compgen -e | grep '^BUZZ_' || true)
+export BUZZ_UPDATER_PUBLIC_KEY="$updater_public_key"
 
 SHA="$(git rev-parse HEAD)"
 # Publishing needs a commit on main and a new tag; a build-only run may test a branch.
@@ -52,7 +82,7 @@ if [[ "$PUBLISH" == "1" ]]; then
   fi
 fi
 # Versions only go up within this lane. The feed is absent before the first release.
-PUBLISHED="$(curl -fsSL "$ENDPOINT" 2>/dev/null | jq -r '.version // empty' || true)"
+PUBLISHED="$(feed_version)"
 if [[ -n "$PUBLISHED" ]]; then
   HIGHEST="$(printf '%s\n%s\n' "$PUBLISHED" "$VERSION" | sort -V | tail -1)"
   [[ "$VERSION" != "$PUBLISHED" && "$HIGHEST" == "$VERSION" ]] \
@@ -70,6 +100,8 @@ trap restore EXIT
 
 # shellcheck disable=SC1091
 . ./bin/activate-hermit
+[[ "${HERMIT_ENV:-}" == "$PWD" && "$(command -v cargo)" == "$PWD"/* ]] \
+  || die "hermit did not activate; cargo is $(command -v cargo)"
 just desktop-install-ci
 (cd desktop && node scripts/set-version-from-tag.mjs "$VERSION")
 (cd desktop/src-tauri && cargo update --workspace)
@@ -105,17 +137,27 @@ plist() { /usr/libexec/PlistBuddy -c "Print :$1" "$PLIST"; }
 # any other name gets our agents killed by a co-installed Block Desktop.
 [[ "$(plist CFBundleExecutable)" == "buzz-desktop" ]] || die "executable is $(plist CFBundleExecutable)"
 codesign --verify --deep --strict --verbose=2 "$APP"
-codesign -dv "$APP" 2>&1 | grep -q "^TeamIdentifier=${TEAM}$" || die "app is not signed by team ${TEAM}"
+SIGNING="$(codesign -dv "$APP" 2>&1)"
+grep -q "^TeamIdentifier=${TEAM}$" <<<"$SIGNING" || die "app is not signed by team ${TEAM}"
 spctl --assess --type execute --verbose=4 "$APP"
 xcrun stapler validate "$APP"
 desktop/scripts/verify-macos-entitlements.sh "$APP"
 
 ARCHIVE="${BUNDLE}/macos/Buzz.app.tar.gz"
 [[ -f "$ARCHIVE" && -f "${ARCHIVE}.sig" ]] || die "missing updater archive or signature"
+# Tauri only warns when the signing key does not match the embedded public key.
+[[ "$(key_id "$(cat "${ARCHIVE}.sig")")" == "$UPDATER_KEY_ID" ]] \
+  || die "updater archive is signed by key $(key_id "$(cat "${ARCHIVE}.sig")"), expected ${UPDATER_KEY_ID}"
 DMG="$(find "${BUNDLE}/dmg" -name '*.dmg' -type f | head -1)"
 [[ -n "$DMG" ]] || die "missing DMG"
+# The DMG is how the first install happens; Tauri signs it but does not notarize it.
+xcrun notarytool submit "$DMG" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" \
+  --issuer "$APPLE_API_ISSUER" --wait
+xcrun stapler staple "$DMG"
+spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG"
 
-OUT="$(mktemp -d "${TMPDIR:-/tmp}/aitaco-desktop-${VERSION}.XXXXXX")"
+rm -rf "$OUT"
+mkdir -p "$OUT"
 ASSET="Buzz_${VERSION}_aarch64.app.tar.gz"
 cp "$ARCHIVE" "${OUT}/${ASSET}"
 cp "${ARCHIVE}.sig" "${OUT}/${ASSET}.sig"
@@ -132,14 +174,28 @@ if [[ "$PUBLISH" != "1" ]]; then
 fi
 
 # ── publish ──────────────────────────────────────────────────────────────────
-gh release create "$TAG" -R "$REPO" --target "$SHA" --latest=false \
+# Draft first: a draft creates no tag, so a failed upload can be deleted and
+# the run repeated. Publishing the draft creates the tag.
+gh release create "$TAG" -R "$REPO" --target "$SHA" --latest=false --draft \
   --title "Buzz Desktop ${VERSION} (aitaco)" \
   --notes "Buzz Desktop ${VERSION}, identifier ${IDENTIFIER}, built from ${SHA}. Updater feed: ${ENDPOINT}" \
   "${OUT}/$(basename "$DMG")" "${OUT}/${ASSET}" "${OUT}/${ASSET}.sig"
-if ! gh release view "$FEED_TAG" -R "$REPO" >/dev/null 2>&1; then
+gh release edit "$TAG" -R "$REPO" --draft=false
+echo "Released ${TAG}. Artifacts stay in ${OUT}."
+
+# Moving the feed is what updates installed copies. If anything below fails,
+# the release stands; finish with:
+#   gh release upload ${FEED_TAG} -R ${REPO} ${OUT}/latest.json --clobber
+if ! gh release view "$FEED_TAG" -R "$REPO" --json tagName >/dev/null; then
   gh release create "$FEED_TAG" -R "$REPO" --target "$SHA" --latest=false \
     --title "Buzz Desktop updater feed (aitaco)" \
     --notes "Holds latest.json for installed aitaco Desktop builds. Do not delete."
+fi
+# Check again right before moving the feed: another run may have moved it.
+PUBLISHED="$(feed_version)"
+if [[ -n "$PUBLISHED" ]]; then
+  [[ "$(printf '%s\n%s\n' "$PUBLISHED" "$VERSION" | sort -V | tail -1)" == "$VERSION" && "$PUBLISHED" != "$VERSION" ]] \
+    || die "the feed now serves ${PUBLISHED}; not moving it to ${VERSION}"
 fi
 gh release upload "$FEED_TAG" -R "$REPO" "${OUT}/latest.json" --clobber
 
