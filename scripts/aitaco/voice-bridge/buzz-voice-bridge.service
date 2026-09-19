@@ -24,7 +24,9 @@ Environment=VOICE_BRIDGE_STARTERS=0f8471300f7806058507999b06f16805168c640aad3ffa
 # Context pack (rock's call, #buzz-platform 54da67d0): the roster only. No
 # status snapshot: every fact about the work goes through ask_rock.
 Environment=VOICE_BRIDGE_CONTEXT_FILES=%h/.buzz/GUIDES/AGENT_ROSTER.md
-Environment=VOICE_BRIDGE_GEMINI_KEY_COMMAND=gcloud secrets versions access latest --secret gemini-live-api-key --project aitaco-ml-dev
+# The Gemini key comes from the binary's default key command:
+#   gcloud secrets versions access latest --secret gemini-live-api-key --project aitaco-ml-dev
+# Do not restate it here unquoted: systemd splits Environment= on spaces.
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Environment=RUST_LOG=buzz_voice_bridge=info
 ExecStart=%h/.local/bin/buzz-voice-bridge
