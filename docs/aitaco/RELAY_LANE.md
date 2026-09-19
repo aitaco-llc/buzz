@@ -24,9 +24,14 @@ scripts/aitaco/relay-deploy.sh deploy ghcr.io/aitaco-llc/buzz@sha256:<digest> --
 - the commits between the two revisions
 - any files changed under `migrations/` and `crates/buzz-push-gateway/migrations/`
 
-It refuses a target whose revision is not on `aitaco-llc/buzz` `main`.
+It refuses three kinds of target:
+- a target outside `ghcr.io/aitaco-llc/buzz`. The debug image and the push gateway carry the same revision label, so the digest is what pins the right image.
+- a target whose revision is not on `aitaco-llc/buzz` `main`.
+- any target at all while `/opt/buzz/.env` and the running containers disagree. A rollback would otherwise restore an image that never ran.
 
-**`deploy`** runs `plan`, then these steps in order:
+It runs from any directory inside the clone.
+
+**`deploy`** runs `plan`, then checks that the operator's `buzz` identity can read `--canary-channel` on `https://buzz.aitaco.co`, and stops if not. Nothing has changed at that point. Then it runs these steps in order:
 1. **Backup.** It copies `/opt/buzz/.env` to `.env.pre-<stamp>` and runs `/opt/buzz/backup.sh`, which sends Postgres, MinIO, the git volume and `.env` to `gs://aitaco-buzz-backups/<stamp>/`. It then confirms a backup from this run exists.
 2. **Pull** the target on the host.
 3. **Pin** `BUZZ_IMAGE=<target>` in `/opt/buzz/.env`. The relay and the pair-relay sidecar share this variable.
@@ -34,11 +39,20 @@ It refuses a target whose revision is not on `aitaco-llc/buzz` `main`.
 5. **Check** three things:
    - both containers report the target revision
    - NIP-11 answers at `https://buzz.aitaco.co`
-   - a canary message posted with the operator's `buzz` CLI can be read back from `--canary-channel`
+   - a canary message, posted with the operator's `buzz` CLI to `https://buzz.aitaco.co` whatever `BUZZ_RELAY_URL` says, can be read back from `--canary-channel`
 
-Any failure in steps 3–5 **rolls back**: `.env.pre-<stamp>` is put back, `buzzctl start` runs again, and NIP-11 is re-checked. Each run appends one line to `/opt/buzz/deploys.log` on the host. Logs stay on hip under `~/.local/state/buzz-relay-deploys/`.
+**Rollback.** A failure or an interrupt (Ctrl-C, SIGTERM, SIGHUP) in steps 3–5 **rolls back**:
+- `.env.pre-<stamp>` is put back and `buzzctl start` runs again.
+- The rollback is then **verified**: `.env` and both containers must be back on the previous image, and NIP-11 must answer. If any check fails, the script says ROLLBACK DID NOT VERIFY, and a human takes over.
 
-**When rollback is only a digest swap.** Rollback puts the old image back. It does not touch the database, which is only safe when no migration ran between the two revisions. So `deploy` refuses a target that adds migrations unless you pass `--allow-migrations`. Once migrations have run, going back means restoring the step 1 backup. That's a manual, planned operation (see `backup.sh` for what a restore needs).
+Each run appends one line to `/opt/buzz/deploys.log` on the host. Logs stay on hip under `~/.local/state/buzz-relay-deploys/`.
+
+Run `deploy` in a terminal or background job that can outlive a 2-minute tool timeout. The backup, the pull and `--wait` together take minutes.
+
+**When rollback is only a digest swap.** Rollback puts the old image back. It does not touch the database, which is only safe when no migration ran between the two revisions. So `deploy` refuses a target that adds migrations unless you pass `--allow-migrations`.
+- The live `.env` sets `BUZZ_AUTO_MIGRATE=true`, so the new relay applies migrations at startup.
+- The old binary then refuses a schema it doesn't know.
+- For that reason, once the new relay has started, a failure in a migrating deploy is **not** rolled back by digest. The script stops, leaves the new relay up, and prints the backup to restore from. Going back is a manual restore (see `backup.sh` for what it needs).
 
 ## The first cutover (Block's image → ours)
 

@@ -9,9 +9,10 @@
 #       and migrations between them.
 #   scripts/aitaco/relay-deploy.sh deploy <image@sha256:…> --canary-channel <uuid>
 #       [--allow-migrations]
-#       Backup, pull, pin, start, then check the running revision, NIP-11 and a
-#       canary post. Any failure after the pin restores the previous .env and
-#       starts the previous digest again.
+#       Backup, pull, pin, start, then check the running image and revision,
+#       NIP-11 and a canary post. Any failure or interrupt after the pin restores
+#       the previous .env and starts the previous digest again, then verifies that
+#       it runs. A run that applied migrations is never rolled back by digest.
 set -euo pipefail
 
 die() { echo "relay-deploy: $*" >&2; exit 1; }
@@ -43,11 +44,18 @@ mkdir -p "$LOG_DIR"
 log() { printf '%s %s\n' "$(date -u +%H:%M:%SZ)" "$*" | tee -a "${LOG_DIR}/deploy.log" >&2; }
 remote() { gcloud compute ssh "$HOST" --zone "$ZONE" --command "$1" < /dev/null; }
 for tool in gcloud git curl jq buzz; do command -v "$tool" >/dev/null || die "missing tool: $tool"; done
+# Git pathspecs below are relative; run from the repository root.
+cd "$(git rev-parse --show-toplevel)" || die "run this inside a clone of aitaco-llc/buzz"
 
+# Only the relay image. Its debug variant and the push gateway share the same
+# revision label, so the digest (checked again on the running container) is
+# what pins the right image.
+RELAY_REPO="${RELAY_IMAGE_REPO:-aitaco-llc/buzz}"
 [[ "$TARGET" =~ ^ghcr\.io/([a-z0-9._/-]+)@(sha256:[0-9a-f]{64})$ ]] \
   || die "target must be a digest-pinned GHCR image, ghcr.io/<repo>@sha256:<64 hex>"
 TARGET_REPO="${BASH_REMATCH[1]}"
 TARGET_DIGEST="${BASH_REMATCH[2]}"
+[[ "$TARGET_REPO" == "$RELAY_REPO" ]] || die "target repo is ${TARGET_REPO}; only ghcr.io/${RELAY_REPO} is deployed here"
 
 # Revision label of a GHCR image, read from the registry without pulling. The
 # host is linux/amd64. GHCR_TOKEN (read:packages) is needed for private images.
@@ -73,10 +81,16 @@ image_revision() {
 }
 
 # ── plan ─────────────────────────────────────────────────────────────────────
-LIVE="$(remote 'sudo grep -E "^BUZZ_IMAGE=" /opt/buzz/.env | cut -d= -f2-; sudo docker inspect -f "{{index .Config.Labels \"org.opencontainers.image.revision\"}}" buzz-prod-relay-1')"
-LIVE_IMAGE="$(sed -n 1p <<<"$LIVE")"
-LIVE_REV="$(sed -n 2p <<<"$LIVE")"
+# Prints two lines per container: its image ref, then its revision label.
+running() { remote 'for c in buzz-prod-relay-1 buzz-prod-pair-relay-1; do sudo docker inspect -f "{{.Config.Image}}
+{{index .Config.Labels \"org.opencontainers.image.revision\"}}" "$c"; done'; }
+LIVE_IMAGE="$(remote 'sudo grep -E "^BUZZ_IMAGE=" /opt/buzz/.env | cut -d= -f2-')"
+LIVE_RUNNING="$(running)"
+LIVE_REV="$(sed -n 2p <<<"$LIVE_RUNNING")"
 [[ -n "$LIVE_IMAGE" && -n "$LIVE_REV" ]] || die "could not read the live image and revision"
+# .env and the containers must agree, or rollback would restore an image that never ran.
+[[ "$(sed -n '1p;3p' <<<"$LIVE_RUNNING" | sort -u)" == "$LIVE_IMAGE" ]] \
+  || die "drift: /opt/buzz/.env names ${LIVE_IMAGE} but the containers run $(sed -n '1p;3p' <<<"$LIVE_RUNNING" | sort -u | tr '\n' ' '). Settle that by hand first."
 TARGET_REV="$(image_revision "$TARGET_REPO" "$TARGET_DIGEST")" \
   || die "could not read ${TARGET} from the registry (private package? set GHCR_TOKEN)"
 [[ -n "$TARGET_REV" ]] || die "${TARGET} carries no org.opencontainers.image.revision label"
@@ -107,6 +121,10 @@ fi
 
 # ── deploy ───────────────────────────────────────────────────────────────────
 [[ -n "$CANARY_CHANNEL" ]] || die "deploy needs --canary-channel <uuid>"
+# The canary talks to the relay being deployed, not whatever BUZZ_RELAY_URL says.
+canary_buzz() { BUZZ_RELAY_URL="$PUBLIC_URL" buzz --format compact "$@"; }
+canary_buzz messages get --channel "$CANARY_CHANNEL" --limit 1 >/dev/null \
+  || die "cannot read canary channel ${CANARY_CHANNEL} on ${PUBLIC_URL} with this identity; nothing changed"
 [[ "$LIVE_IMAGE" != "$TARGET" ]] || die "the live relay already runs ${TARGET}"
 if [[ -n "$MIGRATIONS" && "$ALLOW_MIGRATIONS" != "1" ]]; then
   die "the target adds migrations; rollback would then need a database restore, not a digest swap. Re-run with --allow-migrations once that is accepted."
@@ -122,29 +140,45 @@ log "backup: ${BACKUP_BUCKET}/${BACKUP}/"
 log "pull ${TARGET} on ${HOST}"
 remote "sudo docker pull ${TARGET} >/dev/null" || die "pull failed; nothing changed"
 
+STARTED=0
 rollback() {
-  log "ROLLBACK: restoring .env.pre-${STAMP} (${LIVE_IMAGE}) and starting it"
-  remote "sudo cp -p /opt/buzz/.env.pre-${STAMP} /opt/buzz/.env && sudo /opt/buzz/buzzctl start" || true
-  if curl -fsS -m 10 -H 'Accept: application/nostr+json' "$PUBLIC_URL" | jq -e .name >/dev/null; then
-    log "ROLLBACK: NIP-11 answers again on ${LIVE_IMAGE}"
-  else
-    log "ROLLBACK: NIP-11 still failing; the relay needs a human now"
+  trap - INT TERM HUP
+  local reason="$1"
+  if [[ "$STARTED" == "1" && -n "$MIGRATIONS" ]]; then
+    # The new relay may have applied migrations (BUZZ_AUTO_MIGRATE), and the
+    # old binary refuses to start on a schema it does not know. Leave it up.
+    log "FAILED after start with migrations (${reason}). Not rolling back by digest."
+    log "Recovery: restore ${BACKUP_BUCKET}/${BACKUP}/ with /opt/buzz/.env.pre-${STAMP} (see backup.sh)."
+    remote "echo '${STAMP} ${LIVE_IMAGE} -> ${TARGET} (${TARGET_REV}) FAILED (${reason}), not rolled back, backup=${BACKUP}' | sudo tee -a /opt/buzz/deploys.log >/dev/null" || true
+    die "deploy failed at: ${reason}. NOT rolled back (migrations). Log: ${LOG_DIR}"
   fi
-  remote "echo '${STAMP} ${LIVE_IMAGE} -> ${TARGET} (${TARGET_REV}) ROLLED BACK backup=${BACKUP}' | sudo tee -a /opt/buzz/deploys.log >/dev/null" || true
-  die "deploy failed at: $1. Rolled back. Log: ${LOG_DIR}"
+  log "ROLLBACK (${reason}): restoring .env.pre-${STAMP} (${LIVE_IMAGE}) and starting it"
+  local ok=1
+  remote "sudo cp -p /opt/buzz/.env.pre-${STAMP} /opt/buzz/.env && sudo /opt/buzz/buzzctl start" || ok=0
+  # Verify, don't assume: .env and both containers must be back on the live image.
+  [[ "$(remote 'sudo grep -E "^BUZZ_IMAGE=" /opt/buzz/.env | cut -d= -f2-' || true)" == "$LIVE_IMAGE" ]] || ok=0
+  [[ "$(running 2>/dev/null || true)" == "$LIVE_RUNNING" ]] || ok=0
+  curl -fsS -m 10 -H 'Accept: application/nostr+json' "$PUBLIC_URL" | jq -e .name >/dev/null || ok=0
+  if [[ "$ok" == "1" ]]; then
+    remote "echo '${STAMP} ${LIVE_IMAGE} -> ${TARGET} (${TARGET_REV}) ROLLED BACK (${reason}) backup=${BACKUP}' | sudo tee -a /opt/buzz/deploys.log >/dev/null" || true
+    die "deploy failed at: ${reason}. Rolled back and verified: ${LIVE_IMAGE} runs, NIP-11 answers. Log: ${LOG_DIR}"
+  fi
+  die "deploy failed at: ${reason}. ROLLBACK DID NOT VERIFY: check /opt/buzz/.env (.env.pre-${STAMP} is the previous one) and the containers by hand NOW. Log: ${LOG_DIR}"
 }
 
+trap 'rollback "interrupted"' INT TERM HUP
 log "pin BUZZ_IMAGE=${TARGET}"
 remote "sudo sed -i 's#^BUZZ_IMAGE=.*#BUZZ_IMAGE=${TARGET}#' /opt/buzz/.env && sudo grep -qx 'BUZZ_IMAGE=${TARGET}' /opt/buzz/.env" \
   || rollback "pin"
 
 log "start: buzzctl start (compose up -d --wait)"
+STARTED=1
 remote "sudo /opt/buzz/buzzctl start" || rollback "start"
 
-RUNNING_REV="$(remote 'sudo docker inspect -f "{{index .Config.Labels \"org.opencontainers.image.revision\"}}" buzz-prod-relay-1 buzz-prod-pair-relay-1' | sort -u)" \
-  || rollback "inspect"
-[[ "$RUNNING_REV" == "$TARGET_REV" ]] || rollback "running revision is '${RUNNING_REV//$'\n'/ }', expected ${TARGET_REV}"
-log "running: relay and pair-relay at ${TARGET_REV}"
+NOW_RUNNING="$(running)" || rollback "inspect"
+[[ "$NOW_RUNNING" == "$(printf '%s\n%s\n%s\n%s' "$TARGET" "$TARGET_REV" "$TARGET" "$TARGET_REV")" ]] \
+  || rollback "containers run '${NOW_RUNNING//$'\n'/ }', expected ${TARGET} at ${TARGET_REV}"
+log "running: relay and pair-relay on ${TARGET} (${TARGET_REV})"
 
 nip11_ok=0
 for _ in 1 2 3 4 5 6; do
@@ -155,17 +189,19 @@ done
 log "NIP-11: ${PUBLIC_URL} answers"
 
 CANARY_TEXT="relay deploy canary ${STAMP}: ${TARGET_REV}"
-CANARY_ID="$(buzz --format compact messages send --channel "$CANARY_CHANNEL" --content "$CANARY_TEXT" | jq -r .event_id)" \
+CANARY_ID="$(canary_buzz messages send --channel "$CANARY_CHANNEL" --content "$CANARY_TEXT" | jq -r .event_id)" \
   || rollback "canary send"
 [[ "$CANARY_ID" =~ ^[0-9a-f]{64}$ ]] || rollback "canary send returned no event id"
 canary_ok=0
 for _ in 1 2 3 4 5 6; do
-  if buzz --format compact messages get --channel "$CANARY_CHANNEL" --limit 20 \
+  if canary_buzz messages get --channel "$CANARY_CHANNEL" --limit 20 \
       | jq -e --arg id "$CANARY_ID" 'any(.[]; .id == $id)' >/dev/null; then canary_ok=1; break; fi
   sleep 5
 done
 [[ "$canary_ok" == "1" ]] || rollback "canary read-back"
 log "canary: ${CANARY_ID} posted and read back"
 
-remote "echo '${STAMP} ${LIVE_IMAGE} -> ${TARGET} (${TARGET_REV}) ok backup=${BACKUP} canary=${CANARY_ID}' | sudo tee -a /opt/buzz/deploys.log >/dev/null"
+trap - INT TERM HUP
+remote "echo '${STAMP} ${LIVE_IMAGE} -> ${TARGET} (${TARGET_REV}) ok backup=${BACKUP} canary=${CANARY_ID}' | sudo tee -a /opt/buzz/deploys.log >/dev/null" \
+  || log "warning: could not append to /opt/buzz/deploys.log"
 log "DONE: ${HOST} runs ${TARGET} (${TARGET_REV}). Previous .env kept as /opt/buzz/.env.pre-${STAMP}. Log: ${LOG_DIR}"
