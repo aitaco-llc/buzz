@@ -4064,7 +4064,10 @@ async fn tokio_main() -> Result<()> {
                     }
                 }
                 if drop_withheld {
-                    queue.remove_event(&scope, &event_id);
+                    // The running turn now answers this event too.
+                    if let Some(event) = queue.remove_event(&scope, &event_id) {
+                        pool.record_steered_answer_target(&scope, &event);
+                    }
                 }
                 if release_withheld {
                     queue.release_native_steer(&scope, &event_id);
@@ -4735,6 +4738,7 @@ fn dispatch_pending(
         agent
             .state
             .set_scope_owner_generation(scope.clone(), owner_generation);
+        let answer = pool::AnswerLedger::for_batch(&batch, pool.answer_since());
 
         let abort_handle = pool.join_set.spawn(async move {
             pool::run_prompt_task(
@@ -4760,6 +4764,7 @@ fn dispatch_pending(
                 control_tx: Some(control_tx),
                 steer_tx,
                 successful_steer_deliveries: HashSet::new(),
+                answer,
             },
         );
         dispatched_channels.push((scope, typing_scope));
@@ -4850,15 +4855,26 @@ fn handle_prompt_result(
 ) -> LoopAction {
     let before = pool.task_map().len();
     let agent_index = result.agent.index;
-    let successful_steer_deliveries = pool
+    let (successful_steer_deliveries, answer) = pool
         .task_map()
         .values()
         .find(|meta| meta.agent_index == agent_index)
-        .map(|meta| meta.successful_steer_deliveries.clone())
+        .map(|meta| {
+            (
+                meta.successful_steer_deliveries.clone(),
+                meta.answer.clone(),
+            )
+        })
         .unwrap_or_default();
     pool.task_map_mut()
         .retain(|_, meta| meta.agent_index != agent_index);
     debug_assert_eq!(before, pool.task_map().len() + 1);
+    pool.note_turn_end();
+    // ✅ only for a turn that succeeded: a turn that posted "on it" and then
+    // failed has not answered anything.
+    if let (Some(rest), PromptOutcome::Ok(_)) = (rest_client, &result.outcome) {
+        pool::spawn_answered_reactions(rest, answer);
+    }
     if let PromptSource::Channel(scope) = &result.source {
         // The task may have invalidated this session before returning. Never
         // resurrect delivery state for a dead session; its replacement must
@@ -4927,7 +4943,8 @@ fn handle_prompt_result(
                     batch.events.len(),
                 );
                 let content = format!(
-                    "⚠️ I couldn't process the last request (the turn exceeded the maximum duration ({}s)). Please re-send if it's still needed.",
+                    "{} (the turn exceeded the maximum duration ({}s)). Please re-send if it's still needed.",
+                    pool::FAILURE_NOTICE_PREFIX,
                     config.max_turn_duration_secs
                 );
                 spawn_failure_notice(rest_client, &batch, content);
@@ -4945,7 +4962,8 @@ fn handle_prompt_result(
                 );
                 if let Some(dead) = queue.requeue(batch) {
                     let content = format!(
-                        "⚠️ I couldn't process the last request after multiple retries (the turn exceeded the maximum duration ({}s)). Please re-send if it's still needed.",
+                        "{} after multiple retries (the turn exceeded the maximum duration ({}s)). Please re-send if it's still needed.",
+                        pool::FAILURE_NOTICE_PREFIX,
                         config.max_turn_duration_secs
                     );
                     spawn_failure_notice(rest_client, &dead, content);
@@ -4964,11 +4982,13 @@ fn handle_prompt_result(
                     events = batch.events.len(),
                     "dead-lettering batch immediately — model not found"
                 );
-                let content = "⚠️ I couldn't process the last request: the configured model \
+                let content = format!(
+                    "{}: the configured model \
                     wasn't found at the provider's endpoint. Open agent settings, select a \
                     different model from the dropdown, and save your changes. Restart the agent \
-                    to apply the new configuration, then re-send your request."
-                    .to_string();
+                    to apply the new configuration, then re-send your request.",
+                    pool::FAILURE_NOTICE_PREFIX
+                );
                 spawn_failure_notice(rest_client, &batch, content);
             } else if matches!(&result.outcome, PromptOutcome::Error(e) if is_auth_error(e)) {
                 // Auth errors are non-retryable: the token won't self-repair
@@ -4980,10 +5000,12 @@ fn handle_prompt_result(
                     events = batch.events.len(),
                     "dead-lettering batch immediately — non-retryable auth error"
                 );
-                let content = "⚠️ I couldn't process the last request: authentication failed. \
+                let content = format!(
+                    "{}: authentication failed. \
                     Please re-authenticate the CLI (e.g. run `claude /login` or `codex login`) \
-                    and then re-send."
-                    .to_string();
+                    and then re-send.",
+                    pool::FAILURE_NOTICE_PREFIX
+                );
                 spawn_failure_notice(rest_client, &batch, content);
             } else if let Some(dead) = queue.requeue(batch) {
                 let reason = match &result.outcome {
@@ -4997,7 +5019,8 @@ fn handle_prompt_result(
                     _ => "repeated failures".to_string(),
                 };
                 let content = format!(
-                    "⚠️ I couldn't process the last request after multiple retries ({reason}). Please re-send if it's still needed."
+                    "{} after multiple retries ({reason}). Please re-send if it's still needed.",
+                    pool::FAILURE_NOTICE_PREFIX
                 );
                 spawn_failure_notice(rest_client, &dead, content);
             }
@@ -5447,6 +5470,7 @@ fn dispatch_heartbeat(
             recoverable_batch: None,
             control_tx: None,
             steer_tx: None,
+            answer: Default::default(),
             successful_steer_deliveries: HashSet::new(),
         },
     );
@@ -6273,6 +6297,7 @@ mod owner_control_command_tests {
                 recoverable_batch: None,
                 control_tx: Some(control_tx),
                 steer_tx: None,
+                answer: Default::default(),
                 successful_steer_deliveries: HashSet::new(),
             },
         );
@@ -6319,6 +6344,7 @@ mod owner_control_command_tests {
                 recoverable_batch: None,
                 control_tx: Some(control_tx),
                 steer_tx: None,
+                answer: Default::default(),
                 successful_steer_deliveries: HashSet::new(),
             },
         );
@@ -9690,6 +9716,7 @@ mod error_outcome_emission_tests {
                 recoverable_batch: None,
                 control_tx: None,
                 steer_tx: None,
+                answer: Default::default(),
                 successful_steer_deliveries: HashSet::from([
                     crate::pool::SuccessfulSteerDelivery {
                         event_id: steer_event_id.into(),
@@ -9770,6 +9797,7 @@ mod error_outcome_emission_tests {
                 recoverable_batch: None,
                 control_tx: None,
                 steer_tx: None,
+                answer: Default::default(),
                 successful_steer_deliveries: HashSet::from([
                     crate::pool::SuccessfulSteerDelivery {
                         event_id: "stale-event".into(),
@@ -9892,6 +9920,7 @@ mod error_outcome_emission_tests {
                 recoverable_batch: None,
                 control_tx: None,
                 steer_tx: None,
+                answer: Default::default(),
                 successful_steer_deliveries: HashSet::from([
                     crate::pool::SuccessfulSteerDelivery {
                         event_id: "stale-event".into(),
@@ -9961,6 +9990,7 @@ mod error_outcome_emission_tests {
                 recoverable_batch: None,
                 control_tx: None,
                 steer_tx: None,
+                answer: Default::default(),
                 successful_steer_deliveries: HashSet::new(),
             },
         );
@@ -10041,6 +10071,7 @@ mod error_outcome_emission_tests {
                 recoverable_batch: None,
                 control_tx: None,
                 steer_tx: None,
+                answer: Default::default(),
                 successful_steer_deliveries: HashSet::new(),
             },
         );
@@ -10133,6 +10164,7 @@ mod error_outcome_emission_tests {
                 recoverable_batch: Some(batch),
                 control_tx: None,
                 steer_tx: None,
+                answer: Default::default(),
                 successful_steer_deliveries: HashSet::new(),
             },
         );
@@ -10232,6 +10264,7 @@ mod error_outcome_emission_tests {
                     recoverable_batch: None,
                     control_tx: None,
                     steer_tx: None,
+                    answer: Default::default(),
                     successful_steer_deliveries: HashSet::new(),
                 },
             );
@@ -10329,6 +10362,7 @@ mod error_outcome_emission_tests {
                     recoverable_batch: None,
                     control_tx: None,
                     steer_tx: None,
+                    answer: Default::default(),
                     successful_steer_deliveries: HashSet::new(),
                 },
             );
@@ -10437,6 +10471,7 @@ mod error_outcome_emission_tests {
                     recoverable_batch: None,
                     control_tx: None,
                     steer_tx: None,
+                    answer: Default::default(),
                     successful_steer_deliveries: HashSet::new(),
                 },
             );
@@ -10515,6 +10550,7 @@ mod error_outcome_emission_tests {
                 recoverable_batch: None,
                 control_tx: None,
                 steer_tx: None,
+                answer: Default::default(),
                 successful_steer_deliveries: HashSet::new(),
             },
         );
@@ -10612,6 +10648,7 @@ mod error_outcome_emission_tests {
                 recoverable_batch: None,
                 control_tx: None,
                 steer_tx: None,
+                answer: Default::default(),
                 successful_steer_deliveries: HashSet::new(),
             },
         );
@@ -10732,6 +10769,7 @@ mod error_outcome_emission_tests {
                 recoverable_batch: None,
                 control_tx: None,
                 steer_tx: None,
+                answer: Default::default(),
                 successful_steer_deliveries: HashSet::new(),
             },
         );
@@ -10874,6 +10912,7 @@ mod error_outcome_emission_tests {
                 recoverable_batch: None,
                 control_tx: None,
                 steer_tx: None,
+                answer: Default::default(),
                 successful_steer_deliveries: HashSet::new(),
             },
         );
@@ -11008,6 +11047,7 @@ mod error_outcome_emission_tests {
                 recoverable_batch: None,
                 control_tx: None,
                 steer_tx: None,
+                answer: Default::default(),
                 successful_steer_deliveries: HashSet::new(),
             },
         );
@@ -11163,6 +11203,7 @@ mod error_outcome_emission_tests {
                 recoverable_batch: None,
                 control_tx: None,
                 steer_tx: None,
+                answer: Default::default(),
                 successful_steer_deliveries: HashSet::new(),
             },
         );
@@ -11266,6 +11307,7 @@ mod error_outcome_emission_tests {
                 recoverable_batch: None,
                 control_tx: None,
                 steer_tx: None,
+                answer: Default::default(),
                 successful_steer_deliveries: HashSet::new(),
             },
         );
@@ -11427,6 +11469,7 @@ mod error_outcome_emission_tests {
                 recoverable_batch: None,
                 control_tx: None,
                 steer_tx: None,
+                answer: Default::default(),
                 successful_steer_deliveries: HashSet::new(),
             },
         );
