@@ -96,7 +96,8 @@ class Handler(BaseHTTPRequestHandler):
                 finish_reason=choice.get("finish_reason"),
                 tool_calls=len(message.get("tool_calls") or []),
                 content_chars=len(message.get("content") or ""),
-                reasoning_chars=len(message.get("reasoning_content") or ""),
+                # Rebrand says `reasoning_content`; Ollama's OpenAI shim says `reasoning`.
+                reasoning_chars=len(message.get("reasoning_content") or message.get("reasoning") or ""),
                 usage=response.get("usage"),
             )
             if status != 200:

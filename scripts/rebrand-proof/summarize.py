@@ -14,6 +14,8 @@ Recorded per run (null when a field does not apply to the mode):
   prompt_tokens_first, prompt_tokens_max, completion_tokens_total
                        from each response's `usage`, as the backend reports them
   prompt_chars_first, request_bytes_max, tool_calls, finish_reasons
+  reasoning_chars_total
+                       characters the backend returned as `reasoning_content`
   http_errors, unknown_fields
                        non-200 responses; request fields Rebrand would reject
   serve_ready_s        rebrand only: `rebrand serve` start to /health ok
@@ -22,7 +24,10 @@ Recorded per run (null when a field does not apply to the mode):
   seat_cwd, hint_agents_md, hint_bytes, hint_skill_files
                        the seat's own working directory, and the AGENTS.md files
                        (path, bytes) and SKILL.md count its hint loader reads
-  mode, model_id, model_path, model_bytes, backend_version, max_seq_len,
+  backend_context_len  the context the backend ran with: Ollama's loaded
+                       context_length, or rebrand's --max-seq-len
+  mode, model_id, model_path, model_bytes, model_sha256, backend_version,
+  backend_sha256 (rebrand only: first 16 hex of the binary's sha256), max_seq_len,
   max_output_tokens, binaries, repo_commit, run_id
 """
 
@@ -128,7 +133,10 @@ def main():
         "model_id": read(run_dir, "model_id"),
         "model_path": read(run_dir, "model_path"),
         "model_bytes": int(read(run_dir, "model_bytes")) if read(run_dir, "model_bytes") else None,
+        "model_sha256": read(run_dir, "model_sha256"),
         "backend_version": read(run_dir, "backend_version"),
+        "backend_sha256": read(run_dir, "backend_sha256"),
+        "backend_context_len": int(read(run_dir, "backend_context_len") or 0) or None,
         "max_seq_len": int(read(run_dir, "max_seq_len") or 0) or None,
         "max_output_tokens": int(read(run_dir, "max_output_tokens") or 0) or None,
         "serve_ready_s": as_float(read(run_dir, "serve_ready_s")),
@@ -154,6 +162,7 @@ def main():
         "prompt_chars_first": calls[0].get("prompt_chars") if calls else None,
         "request_bytes_max": max((c.get("request_bytes") or 0) for c in calls) if calls else None,
         "tool_calls": sum(c.get("tool_calls") or 0 for c in calls),
+        "reasoning_chars_total": sum(c.get("reasoning_chars") or 0 for c in calls),
         "finish_reasons": [c.get("finish_reason") for c in calls],
         "http_errors": [{"status": c["status"], "error": c.get("error")} for c in calls if c.get("status") != 200],
         "unknown_fields": sorted({f for c in calls for f in (c.get("unknown_fields") or [])}),

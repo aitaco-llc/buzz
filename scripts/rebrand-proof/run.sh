@@ -65,6 +65,12 @@ cleanup() {
     for _ in $(seq 1 20); do kill -0 "${pid}" 2>/dev/null || break; sleep 0.5; done
     kill -KILL "${pid}" 2>/dev/null || true
   done
+  # The card is shared: do not leave the control's model resident for Ollama's
+  # keep-alive (5 min) after the run. Skip it if someone else had it loaded.
+  if [[ "${MODE}" == "ollama" && "${OLLAMA_PRELOADED:-1}" == "0" ]]; then
+    curl -sf -m 30 "${OLLAMA_BASE}/api/generate" \
+      -d "{\"model\":\"${OLLAMA_MODEL}\",\"keep_alive\":0}" >/dev/null 2>&1 || true
+  fi
   if [[ "${PROOF_KEEP_INFRA:-0}" != "1" ]]; then
     docker stop "${PREFIX}-pg" "${PREFIX}-redis" "${PREFIX}-minio" >/dev/null 2>&1 || true
   fi
@@ -75,6 +81,18 @@ trap cleanup EXIT
 need() { command -v "$1" >/dev/null || [[ -x "$1" ]] || { echo "missing: $1" >&2; exit 69; }; }
 for bin in buzz buzz-acp buzz-agent buzz-dev-mcp; do need "${BIN_DIR}/${bin}"; done
 need "${RELAY_BIN}"; need "${ADMIN_BIN}"; need docker; need python3; need curl
+# The card is shared. Refuse to start a GPU run on top of someone else's.
+VRAM_IDLE_MAX_MIB="${PROOF_VRAM_IDLE_MAX_MIB:-3500}"
+if [[ "${MODE}" != "stub" ]]; then
+  vram_file="$(ls /sys/class/drm/card*/device/mem_info_vram_used 2>/dev/null | head -1 || true)"
+  if [[ -n "${vram_file}" ]]; then
+    vram_mib=$(( $(cat "${vram_file}") / 1048576 ))
+    if (( vram_mib > VRAM_IDLE_MAX_MIB )); then
+      echo "VRAM in use is ${vram_mib} MiB, above the ${VRAM_IDLE_MAX_MIB} MiB idle baseline; someone is on the card" >&2
+      exit 75
+    fi
+  fi
+fi
 if [[ "${MODE}" == "rebrand" ]]; then
   [[ -x "${REBRAND_BIN}" ]] || { echo "set REBRAND_BIN to a rebrand binary" >&2; exit 64; }
   [[ -f "${REBRAND_MODEL}" ]] || { echo "set REBRAND_MODEL to a GGUF file" >&2; exit 64; }
@@ -113,7 +131,12 @@ log "starting local relay infrastructure"
 container pg -e POSTGRES_USER=buzz -e POSTGRES_PASSWORD=buzz_dev -e POSTGRES_DB=buzz \
   -p "127.0.0.1:${PG_PORT}:5432" postgres:17-alpine
 container redis -p "127.0.0.1:${REDIS_PORT}:6379" redis:7-alpine
+# MinIO keeps its data in RAM and is recreated each run. The proof needs no
+# object from an earlier run, and MinIO refuses every write once the disk that
+# holds its data is 99% full (XMinioStorageFull), which hip's root disk can be.
+docker rm -f "${PREFIX}-minio" >/dev/null 2>&1 || true
 container minio -e MINIO_ROOT_USER=buzz_dev -e MINIO_ROOT_PASSWORD=buzz_dev_secret \
+  --tmpfs /data:rw,size=1g \
   -p "127.0.0.1:${MINIO_PORT}:9000" quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
 for _ in $(seq 1 60); do docker exec "${PREFIX}-pg" pg_isready -U buzz >/dev/null 2>&1 && break; sleep 1; done
 for _ in $(seq 1 60); do curl -sf "http://127.0.0.1:${MINIO_PORT}/minio/health/live" >/dev/null && break; sleep 1; done
@@ -178,14 +201,24 @@ case "${MODE}" in
     curl -sf "${BACKEND}/v1/models" | grep -q "\"${MODEL_ID}\"" \
       || { log "Ollama at ${BACKEND} does not list ${MODEL_ID}"; exit 69; }
     put backend_version "ollama $(curl -sf "${BACKEND}/api/version" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("version",""))')"
+    OLLAMA_PRELOADED="$(curl -sf "${BACKEND}/api/ps" | python3 -c 'import json,sys; m=sys.argv[1]; print(int(any(x.get("name")==m for x in json.load(sys.stdin).get("models",[]))))' "${MODEL_ID}")"
+    blob="$(curl -sf "${BACKEND}/api/show" -d "{\"model\":\"${MODEL_ID}\"}" \
+      | python3 -c 'import json,sys; print(next((l[5:] for l in json.load(sys.stdin)["modelfile"].splitlines() if l.startswith("FROM /")), ""))')"
+    if [[ -n "${blob}" ]]; then
+      put model_path "${blob}"
+      put model_bytes "$(stat -c %s "${blob}")"
+      put model_sha256 "${blob##*/sha256-}"   # Ollama names each blob by its sha256
+    fi
     ;;
   rebrand)
     if ss -ltn 2>/dev/null | grep -q ":${REBRAND_PORT} "; then
       log "port ${REBRAND_PORT} is in use; refusing to share it"; exit 69
     fi
     put backend_version "$("${REBRAND_BIN}" --version 2>&1 | head -1)"
+    put backend_sha256 "$(sha256sum "${REBRAND_BIN}" | cut -c1-16)"   # a path can be rebuilt under you
     put model_path "${REBRAND_MODEL}"
     put model_bytes "$(stat -c %s "${REBRAND_MODEL}")"
+    put model_sha256 "$(sha256sum "${REBRAND_MODEL}" | cut -d' ' -f1)"
     serve_started="$(now)"
     # shellcheck disable=SC2086 # REBRAND_EXTRA_ARGS is a flag list by design
     "${REBRAND_BIN}" serve --model "${REBRAND_MODEL}" --host 127.0.0.1 --port "${REBRAND_PORT}" \
@@ -326,5 +359,11 @@ for _ in $(seq 1 90); do
 done
 kill -TERM "${PIDS[-1]}" 2>/dev/null || true   # the seat: flushes the turn log on exit
 sleep 4
+
+case "${MODE}" in
+  ollama)   # Ollama picks its own default context; read what it loaded with.
+    put backend_context_len "$(curl -sf "${BACKEND}/api/ps" | python3 -c 'import json,sys; m=sys.argv[1]; print(next((x.get("context_length","") for x in json.load(sys.stdin).get("models",[]) if x.get("name")==m), ""))' "${MODEL_ID}")" ;;
+  rebrand) put backend_context_len "${MAX_SEQ_LEN}" ;;
+esac
 
 python3 "${HERE}/summarize.py" --run-dir "${RUN_DIR}" --seat "${SEAT_PUB}" --results "${RESULTS}"
