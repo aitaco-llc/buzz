@@ -16,11 +16,10 @@ let package = Package(
     .target(
       name: "BuzzPadApp",
       dependencies: ["BuzzCore", "BuzzPushKit"],
-      path: ".",
-      exclude: ["Buzz/Assets.xcassets", "Buzz/Buzz.entitlements"],
+      path: "Buzz",
+      exclude: ["Assets.xcassets", "Buzz.entitlements"],
       // Embedded/ links the files the standalone project takes from mobile/
       // directly: the shared huddle audio engine, emoji catalog and mark.
-      sources: ["Buzz", "Embedded/HuddleAudioEngine.swift"],
       resources: [.copy("Embedded/emoji-data.json"), .copy("Embedded/aitaco-mark.png")],
       linkerSettings: [.linkedFramework("DeclaredAgeRange")]
     )

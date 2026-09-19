@@ -20,7 +20,8 @@ targets:
     type: application
     platform: iOS
     sources:
-      - Buzz
+      - path: Buzz
+        excludes: ["Embedded/**"]
       - path: ../mobile/ios/Runner/HuddleAudioEngine.swift
       - path: ../mobile/assets/emoji/emoji-data.json
         buildPhase: resources
