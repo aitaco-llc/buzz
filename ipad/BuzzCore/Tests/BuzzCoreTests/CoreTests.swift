@@ -183,6 +183,38 @@ struct CoreTests {
   }
 }
 
+@Suite struct OutboxOrderingTests {
+  @Test func rejectedActionDoesNotBlockLaterActions() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let community = try Community(url: "https://buzz.example", name: "Test")
+    let identity = try Identity()
+    let store = try LocalStore(directory: root, community: community, pubkey: identity.pubkey)
+    let rejected = try identity.sign(kind: 48100, content: "{}", tags: [["h", "one"]])
+    let message = try identity.sign(kind: 9, content: "still delivered", tags: [["h", "one"]])
+    try await store.enqueue(rejected)
+    try await store.enqueue(message)
+    let relay = RejectingRelay(rejectedKind: 48100)
+    let outbox = Outbox(store: store, relay: relay)
+    await #expect(throws: BuzzError.self) { try await outbox.flush() }
+    #expect(await relay.accepted == [message.id])
+    let pending = await store.intentSnapshot().pending
+    #expect(pending.map(\.id) == [rejected.id])
+    #expect(pending.first?.failure != nil)
+  }
+}
+
+private actor RejectingRelay: RelayTransport {
+  let rejectedKind: Int
+  var accepted: [String] = []
+  init(rejectedKind: Int) { self.rejectedKind = rejectedKind }
+  func query(_ filters: [EventFilter]) async throws -> [Event] { [] }
+  func publish(_ event: Event) async throws {
+    if event.kind == rejectedKind { throw BuzzError.rejected("invalid") }
+    accepted.append(event.id)
+  }
+}
+
 private actor FakeRelay: RelayTransport {
   var ids: [String] = []
   private var succeeds = false
