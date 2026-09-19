@@ -342,6 +342,7 @@ out of the box with `just setup` or `just relay`. Common overrides:
 | `BUZZ_ALLOW_NIP_OA_AUTH`        | `false`                     | Enable NIP-OA owner attestation for membership |
 | `BUZZ_WEB_DIR`                  | unset (source), `/srv/buzz/web` (container) | Directory containing the invite landing bundle; the production container enables it so `/invite/{code}` always works |
 | `BUZZ_SERVE_GIT_WEB_GUI`        | `false`                     | Set to `true` or `1` to expose the bundled Git repository browser at `/` and `/repos/...`; invite routes do not depend on this flag |
+| `BUZZ_APPLE_APP_IDS`            | unset                       | Comma-separated `<team id>.<bundle id>` list. When set, `/.well-known/apple-app-site-association` names these iOS apps for `/invite/*`, so a tapped invite link opens the app as a universal link. A malformed entry fails startup |
 
 CLI-side, only two matter for testing:
 

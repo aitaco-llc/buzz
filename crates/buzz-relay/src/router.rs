@@ -65,6 +65,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/", get(nip11_or_ws_handler))
         .route("/info", get(relay_info_handler))
         .route("/.well-known/nostr.json", get(api::nip05::nostr_nip05))
+        .route(
+            "/.well-known/apple-app-site-association",
+            get(api::app_links::apple_app_site_association),
+        )
         // Health endpoints
         .route("/health", get(health_handler))
         .route("/_liveness", get(liveness_handler))
@@ -666,6 +670,14 @@ mod tests {
     /// Relay state serving both bundles: the admin SPA on `admin.example` and
     /// the public SPA on any other host.
     async fn spa_state(admin_dir: &std::path::Path, web_dir: &std::path::Path) -> Arc<AppState> {
+        spa_state_with(admin_dir, web_dir, |_| {}).await
+    }
+
+    async fn spa_state_with(
+        admin_dir: &std::path::Path,
+        web_dir: &std::path::Path,
+        configure: impl FnOnce(&mut crate::config::Config),
+    ) -> Arc<AppState> {
         let mut config = crate::config::Config::from_env().expect("default config loads");
         config.require_relay_membership = false;
         config.redis_url = "redis://127.0.0.1:1".to_string();
@@ -675,6 +687,7 @@ mod tests {
             auth: crate::config::AdminAuth::Disabled,
             web_dir: Some(admin_dir.to_path_buf()),
         });
+        configure(&mut config);
         let pool = sqlx::PgPool::connect_lazy(&config.database_url).expect("lazy pg pool");
         let db = buzz_db::Db::from_pool(pool.clone());
         let redis_pool = deadpool_redis::Config::from_url(&config.redis_url)
@@ -1248,6 +1261,42 @@ mod tests {
                 "{path} on the public host must keep its own headers"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn apple_app_site_association_is_served_directly_only_when_configured() {
+        const PATH: &str = "/.well-known/apple-app-site-association";
+        let admin_dir = tempfile::tempdir().expect("admin bundle dir");
+        let web_dir = tempfile::tempdir().expect("public bundle dir");
+        write_bundle(admin_dir.path());
+        write_bundle(web_dir.path());
+
+        let unset = spa_state(admin_dir.path(), web_dir.path()).await;
+        let response = spa_response(unset, "public.example", PATH).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let set = spa_state_with(admin_dir.path(), web_dir.path(), |config| {
+            config.apple_app_ids = vec!["5F7YLJS4YR.co.aitaco.buzz".to_string()];
+        })
+        .await;
+        let response = spa_response(set, "public.example", PATH).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/json")
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let document: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        let detail = &document["applinks"]["details"][0];
+        assert_eq!(detail["appID"], "5F7YLJS4YR.co.aitaco.buzz");
+        assert_eq!(detail["paths"], json!(["/invite/*"]));
+        assert_eq!(detail["appIDs"], json!(["5F7YLJS4YR.co.aitaco.buzz"]));
+        assert_eq!(detail["components"], json!([{ "/": "/invite/*" }]));
     }
 
     #[test]
