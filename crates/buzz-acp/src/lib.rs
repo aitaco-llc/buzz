@@ -4935,10 +4935,13 @@ fn handle_prompt_result(
         .retain(|_, meta| meta.agent_index != agent_index);
     debug_assert_eq!(before, pool.task_map().len() + 1);
     pool.note_turn_end();
-    // ✅ only for a turn that succeeded: a turn that posted "on it" and then
-    // failed has not answered anything.
-    if let (Some(rest), PromptOutcome::Ok(_)) = (rest_client, &result.outcome) {
-        pool::spawn_answered_reactions(rest, answer);
+    // ✅ only for a turn that ran to its own end — see
+    // `pool::earns_answered_reaction`. A turn that posted "on it" and then
+    // failed, refused, hit a cap or was cancelled has not answered anything.
+    if let Some(rest) = rest_client {
+        if pool::earns_answered_reaction(&result.outcome) {
+            pool::spawn_answered_reactions(rest, answer);
+        }
     }
     if let PromptSource::Channel(scope) = &result.source {
         // The task may have invalidated this session before returning. Never
