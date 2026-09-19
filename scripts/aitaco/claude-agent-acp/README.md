@@ -59,6 +59,19 @@ A `npm install -g` of claude-agent-acp overwrites the patch. On a new version,
 check whether upstream fixed the ordering. If it did not, regenerate the patch
 against the new file.
 
+On the Mac seats the package is not an npm global. `~/.local/bin/claude-agent-acp`
+links into Buzz Desktop's own copy, so pass that directory:
+
+```sh
+scripts/aitaco/claude-agent-acp/apply.sh check \
+  "$HOME/Library/Application Support/Buzz/node-tools/lib/node_modules/@agentclientprotocol/claude-agent-acp"
+```
+
+A Buzz Desktop update that reinstalls its node tools overwrites the patch too.
+Run `check` against that path after every Desktop update. The script uses only
+flags that GNU and BSD tools both accept, so the same commands work on hip and
+on the Mac.
+
 ## Reproduce
 
 ```sh
