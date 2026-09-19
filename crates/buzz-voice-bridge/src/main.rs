@@ -56,13 +56,7 @@ async fn main() -> Result<()> {
     {
         let shutdown = shutdown.clone();
         tokio::spawn(async move {
-            let mut term =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                    .expect("SIGTERM handler");
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => {}
-                _ = term.recv() => {}
-            }
+            shutdown_signal().await;
             shutdown.cancel();
         });
     }
@@ -129,6 +123,23 @@ async fn main() -> Result<()> {
     }
     info!("voice bridge stopped");
     Ok(())
+}
+
+/// SIGINT, or SIGTERM where there is one (systemd stops the unit with it).
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 /// The ephemeral channel named in a huddle lifecycle event's content.

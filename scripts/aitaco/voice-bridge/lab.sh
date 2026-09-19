@@ -18,11 +18,13 @@ STATE="${LAB_STATE:-${BUZZ_AGENT_SCRATCH:-/tmp}/voice-bridge-lab}"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_DIR="${STATE}/runs/${RUN_ID}"
 TARGET="${CARGO_TARGET_DIR:-${REPO}/target}"
+# The bridge is its own workspace (crates/buzz-voice-bridge/Cargo.toml).
+BRIDGE_TARGET="${LAB_BRIDGE_TARGET:-${CARGO_TARGET_DIR:-${REPO}/crates/buzz-voice-bridge/target}}"
 
 BUZZ_BIN="${LAB_BUZZ_BIN:-${HOME}/.local/bin/buzz}"
 ACP_BIN="${LAB_ACP_BIN:?set LAB_ACP_BIN to a buzz-acp that has --self-wake-tag}"
-BRIDGE_BIN="${LAB_BRIDGE_BIN:-${TARGET}/debug/buzz-voice-bridge}"
-CALLER_BIN="${LAB_CALLER_BIN:-${TARGET}/debug/examples/fake_caller}"
+BRIDGE_BIN="${LAB_BRIDGE_BIN:-${BRIDGE_TARGET}/debug/buzz-voice-bridge}"
+CALLER_BIN="${LAB_CALLER_BIN:-${BRIDGE_TARGET}/debug/examples/fake_caller}"
 RELAY_BIN="${LAB_RELAY_BIN:-${TARGET}/debug/buzz-relay}"
 ADMIN_BIN="${LAB_ADMIN_BIN:-${TARGET}/debug/buzz-admin}"
 

@@ -41,8 +41,11 @@ under the buzz-acp being tested, and a phone-shaped caller
 (`examples/fake_caller.rs`). It touches nothing on `buzz.aitaco.co` and makes
 no Gemini call. `lab_check.py` scores 13 checks.
 
+The crate is its own Cargo workspace, like `desktop/src-tauri`. It links
+libopus, a native build that has no place in the relay's Docker image.
+
 ```bash
-cargo build -p buzz-voice-bridge --bins --examples
+cargo build --manifest-path crates/buzz-voice-bridge/Cargo.toml --bins --examples
 LAB_ACP_BIN=<buzz-acp with --self-wake-tag> \
 LAB_RELAY_BIN=<buzz-relay> LAB_ADMIN_BIN=<buzz-admin> \
   bash scripts/aitaco/voice-bridge/lab.sh
