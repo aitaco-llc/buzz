@@ -1689,6 +1689,54 @@ async fn test_auth_with_wrong_challenge_is_refused() {
     send(&mut ws2, &json!(["AUTH", forged])).await;
     let ok = recv(&mut ws2).await;
     assert_eq!(ok[2], false, "forged AUTH accepted");
+
+    // An answer whose relay tag names another relay is refused: another relay
+    // could have passed our challenge on to the client.
+    let (mut ws3, challenge3) = connect_challenged(&url).await;
+    let elsewhere = sign_event(
+        &sk,
+        &pk,
+        22242,
+        json!([
+            ["relay", "wss://relay.example.com"],
+            ["challenge", challenge3]
+        ]),
+        "",
+        now_ts(),
+    );
+    send(&mut ws3, &json!(["AUTH", elsewhere])).await;
+    let ok = recv(&mut ws3).await;
+    assert_eq!(ok[2], false);
+    assert_eq!(ok[3], "auth-required: relay tag does not name this relay");
+
+    // A stale answer is refused (the window is ±600 s).
+    let (mut ws4, challenge4) = connect_challenged(&url).await;
+    let stale = sign_event(
+        &sk,
+        &pk,
+        22242,
+        json!([["relay", url], ["challenge", challenge4]]),
+        "",
+        now_ts() - 700,
+    );
+    send(&mut ws4, &json!(["AUTH", stale])).await;
+    let ok = recv(&mut ws4).await;
+    assert_eq!(ok[2], false);
+    assert_eq!(ok[3], "auth-required: created_at outside freshness window");
+
+    // One a phone with a slow clock might send is accepted.
+    let (mut ws5, challenge5) = connect_challenged(&url).await;
+    let slow = sign_event(
+        &sk,
+        &pk,
+        22242,
+        json!([["relay", format!("{url}/pair")], ["challenge", challenge5]]),
+        "",
+        now_ts() - 300,
+    );
+    send(&mut ws5, &json!(["AUTH", slow])).await;
+    let ok = recv(&mut ws5).await;
+    assert_eq!(ok[2], true, "rejected: {}", ok[3]);
 }
 
 /// 57. The two-apps-on-one-phone handshake. Each side spends part of the

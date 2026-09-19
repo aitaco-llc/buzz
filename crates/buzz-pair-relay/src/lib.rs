@@ -50,7 +50,8 @@
 //!   reconnects gets past its own dead socket.
 //! - Anyone else gets the rules from before the hold: no replay, and no
 //!   subscription while the `#p` has a live one. So a QR code gives nobody the
-//!   held events, the peer's key, or a way to displace the owner.
+//!   held events or a way to displace the owner. Someone who subscribes to a
+//!   `#p` while its owner is away still gets what arrives live, as before.
 //! - A timer drops each held event at [`HOLD_TTL`], whether or not it was
 //!   delivered.
 
@@ -63,7 +64,7 @@ use futures_util::{SinkExt, StreamExt};
 use http_body_util::Full;
 use hyper::body::{Bytes, Incoming};
 use hyper::header::{
-    HeaderValue, CONNECTION, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_VERSION,
+    HeaderValue, CONNECTION, HOST, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_VERSION,
     UPGRADE,
 };
 use hyper::server::conn::http1;
@@ -137,6 +138,10 @@ pub const HOLD_PER_P: usize = MAX_EVENTS_PER_CONN as usize;
 
 /// Held events across all `#p` values. At 4 KiB per event this is 1 MiB.
 pub const HOLD_TOTAL: usize = 256;
+
+// A full replay must fit the writer queue with EOSE, or an owner's REQ would
+// close its connection (see `Relay::subscribe`).
+const _: () = assert!(HOLD_PER_P < CHANNEL_CAP);
 
 enum OutMsg {
     Text(String),
@@ -513,13 +518,36 @@ fn new_challenge() -> Option<String> {
     Some(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
+/// The host part of a `host[:port]` authority or a `ws(s)://…` URL, lowercased.
+fn url_host(s: &str) -> Option<String> {
+    let lower = s.to_ascii_lowercase();
+    let rest = lower
+        .strip_prefix("wss://")
+        .or_else(|| lower.strip_prefix("ws://"))
+        .unwrap_or(&lower);
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let hostport = authority.rsplit('@').next()?;
+    let host = if hostport.starts_with('[') {
+        &hostport[..=hostport.find(']')?]
+    } else {
+        hostport.split(':').next()?
+    };
+    let host = host.trim_end_matches('.');
+    (!host.is_empty()).then(|| host.to_string())
+}
+
 /// Validate a NIP-42 AUTH event against this connection's challenge. Returns
 /// `Ok((event_id, pubkey))` or `Err(reason)`.
 ///
-/// The `relay` tag is not checked: this sidecar sits behind a proxy and doesn't
-/// know its public URL. The challenge is random per connection, which is what
-/// binds the event to this connection.
-fn validate_auth(ev: &Value, challenge: &str) -> Result<(String, [u8; 32]), &'static str> {
+/// The `relay` tag must name `host`, the host this connection asked for (the
+/// proxy passes `Host` through). That stops another relay the client also uses
+/// from relaying our challenge to it and replaying its answer here. The
+/// sidecar doesn't know its public path or scheme, so only the host is checked.
+fn validate_auth(
+    ev: &Value,
+    challenge: &str,
+    host: Option<&str>,
+) -> Result<(String, [u8; 32]), &'static str> {
     let obj = ev.as_object().ok_or("event must be an object")?;
     let id = obj.get("id").and_then(|v| v.as_str()).ok_or("missing id")?;
     if !is_lower_hex(id, 64) {
@@ -551,6 +579,21 @@ fn validate_auth(ev: &Value, challenge: &str) -> Result<(String, [u8; 32]), &'st
     });
     if !answers {
         return Err("challenge mismatch");
+    }
+    if let Some(host) = host {
+        let names_us = tags.iter().any(|t| {
+            t.as_array().is_some_and(|t| {
+                t.first().and_then(|v| v.as_str()) == Some("relay")
+                    && t.get(1)
+                        .and_then(|v| v.as_str())
+                        .and_then(url_host)
+                        .as_deref()
+                        == Some(host)
+            })
+        });
+        if !names_us {
+            return Err("relay tag does not name this relay");
+        }
     }
     let pubkey = obj
         .get("pubkey")
@@ -887,7 +930,12 @@ async fn writer_task(mut sink: WsSink, mut rx: mpsc::Receiver<OutMsg>, cancel: C
     }
 }
 
-async fn handle_conn(relay: Arc<Relay>, conn_id: u64, stream: WebSocketStream<TokioIo<Upgraded>>) {
+async fn handle_conn(
+    relay: Arc<Relay>,
+    conn_id: u64,
+    host: Option<String>,
+    stream: WebSocketStream<TokioIo<Upgraded>>,
+) {
     let _guard = ConnGuard {
         relay: Arc::clone(&relay),
         conn_id,
@@ -1145,7 +1193,7 @@ async fn handle_conn(relay: Arc<Relay>, conn_id: u64, stream: WebSocketStream<To
                             )));
                             continue;
                         }
-                        match validate_auth(&arr[1], challenge) {
+                        match validate_auth(&arr[1], challenge, host.as_deref()) {
                             Ok((event_id, pubkey)) => {
                                 authed = Some(pubkey);
                                 let _ = tx.try_send(OutMsg::Text(make_ok(&event_id, true, "")));
@@ -1212,6 +1260,10 @@ async fn http_service(
 ) -> Result<Response<Full<Bytes>>, hyper::Error> {
     let headers = req.headers();
     let key = headers.get(SEC_WEBSOCKET_KEY).cloned();
+    let host = headers
+        .get(HOST)
+        .and_then(|h| h.to_str().ok())
+        .and_then(url_host);
     let is_ws = req.method() == Method::GET
         && req.version() >= Version::HTTP_11
         && headers
@@ -1269,7 +1321,7 @@ async fn http_service(
                 ws_config.max_message_size = Some(MAX_FRAME);
                 let stream =
                     WebSocketStream::from_raw_socket(io, Role::Server, Some(ws_config)).await;
-                handle_conn(relay_clone, conn_id, stream).await;
+                handle_conn(relay_clone, conn_id, host, stream).await;
             }
             Err(e) => {
                 eprintln!("upgrade error: {e}");
@@ -1337,6 +1389,24 @@ mod tests {
 
     fn is_event(msg: Result<OutMsg, mpsc::error::TryRecvError>, n: u64) -> bool {
         matches!(msg, Ok(OutMsg::Text(t)) if t.starts_with("[\"EVENT\"") && t.contains(&format!("{{\"n\":{n}}}")))
+    }
+
+    #[test]
+    fn url_host_reads_urls_and_authorities() {
+        for (input, want) in [
+            ("wss://buzz.aitaco.co/pair", Some("buzz.aitaco.co")),
+            ("WSS://Buzz.Aitaco.co:443/pair?x=1", Some("buzz.aitaco.co")),
+            ("ws://127.0.0.1:5877", Some("127.0.0.1")),
+            ("buzz.aitaco.co", Some("buzz.aitaco.co")),
+            ("buzz.aitaco.co:443", Some("buzz.aitaco.co")),
+            ("buzz.aitaco.co.", Some("buzz.aitaco.co")),
+            ("ws://[::1]:5000/pair", Some("[::1]")),
+            ("wss://user@evil.example/pair", Some("evil.example")),
+            ("wss:///pair", None),
+            ("", None),
+        ] {
+            assert_eq!(url_host(input).as_deref(), want, "{input}");
+        }
     }
 
     #[tokio::test(start_paused = true)]
