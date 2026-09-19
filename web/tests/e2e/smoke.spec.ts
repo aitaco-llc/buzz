@@ -375,3 +375,146 @@ test("invite download links to the appropriate platform destination", async ({
     await context.close();
   }
 });
+
+test("invite opens the aitaco app on iOS and Buzz on desktop", async ({
+  browser,
+}) => {
+  const devices = [
+    {
+      name: "iPhone Safari",
+      platform: "iPhone",
+      userAgent:
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15",
+      maxTouchPoints: 5,
+      acceptScheme: "co.aitaco.buzz",
+      offersBlockApp: true,
+    },
+    {
+      name: "iPadOS desktop mode",
+      platform: "MacIntel",
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15) AppleWebKit/605.1.15",
+      maxTouchPoints: 5,
+      acceptScheme: "co.aitaco.buzz",
+      offersBlockApp: true,
+    },
+    {
+      name: "Mac Safari",
+      platform: "MacIntel",
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Version/26.5 Safari/605.1.15",
+      maxTouchPoints: 0,
+      acceptScheme: "buzz",
+      offersBlockApp: false,
+    },
+  ];
+
+  for (const device of devices) {
+    const context = await browser.newContext({ userAgent: device.userAgent });
+    await context.addInitScript(({ platform, maxTouchPoints }) => {
+      Object.defineProperties(navigator, {
+        platform: { configurable: true, value: platform },
+        maxTouchPoints: { configurable: true, value: maxTouchPoints },
+        userAgentData: { configurable: true, value: undefined },
+      });
+    }, device);
+    const page = await context.newPage();
+    await page.route("**/api/join-policy", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ policy: null }),
+      });
+    });
+    await page.route("https://api.github.com/**", async (route) => {
+      await route.fulfill({ status: 500 });
+    });
+
+    await page.goto("/invite/demo-code");
+    const query = new URLSearchParams({
+      relay: `ws://${new URL(page.url()).host}`,
+      code: "demo-code",
+    }).toString();
+    await expect(
+      page.getByRole("link", { name: "Accept invite in aitaco" }),
+      device.name,
+    ).toHaveAttribute("href", `${device.acceptScheme}://join?${query}`);
+    const blockApp = page.getByRole("link", { name: "Open in Buzz by Block" });
+    if (device.offersBlockApp) {
+      await expect(blockApp, device.name).toHaveAttribute(
+        "href",
+        `buzz://join?${query}`,
+      );
+    } else {
+      await expect(blockApp, device.name).toHaveCount(0);
+    }
+    await context.close();
+  }
+});
+
+test("invite on iOS holds both apps behind the join policy", async ({
+  browser,
+}) => {
+  const context = await browser.newContext({
+    userAgent:
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15",
+  });
+  await context.addInitScript(() => {
+    Object.defineProperties(navigator, {
+      platform: { configurable: true, value: "iPhone" },
+      maxTouchPoints: { configurable: true, value: 5 },
+      userAgentData: { configurable: true, value: undefined },
+    });
+  });
+  const page = await context.newPage();
+  await page.route("**/api/join-policy", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        policy: { age_attestation_required: true, version: "policy-v1" },
+      }),
+    });
+  });
+  await page.route("**/api/invites/accept-policy", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ receipt: "receipt-1" }),
+    });
+  });
+
+  await page.goto("/invite/demo-code");
+  const acceptInvite = page.getByRole("button", {
+    name: "Accept invite in aitaco",
+  });
+  const blockApp = page.getByRole("button", { name: "Open in Buzz by Block" });
+  await expect(acceptInvite).toBeDisabled();
+  await expect(blockApp).toBeDisabled();
+
+  await page
+    .locator("label")
+    .filter({ hasText: "I am 18 years of age or older." })
+    .click();
+  await expect(acceptInvite).toBeEnabled();
+  await expect(blockApp).toBeEnabled();
+
+  // A custom-scheme navigation surfaces as a request Chromium cannot serve,
+  // which is enough to read the exact handoff URL, receipt included.
+  const query = new URLSearchParams({
+    relay: `ws://${new URL(page.url()).host}`,
+    code: "demo-code",
+    policy_receipt: "receipt-1",
+  }).toString();
+  for (const [button, scheme] of [
+    [acceptInvite, "co.aitaco.buzz"],
+    [blockApp, "buzz"],
+  ] as const) {
+    const handoff = page.waitForRequest((request) =>
+      request.url().startsWith(`${scheme}://`),
+    );
+    await button.click();
+    expect((await handoff).url()).toBe(`${scheme}://join?${query}`);
+  }
+  await context.close();
+});

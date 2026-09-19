@@ -24,6 +24,28 @@ type JoinPolicy = {
 
 type PolicyDocument = { title: string; markdown: string };
 
+/** Scheme only the aitaco iOS app (`co.aitaco.buzz`) claims. */
+const AITACO_IOS_SCHEME = "co.aitaco.buzz";
+/**
+ * Buzz by Block's scheme, which the desktop apps open. The aitaco iOS app
+ * claims it too, and iOS does not say which of two claimants opens it.
+ */
+const BUZZ_SCHEME = "buzz";
+
+function joinUrl(
+  scheme: string,
+  relay: string,
+  code: string,
+  receipt?: string,
+): string {
+  const query = new URLSearchParams({ relay, code });
+  if (receipt) query.set("policy_receipt", receipt);
+  return `${scheme}://join?${query.toString()}`;
+}
+
+const BLOCK_APP_LINK_CLASS =
+  "block w-full py-1 text-center text-sm text-black/60 underline-offset-4 hover:text-black hover:underline focus-visible:underline disabled:cursor-not-allowed disabled:opacity-50";
+
 /** Convert relay invite sentinels into user-facing recovery guidance. */
 function inviteClaimErrorMessage(message: string): string {
   if (message.includes("invite_exhausted")) {
@@ -54,6 +76,7 @@ export function InvitePage({ code }: { code: string }) {
     null,
   );
   const [downloadUrl, setDownloadUrl] = React.useState(BUZZ_RELEASES_URL);
+  const [isIos, setIsIos] = React.useState(false);
   const [needsMacChoice, setNeedsMacChoice] = React.useState(false);
   const [showMacChoice, setShowMacChoice] = React.useState(false);
   const [choosingMacDownload, setChoosingMacDownload] = React.useState(false);
@@ -64,6 +87,7 @@ export function InvitePage({ code }: { code: string }) {
     let active = true;
     detectBuzzDownloadPlatform(navigator).then(async (platform) => {
       if (!active) return;
+      setIsIos(platform.operatingSystem === "ios");
       if (
         platform.operatingSystem === "macos" &&
         platform.architecture === "unknown"
@@ -104,13 +128,16 @@ export function InvitePage({ code }: { code: string }) {
     return ((await response.json()) as { receipt: string }).receipt;
   };
 
-  const openInvite = async () => {
+  // On iOS the invite opens the aitaco app. With the app installed, a tapped
+  // https invite link opens it directly as a universal link; this page shows
+  // when the app is missing or the link was pasted into Safari.
+  const appScheme = isIos ? AITACO_IOS_SCHEME : BUZZ_SCHEME;
+
+  const openInvite = async (scheme: string) => {
     setOpening(true);
     try {
       const receipt = await acceptPolicy();
-      const query = new URLSearchParams({ relay, code });
-      if (receipt) query.set("policy_receipt", receipt);
-      window.location.href = `buzz://join?${query.toString()}`;
+      window.location.href = joinUrl(scheme, relay, code, receipt);
     } finally {
       setOpening(false);
     }
@@ -244,9 +271,7 @@ export function InvitePage({ code }: { code: string }) {
                     : "bg-black text-white hover:bg-black/90 focus-visible:ring-black"
                 }`}
               >
-                <a
-                  href={`buzz://join?relay=${encodeURIComponent(relay)}&code=${encodeURIComponent(code)}`}
-                >
+                <a href={joinUrl(appScheme, relay, code)}>
                   Accept invite in aitaco
                 </a>
               </Button>
@@ -258,11 +283,30 @@ export function InvitePage({ code }: { code: string }) {
                     : "bg-black text-white hover:bg-black/90 focus-visible:ring-black"
                 }`}
                 disabled={disabled}
-                onClick={openInvite}
+                onClick={() => void openInvite(appScheme)}
               >
                 Accept invite in aitaco
               </Button>
             )}
+            {isIos ? (
+              policy === null ? (
+                <a
+                  className={BLOCK_APP_LINK_CLASS}
+                  href={joinUrl(BUZZ_SCHEME, relay, code)}
+                >
+                  Open in Buzz by Block
+                </a>
+              ) : (
+                <button
+                  className={BLOCK_APP_LINK_CLASS}
+                  disabled={disabled}
+                  type="button"
+                  onClick={() => void openInvite(BUZZ_SCHEME)}
+                >
+                  Open in Buzz by Block
+                </button>
+              )
+            ) : null}
             {browserJoinError ? (
               <p className="text-sm text-red-700" role="alert">
                 {browserJoinError}
