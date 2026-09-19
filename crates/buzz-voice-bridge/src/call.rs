@@ -745,15 +745,15 @@ async fn post_outcome(
             .join(", ")
     };
     let mut body = format!(
-        "Voice call `{}` ended: {end_reason}. {} · peers: {peers} · asks {} asked / {} answered / {} timed out / {} failed · {} Gemini reconnects · {} errors · log `{}`",
+        "Voice call `{}` ended: {end_reason}. {} · peers: {peers} · asks {} asked / {} answered / {} timed out / {} failed · {} · {} · log `{}`",
         &params.ephemeral.to_string()[..8],
         human_duration(duration),
         outcome.asks,
         outcome.answers,
         outcome.timeouts,
         outcome.ask_failures,
-        outcome.reconnects,
-        outcome.errors,
+        plural(outcome.reconnects, "Gemini reconnect"),
+        plural(outcome.errors, "error"),
         params.log_path.display(),
     );
     if !transcript.is_empty() {
@@ -779,6 +779,14 @@ async fn post_outcome(
             Err(error) => log.record("outcome_post_failed", json!({ "error": error.to_string() })),
         },
         Err(error) => log.record("outcome_post_failed", json!({ "error": error.to_string() })),
+    }
+}
+
+/// "1 error", "2 errors". The outcome line is read by a person.
+fn plural(count: u32, noun: &str) -> String {
+    match count {
+        1 => format!("1 {noun}"),
+        other => format!("{other} {noun}s"),
     }
 }
 
@@ -1102,6 +1110,13 @@ mod tests {
         assert!(gemini::parse_server_message(&message).is_empty());
         assert_eq!(top_level_keys(&message), vec!["goAwayLater", "somethingNew"]);
         assert!(top_level_keys(&json!([1, 2])).is_empty());
+    }
+
+    #[test]
+    fn counts_read_as_a_human_would_say_them() {
+        assert_eq!(plural(0, "error"), "0 errors");
+        assert_eq!(plural(1, "Gemini reconnect"), "1 Gemini reconnect");
+        assert_eq!(plural(2, "Gemini reconnect"), "2 Gemini reconnects");
     }
 
     #[test]

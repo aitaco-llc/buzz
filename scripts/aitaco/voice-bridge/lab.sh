@@ -264,9 +264,11 @@ else
   log "caller hung up: $(cat "${RUN_DIR}/caller.json" 2>/dev/null)"
 fi
 sleep 4
-if [[ "${LAB_FAULT}" != "relay_gone" ]]; then
-  announce 48103
-fi
+# Neither the deleted channel nor the dead relay can take a kind:48103.
+case "${LAB_FAULT}" in
+  room_join|relay_gone) : ;;
+  *) announce 48103 ;;
+esac
 sleep 3
 
 if [[ "${LAB_FAULT}" != "relay_gone" ]]; then
