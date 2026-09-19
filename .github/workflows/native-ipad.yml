@@ -20,7 +20,10 @@ concurrency:
   cancel-in-progress: true
 jobs:
   native-ipad:
-    runs-on: macos-15
+    # macos-latest is macos-26 with Xcode 26; macos-15 ships an Xcode that
+    # cannot parse the Swift 6.2 raw identifiers in the BuzzPushKit tests. Every
+    # other macOS job in this repo already floats on macos-latest.
+    runs-on: macos-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
