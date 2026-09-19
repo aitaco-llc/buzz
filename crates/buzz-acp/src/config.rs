@@ -380,6 +380,14 @@ pub struct CliArgs {
     #[arg(long, env = "BUZZ_ACP_NO_IGNORE_SELF")]
     pub no_ignore_self: bool,
 
+    /// Wake on a self-authored event only when it carries this tag, written
+    /// `name=value` (e.g. `voice-bridge=ask`). This lets a companion process
+    /// that signs with this agent's key, such as a voice bridge, hand the
+    /// agent work. Every other self-authored event is still dropped. Off by
+    /// default.
+    #[arg(long, env = "BUZZ_ACP_SELF_WAKE_TAG", value_parser = parse_self_wake_tag)]
+    pub self_wake_tag: Option<SelfWakeTag>,
+
     /// Maximum number of context messages to include for thread replies and DMs.
     /// Set to 0 to disable automatic context fetching. Max 100.
     #[arg(long, env = "BUZZ_ACP_CONTEXT_MESSAGE_LIMIT", default_value_t = 12,
@@ -568,6 +576,8 @@ pub struct Config {
     pub session_policy: crate::scope::SessionPolicy,
     pub multiple_event_handling: MultipleEventHandling,
     pub ignore_self: bool,
+    /// The one tag that lets a self-authored event through `ignore_self`.
+    pub self_wake_tag: Option<SelfWakeTag>,
     pub kinds_override: Option<Vec<u32>>,
     pub channels_override: Option<Vec<String>>,
     pub no_mention_filter: bool,
@@ -731,6 +741,63 @@ fn compose_session_title_with_limit(
 }
 
 /// Validate and deduplicate allowlist entries: each must be exactly 64 hex chars.
+/// A `name=value` tag that marks a self-authored event as work for this agent.
+///
+/// Only this agent's own key can sign a self-authored event, so the tag is an
+/// opt-in selector, not a credential: it picks which of the agent's own events
+/// (for example, ones a voice bridge sharing its key signs) may wake it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelfWakeTag {
+    pub name: String,
+    pub value: String,
+}
+
+impl SelfWakeTag {
+    /// True when `event` has a tag whose first two elements are exactly
+    /// `[name, value]`.
+    pub fn matches(&self, event: &nostr::Event) -> bool {
+        event.tags.iter().any(|tag| {
+            let parts = tag.as_slice();
+            parts.first().map(String::as_str) == Some(self.name.as_str())
+                && parts.get(1).map(String::as_str) == Some(self.value.as_str())
+        })
+    }
+}
+
+impl std::fmt::Display for SelfWakeTag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}={}", self.name, self.value)
+    }
+}
+
+/// Parse `BUZZ_ACP_SELF_WAKE_TAG`. Single-letter names are refused: those are
+/// the relay-indexed tags (`p`, `e`, `h`, ...) that ordinary messages carry.
+pub fn parse_self_wake_tag(raw: &str) -> Result<SelfWakeTag, String> {
+    let (name, value) = raw
+        .split_once('=')
+        .ok_or_else(|| format!("self-wake tag must be name=value, got {raw:?}"))?;
+    let valid = |part: &str| {
+        !part.is_empty()
+            && part
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    };
+    if !valid(name) || !valid(value) {
+        return Err(format!(
+            "self-wake tag name and value must be non-empty [A-Za-z0-9_-], got {raw:?}"
+        ));
+    }
+    if name.len() < 2 {
+        return Err(format!(
+            "self-wake tag name must be at least two characters (single letters are relay-indexed tags), got {name:?}"
+        ));
+    }
+    Ok(SelfWakeTag {
+        name: name.to_owned(),
+        value: value.to_owned(),
+    })
+}
+
 fn validate_allowlist(entries: &[String]) -> Result<HashSet<String>, ConfigError> {
     let mut validated = HashSet::new();
     for entry in entries {
@@ -1115,6 +1182,14 @@ impl Config {
             HashSet::new()
         };
 
+        if args.no_ignore_self {
+            if let Some(tag) = &args.self_wake_tag {
+                tracing::warn!(
+                    "--self-wake-tag {tag} has no effect with --no-ignore-self: self-authored events go to the author gate"
+                );
+            }
+        }
+
         // Validate respond_to against the allowed set.
         let allowed_respond_to = if let Some(raw) = args.allowed_respond_to {
             // Validate each entry is a known RespondTo mode.
@@ -1183,6 +1258,7 @@ impl Config {
             session_policy: args.session_policy,
             multiple_event_handling: args.multiple_event_handling,
             ignore_self: !args.no_ignore_self,
+            self_wake_tag: args.self_wake_tag,
             kinds_override: args.kinds,
             channels_override: args.channels,
             no_mention_filter: args.no_mention_filter,
@@ -1234,7 +1310,7 @@ impl Config {
             format!(" allowed_respond_to=[{}]", modes.join(","))
         };
         format!(
-            "relay={} pubkey={} agent_cmd={} {} mcp_cmd={} idle_timeout={}s max_turn={}s agents={} heartbeat={}s subscribe={:?} dedup={:?} session_policy={} meh={:?} ignore_self={} context_limit={} max_turns_per_session={} presence={} typing={} memory={} model={} permission_mode={} {}{}{}",
+            "relay={} pubkey={} agent_cmd={} {} mcp_cmd={} idle_timeout={}s max_turn={}s agents={} heartbeat={}s subscribe={:?} dedup={:?} session_policy={} meh={:?} ignore_self={}{} context_limit={} max_turns_per_session={} presence={} typing={} memory={} model={} permission_mode={} {}{}{}",
             self.relay_url,
             self.keys.public_key().to_hex(),
             self.agent_command,
@@ -1249,6 +1325,10 @@ impl Config {
             self.session_policy,
             self.multiple_event_handling,
             self.ignore_self,
+            self.self_wake_tag
+                .as_ref()
+                .map(|tag| format!(" self_wake_tag={tag}"))
+                .unwrap_or_default(),
             self.context_message_limit,
             self.max_turns_per_session,
             self.presence_enabled,
@@ -1546,6 +1626,41 @@ mod tests {
     use clap::{Parser, ValueEnum};
 
     /// Build a minimal Config for testing without CLI parsing.
+    #[test]
+    fn test_parse_self_wake_tag() {
+        let tag = parse_self_wake_tag("voice-bridge=ask").expect("valid");
+        assert_eq!(tag.name, "voice-bridge");
+        assert_eq!(tag.value, "ask");
+        assert_eq!(tag.to_string(), "voice-bridge=ask");
+        for bad in [
+            "voice-bridge",
+            "=ask",
+            "voice-bridge=",
+            "p=ask",
+            "voice bridge=ask",
+            "a=b=c",
+        ] {
+            assert!(parse_self_wake_tag(bad).is_err(), "{bad:?} must be refused");
+        }
+    }
+
+    #[test]
+    fn test_self_wake_tag_matches_first_two_elements_exactly() {
+        let keys = nostr::Keys::generate();
+        let event = |tag: &[&str]| {
+            nostr::EventBuilder::new(nostr::Kind::Custom(9), "x")
+                .tags([nostr::Tag::parse(tag.to_vec()).expect("tag")])
+                .sign_with_keys(&keys)
+                .expect("signed")
+        };
+        let tag = parse_self_wake_tag("voice-bridge=ask").expect("valid");
+        assert!(tag.matches(&event(&["voice-bridge", "ask"])));
+        assert!(tag.matches(&event(&["voice-bridge", "ask", "extra"])));
+        assert!(!tag.matches(&event(&["voice-bridge", "asked"])));
+        assert!(!tag.matches(&event(&["voice-bridge", "transcript"])));
+        assert!(!tag.matches(&event(&["t", "voice-bridge", "ask"])));
+    }
+
     fn test_config(mode: SubscribeMode) -> Config {
         Config {
             keys: nostr::Keys::generate(),
@@ -1567,6 +1682,7 @@ mod tests {
             session_policy: crate::scope::SessionPolicy::Channel,
             multiple_event_handling: MultipleEventHandling::Queue,
             ignore_self: true,
+            self_wake_tag: None,
             kinds_override: None,
             channels_override: None,
             no_mention_filter: false,
