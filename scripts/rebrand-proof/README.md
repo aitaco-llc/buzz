@@ -28,7 +28,8 @@ REBRAND_BIN=/path/to/rebrand REBRAND_MODEL=/path/to/model.gguf \
 
 Each run does the following:
 
-- Starts its own Postgres, Redis and MinIO containers (`rebrand-proof-*`) and its own relay on `localhost:3950`.
+- In `ollama` and `rebrand` mode, refuses to start (exit 75) if the card's VRAM in use is above `PROOF_VRAM_IDLE_MAX_MIB`. The card is shared, and this keeps a run from starting on top of someone else's.
+- Starts its own Postgres, Redis and MinIO containers (`rebrand-proof-*`) and its own relay on `localhost:3950`. MinIO keeps its data in RAM and is recreated every run, because MinIO refuses every write once its disk is 99% full.
 - Admits the throwaway seat with `buzz relay members add`, the way `agentctl add-seat` does.
 - Starts the backend and the recording proxy, then the seat, using the installed fleet binaries from `~/.local/bin`.
 - Runs the seat in its own empty directory, `<run dir>/seat-cwd`, whatever directory you start the script from. The agent's shell tools work there, and its hint loader reads `AGENTS.md` from there and from `~`. So the prompt contains no hints unless you set `PROOF_SEAT_AGENTS_MD`.
@@ -49,6 +50,7 @@ The main knobs:
 | `PROOF_TIMEOUT_S` | 900 |
 | `REBRAND_EXTRA_ARGS` | none (e.g. `--max-batch-size 1`) |
 | `PROOF_SEAT_AGENTS_MD` | none. A file to copy in as the seat's `AGENTS.md`, e.g. `~/.buzz/AGENTS.md` to match a fleet seat's prompt |
+| `PROOF_VRAM_IDLE_MAX_MIB` | 3500. hip's idle baseline is about 1.7–3.3 GB |
 
 ## What it records
 
@@ -61,7 +63,10 @@ One line per run, written by `summarize.py`. The field meanings are in its docst
 | size | `llm_calls`, `tool_calls`, `prompt_tokens_first` and `prompt_tokens_max` (as the backend reports them), `completion_tokens_total`, `prompt_chars_first`, `request_bytes_max` |
 | contract | `unknown_fields` (request fields Rebrand would reject), `http_errors`, `finish_reasons` |
 | GPU | `vram_baseline_mib`, `vram_peak_mib` (amdgpu sysfs, sampled at 1 Hz) |
-| provenance | `mode`, `model_id`, `model_path`, `model_bytes`, `backend_version`, `max_seq_len`, `max_output_tokens`, the sha256 of each seat binary, `repo_commit` |
+| thinking | `reasoning_chars_total` (characters returned as `reasoning_content`, or as `reasoning` from Ollama) |
+| provenance | `mode`, `model_id`, `model_path`, `model_bytes`, `model_sha256`, `backend_version`, `backend_sha256` (rebrand), `backend_context_len` (the context Ollama actually loaded, or rebrand's `--max-seq-len`), `max_seq_len`, `max_output_tokens`, the sha256 of each seat binary, `repo_commit` |
+
+In `ollama` mode the model's path, bytes and sha256 come from the Ollama blob behind the tag, and the kit unloads the model when the run ends, unless it was already loaded when the run started. On hip, `qwen3-8b-q4km` is blob `sha256-b7185b73…11d1cf`. That is the same file as `/data/rebrand-cdn/llm/qwen3-8b-q4_k_m.gguf`, so the control and a Rebrand run on that file serve byte-identical weights.
 | prompt inputs | `seat_cwd`; `hint_agents_md` (each `AGENTS.md` the hint loader reads, with its bytes); `hint_bytes`; `hint_skill_files` |
 
 Everything else stays in the run directory:
