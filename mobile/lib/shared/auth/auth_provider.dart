@@ -1,6 +1,7 @@
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:nostr/nostr.dart' as nostr;
 
+import '../community/aitaco_community.dart';
 import '../community/community.dart';
 import '../community/community_provider.dart';
 
@@ -28,7 +29,10 @@ class AuthNotifier extends AsyncNotifier<AuthState> {
       return const AuthState(status: AuthStatus.unauthenticated);
     }
 
-    var activeId = await storage.loadActiveId();
+    var activeId = preferAitacoCommunity(
+      communities,
+      await storage.loadActiveId(),
+    );
     while (communities.isNotEmpty) {
       final active =
           activeId != null && communities.any((w) => w.id == activeId)

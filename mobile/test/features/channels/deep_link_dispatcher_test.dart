@@ -228,7 +228,7 @@ void main() {
 
   testWidgets('retains invite and surfaces prepare failure', (tester) async {
     const link = InviteDeepLink(
-      relayUrl: 'wss://relay.example.com',
+      relayUrl: 'wss://buzz.aitaco.co',
       code: 'invite-code',
     );
     final container = ProviderContainer(
@@ -266,7 +266,7 @@ void main() {
     tester,
   ) async {
     const link = InviteDeepLink(
-      relayUrl: 'wss://relay.example.com',
+      relayUrl: 'wss://buzz.aitaco.co',
       code: 'invite-code',
     );
     final storage = _CountingCommunityStorage();
@@ -301,7 +301,7 @@ void main() {
     tester,
   ) async {
     const link = InviteDeepLink(
-      relayUrl: 'wss://relay.example.com',
+      relayUrl: 'wss://buzz.aitaco.co',
       code: 'invite-code',
     );
     final container = ProviderContainer(
@@ -334,7 +334,7 @@ void main() {
   testWidgets(
     'shows saved starter recovery progress, then opens welcome-everyone',
     (tester) async {
-      const relayUrl = 'wss://relay.example.com';
+      const relayUrl = 'wss://buzz.aitaco.co';
       const welcomeId = 'welcome-everyone-id';
       final storage = CommunityStorage(secure: FakeSecureStorage());
       await storage.save(
@@ -409,7 +409,7 @@ void main() {
   testWidgets('renders setup-specific recovery failures after membership', (
     tester,
   ) async {
-    const relayUrl = 'wss://relay.example.com';
+    const relayUrl = 'wss://buzz.aitaco.co';
     final storage = CommunityStorage(secure: FakeSecureStorage());
     await storage.save(
       Community(
@@ -465,11 +465,11 @@ void main() {
     tester,
   ) async {
     const first = InviteDeepLink(
-      relayUrl: 'wss://relay.example.com',
+      relayUrl: 'wss://buzz.aitaco.co',
       code: 'invite-one',
     );
     const second = InviteDeepLink(
-      relayUrl: 'wss://relay.example.com',
+      relayUrl: 'wss://buzz.aitaco.co',
       code: 'invite-two',
     );
     final pending = _QueuedPendingDeepLinkNotifier([first, second]);
@@ -511,7 +511,7 @@ void main() {
     tester,
   ) async {
     const invite = InviteDeepLink(
-      relayUrl: 'wss://relay.example.com',
+      relayUrl: 'wss://buzz.aitaco.co',
       code: 'invite-code',
     );
     const channelLink = ChannelDeepLink(channelId: 'channel-1');
@@ -565,7 +565,7 @@ void main() {
           pendingDeepLinkProvider.overrideWith(
             () => _FakePendingDeepLinkNotifier(
               const InviteDeepLink(
-                relayUrl: 'wss://relay.example.com',
+                relayUrl: 'wss://buzz.aitaco.co',
                 code: 'invite-code',
               ),
             ),
@@ -628,7 +628,7 @@ void main() {
     tester,
   ) async {
     const invite = InviteDeepLink(
-      relayUrl: 'wss://relay.example.com',
+      relayUrl: 'wss://buzz.aitaco.co',
       code: 'invite-code',
     );
     final container = ProviderContainer(

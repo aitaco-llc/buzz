@@ -82,7 +82,7 @@ void main() {
       final code = base64Url.encode(
         utf8.encode(
           jsonEncode({
-            'relayUrl': 'https://relay.example',
+            'relayUrl': 'https://buzz.aitaco.co',
             'nsec': nostr.Keys.generate().nsec,
           }),
         ),
@@ -156,7 +156,7 @@ void main() {
       final code = base64Url.encode(
         utf8.encode(
           jsonEncode({
-            'relayUrl': 'https://relay.example',
+            'relayUrl': 'https://buzz.aitaco.co',
             'nsec': 'pending-key',
           }),
         ),

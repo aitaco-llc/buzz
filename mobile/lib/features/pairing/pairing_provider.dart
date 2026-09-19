@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:nostr/nostr.dart' as nostr;
 
 import '../../shared/auth/auth.dart';
+import '../../shared/community/aitaco_community.dart';
 import '../../shared/crypto/ecdh.dart';
 import '../../shared/crypto/nip44.dart';
 import '../../shared/relay/relay.dart';
@@ -772,7 +773,9 @@ class PairingNotifier extends Notifier<PairingState> {
       _cleanup();
       state = PairingState(
         status: PairingStatus.error,
-        errorMessage: 'Failed to import credentials: $e',
+        errorMessage: e is ForeignCommunityException
+            ? foreignCommunityMessage
+            : 'Failed to import credentials: $e',
       );
     }
   }
@@ -863,6 +866,12 @@ class PairingNotifier extends Notifier<PairingState> {
           .authenticateWithCommunity(community);
       if (generation != _pairingGeneration) return;
       state = const PairingState(status: PairingStatus.success);
+    } on ForeignCommunityException {
+      if (generation != _pairingGeneration) return;
+      state = const PairingState(
+        status: PairingStatus.error,
+        errorMessage: foreignCommunityMessage,
+      );
     } on FormatException catch (e) {
       if (generation != _pairingGeneration) return;
       state = PairingState(
@@ -969,6 +978,9 @@ class PairingNotifier extends Notifier<PairingState> {
         'Relay URL cannot target private network addresses',
       );
     }
+    // Debug builds may still pair with a local relay (above); every other
+    // relay must be aitaco's.
+    requireAitacoRelayUrl(url);
   }
 
   static bool _isPrivateHost(String host) {

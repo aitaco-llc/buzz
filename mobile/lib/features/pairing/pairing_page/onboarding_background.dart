@@ -13,7 +13,7 @@ class _OnboardingBackground extends StatelessWidget {
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [_onboardingChartreuse, _onboardingShellBottom],
+          colors: [_onboardingTeal, _onboardingShellBottom],
         ),
       ),
       child: CustomPaint(painter: const _DotGridPainter(), child: child),

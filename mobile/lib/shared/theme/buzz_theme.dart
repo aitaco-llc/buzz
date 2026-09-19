@@ -71,10 +71,11 @@ int effectiveAccentIndex(String themeName, String storedAccent) {
   return accentIndexForWireValue(storedAccent) ?? defaultAccentIndex;
 }
 
-/// Gradient stops, matching desktop's `--buzz-gradient-*` custom properties.
-const _lightTop = Color(0xFFE6E6B6);
-const _lightBottom = Color(0xFFC4D0DA);
-const _darkTop = Color(0xFF4A4616);
+/// Gradient stops in aitaco's teal (aitaco.co). Desktop's
+/// `--buzz-gradient-*` custom properties still carry Buzz's yellow stops.
+const _lightTop = Color(0xFFBFE3E6);
+const _lightBottom = Color(0xFFDDE9EE);
+const _darkTop = Color(0xFF17474A);
 const _darkBottom = Color(0xFF0A1423);
 
 /// The Buzz gradient for the app's top section, or null when [themeName] is not

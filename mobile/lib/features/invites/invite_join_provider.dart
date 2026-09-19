@@ -5,6 +5,7 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:nostr/nostr.dart' as nostr;
 
 import '../../shared/auth/auth.dart';
+import '../../shared/community/aitaco_community.dart';
 import '../../shared/deeplink/deep_link.dart';
 import '../../shared/relay/relay_provider.dart';
 import '../../shared/relay/relay_session.dart';
@@ -120,6 +121,7 @@ class InviteJoinNotifier extends Notifier<InviteJoinState> {
 
   Future<void> prepare(InviteDeepLink invite) async {
     validateInviteRelayUri(Uri.parse(invite.relayUrl));
+    requireAitacoRelayUrl(invite.relayUrl);
     final communities = await ref.read(communityListProvider.future);
     final existing = _existingCommunity(communities, invite.relayUrl);
     if (existing != null) {
