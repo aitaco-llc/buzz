@@ -35,7 +35,9 @@ checks = {
     'turn_completed': turn.get('outcome') == 'ok',
 }
 result = {'pass': all(checks.values()), 'checks': checks, 'run_dir': str(a.run_dir),
-          'model': text('model_id'), 'backend_version': text('backend_version'),
+          'model': text('model_id'), 'model_sha256': text('model_sha256'),
+          'backend_version': text('backend_version'), 'backend_sha256': text('backend_sha256'),
+          'max_seq_len': text('max_seq_len'),
           'native_binary': text('native_binary'), 'run': native.get('run'), 'reply': reply.get('content')}
 with a.results.open('a') as out:
     out.write(json.dumps(result) + '\n')

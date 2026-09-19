@@ -45,6 +45,10 @@ it cannot establish real-model quality.
 Use an available GPU time slot. The script starts only its own processes and
 named Docker containers; do not point it at a production relay.
 
+The card is shared. Post a line in #ml-platform before a run. The script refuses
+to start (exit 75) when VRAM in use is above the idle baseline,
+`PROOF_VRAM_IDLE_MAX_MIB` (default 3500).
+
 ```bash
 PROOF_NATIVE_BIN="$NATIVE_BUILD_DIR/target/debug/buzz-rebrand-proof" \
 PROOF_RELAY_BIN=/home/lth/dev/buzz/target/debug/buzz-relay \
@@ -65,7 +69,9 @@ The script uses Postgres, Redis and MinIO containers with the prefix
 `PROOF_CONTAINER_PREFIX` and `PROOF_STATE` together for a fresh isolated run.
 Ports default to relay 3967, Postgres 55467, Redis 56367, MinIO 59067, health
 18067 and metrics 19167. Each has a `PROOF_*_PORT` override. Stop is automatic;
-containers and state are retained for inspection. Never reuse another task's
+the Postgres and Redis containers and the state are retained for inspection.
+MinIO keeps its data in RAM and is recreated each run, because it refuses every
+write once its disk is 99% full. Never reuse another task's
 prefix or state directory.
 
 ## What constitutes a pass
