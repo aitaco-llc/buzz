@@ -131,6 +131,38 @@ model reaches for a denied token. The same undercount let a one-item array take 
 second element past `maxItems: 1`, which is schema-invalid output from a constraint
 whose job is to prevent exactly that.
 
+**A `maxItems: 5` schema like this one was never at risk**, and an earlier version
+of this file's companion message said otherwise. neil compared the whole allowed
+set at every position inside this array across qwen3-8b's 151,936-token vocabulary:
+one position differs between the builds, by ten tokens, and all ten are the
+`minItems` closers. The undercount was exactly one item, so it flips a `maxItems`
+verdict only when the cap is 1. His remaining known limit — comma-denial masks are
+untiered, so a token carrying two of an array's commas could overrun `maxItems` —
+is also out of reach here: no token in this vocabulary carries more than one comma
+of an array, for string or integer items.
+
+## Re-run on the fix, Rebrand `530cd1f`: 4 of 10, and the shape failure is gone
+
+2026-09-19 23:04–23:21Z, same host binary (sha256 `4dc50b3f71f9518c…`, byte-identical to the batch above),
+same model, same flags, `rebrand-acp` back on its default temperature 0.0. The only variable is the Rebrand
+build: `31fc194` → `530cd1f` (`rebrand` sha256 `eebab34d…`, `rebrand-acp` `7b3a9bb8…`, `0.3.25+530cd1f4ab20`).
+
+| build | passes | answer-shape failures |
+|---|---|---|
+| `31fc194`, temperature 0.0 | 0/10 | 9 |
+| `530cd1f`, temperature 0.0 | **4/10** | **0** |
+
+Not one run showed the `']}` signature. Every remaining failure is the model's tool use, and five of the six are
+one behaviour: it answers after `search_messages` without calling `read_thread` — citing the search hit, saying
+the incident ID "does not match any available event_id", or (run 7) returning `source_ids: []`, which
+`rebrand-acp` refused against the session schema. The sixth read the thread, found the right code, and cited the
+channel's UUID alongside the resolution event, which the host refused.
+
+A pass costs 43–154 s in the loop, 1.5–2.0k input and ~190 output tokens, and 3.6–11.2k thinking tokens: three of
+the four passes spent four iterations and about 10k thinking tokens. The proof's own serve holds a 1.25 GB KV
+pool and about 6.7 GB over idle; two runs' `vram.tsv` samples peak near the card's 24 GB limit because another
+job shared the card, not because of this workload.
+
 **The model's own failures** are qwen3-8b not using the narrowed tool: it reads
 the `enum` as a list of candidate answers and replies that "the incident ID does
 not match any available event IDs", instead of calling `read_thread` with the one
