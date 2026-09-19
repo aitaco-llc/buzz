@@ -143,14 +143,48 @@ impl Host {
         Ok(json!(self.query(json!({"search": args.query})).await?))
     }
 
+    /// The message ID a search actually returned, from what the model wrote.
+    ///
+    /// An exact match is the normal case. A prefix of exactly one found ID is
+    /// accepted as that ID: measured on 2026-09-19, a run failed because qwen3-8b
+    /// wrote 49 of the 64 characters — a truncation, not a guess, and the
+    /// `enum` that used to make it impossible cost more than it saved
+    /// (RESULTS.md). Sixteen characters is the floor, and an ambiguous prefix is
+    /// refused rather than picked between. Anything else is refused with the
+    /// reason, because "search first" told a model that had just searched
+    /// nothing it could act on.
+    async fn resolve_found_id(&self, written: &str) -> Result<String> {
+        let seen = self.seen.lock().await;
+        if seen.contains(written) {
+            return Ok(written.to_owned());
+        }
+        ensure!(
+            !seen.is_empty(),
+            "call search_messages first; nothing has been found in this session yet"
+        );
+        ensure!(
+            written.len() >= 16 && written.chars().all(|c| c.is_ascii_hexdigit()),
+            "event_id must be a message ID from a search_messages result, 64 hex characters; \
+             {} is {} characters",
+            written,
+            written.len()
+        );
+        let mut matches = seen.iter().filter(|id| id.starts_with(written));
+        let first = matches.next().cloned();
+        ensure!(
+            matches.next().is_none(),
+            "{written} is the start of more than one found message; send the whole 64-character ID"
+        );
+        first.with_context(|| {
+            format!("{written} is not a message search_messages returned in this session")
+        })
+    }
+
     async fn read_thread(&self, args: Value) -> Result<Value> {
         let args: ThreadArgs = serde_json::from_value(args)?;
-        ensure!(
-            valid_id(&args.event_id) && self.seen.lock().await.contains(&args.event_id),
-            "read a message found by search first"
-        );
+        let event_id = self.resolve_found_id(&args.event_id).await?;
         self.reads.lock().await.push("read_thread".into());
-        let mut rows = self.query(json!({"ids": [args.event_id]})).await?;
+        let mut rows = self.query(json!({"ids": [event_id]})).await?;
         let selected = rows.first().context("selected message disappeared")?;
         let root = selected["tags"]
             .as_array()
@@ -160,10 +194,10 @@ impl Host {
                     .or_else(|| tags.iter().find(|t| t[0] == "e" && t[3] == "reply"))
             })
             .and_then(|t| t[1].as_str())
-            .unwrap_or(&args.event_id)
+            .unwrap_or(&event_id)
             .to_owned();
         ensure!(valid_id(&root), "invalid thread root");
-        if root != args.event_id {
+        if root != event_id {
             let roots = self.query(json!({"ids": [root]})).await?;
             ensure!(!roots.is_empty(), "thread root outside permitted channel");
             rows.extend(roots);
@@ -203,21 +237,24 @@ impl Host {
                 ),
             })];
         }
-        let mut ids: Vec<&String> = seen.iter().collect();
-        ids.sort();
+        // No `enum` of the found IDs. Naming them in the schema measured badly
+        // twice: the model reads the list as the set of candidate answers and
+        // replies about it instead of calling the tool — 3 of 10 with the old
+        // wording, 5 of 10 with wording that says outright that the list is not
+        // the answer. The host already refuses an ID search never returned
+        // (`read_thread` checks `seen`), so the `enum` bought nothing the
+        // validation was not doing, and it cost the tool call.
+        drop(seen);
         vec![json!({
             "name": "read_thread",
-            "description": "Read a found message and its replies, which is where the resolution is. Call this \
-                once, with one of the IDs search_messages returned. Those are the relay's 64-character message \
-                IDs. The identifier the question names is not one of them and is not in this list: it appears \
-                inside the messages, so the only way to reach it is to read the thread. A list that does not \
-                contain the question's identifier is expected, not a dead end.",
+            "description": "Read a message and its replies, which is where the resolution is. Call this once \
+                with a message ID that search_messages returned — a 64-character identifier from its results. \
+                Any other identifier is refused, including one named in the question: those appear inside the \
+                messages rather than as message IDs, so reading the thread is the only way to reach them.",
             "inputSchema": schema(
                 json!({"event_id": {
                     "type": "string",
-                    "enum": ids,
-                    "description": "One of the message IDs search_messages returned. Never the identifier from \
-                        the question.",
+                    "description": "A 64-character message ID from a search_messages result.",
                 }}),
                 &["event_id"],
             ),
@@ -274,20 +311,33 @@ struct Answer {
 }
 
 /// Words in an answer that look like identifiers (a digit and at least four
-/// characters) and that no cited text contains verbatim. Checking where a
-/// citation came from is not enough: a model that invents a code can still
-/// cite the real message.
-fn ungrounded(answer: &str, cited: &[&str]) -> Vec<String> {
+/// characters) and that neither a cited message nor the question contains
+/// verbatim. Checking where a citation came from is not enough: a model that
+/// invents a code can still cite the real message.
+///
+/// The question counts as grounding for the identifier it *asks about*. A run on
+/// 2026-09-19 failed for writing "The recovery code for incident 9b13a3e875ab is
+/// SOLVED-c1440dae5ca0" — the code was right and cited, and the incident ID came
+/// from the question it was answering. The host has the question text, so an echo
+/// of it is distinguishable from an invention, the same way the channel's own id
+/// is. An invented code is still caught: it appears in neither.
+fn ungrounded(answer: &str, cited: &[&str], question: &str) -> Vec<String> {
     answer
         .split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_'))
         .map(|word| word.trim_matches(|c| c == '-' || c == '_'))
         .filter(|word| word.chars().count() >= 4 && word.chars().any(|c| c.is_ascii_digit()))
         .filter(|word| !cited.iter().any(|text| text.contains(word)))
+        .filter(|word| !question.contains(word))
         .map(str::to_owned)
         .collect()
 }
 
-fn validate_answer(answer: &Answer, seen: &HashMap<String, String>) -> Result<()> {
+fn validate_answer(
+    answer: &Answer,
+    seen: &HashMap<String, String>,
+    channel: &str,
+    question: &str,
+) -> Result<()> {
     ensure!(
         !answer.answer.trim().is_empty() && answer.answer.len() <= 4096,
         "answer must be 1–4096 bytes"
@@ -296,16 +346,37 @@ fn validate_answer(answer: &Answer, seen: &HashMap<String, String>) -> Result<()
         !answer.source_ids.is_empty() && answer.source_ids.len() <= 5,
         "cite 1–5 retrieved sources"
     );
-    ensure!(
-        answer.source_ids.iter().all(|id| seen.contains_key(id)),
-        "citation must come from a completed read_thread result"
-    );
-    let cited: Vec<&str> = answer
+    // A citation that is this channel's own UUID is dropped rather than failing
+    // the turn. The host knows its own channel id, so unlike a 64-hex string it
+    // never returned, this one is identifiable as a category error: the id is in
+    // the model's context as the place it is reading, and one run in ten cited it
+    // beside the right event. Everything else ungrounded still fails, so the
+    // guarantee — every surviving citation is a message a completed read_thread
+    // returned — is unchanged.
+    let cited_ids: Vec<&String> = answer
         .source_ids
         .iter()
-        .flat_map(|id| [id.as_str(), seen[id].as_str()])
+        .filter(|id| {
+            if id.as_str() == channel {
+                eprintln!("dropping the channel's own id from the citation list");
+                return false;
+            }
+            true
+        })
         .collect();
-    let missing = ungrounded(&answer.answer, &cited);
+    ensure!(
+        !cited_ids.is_empty(),
+        "cite at least one retrieved message, not only the channel"
+    );
+    ensure!(
+        cited_ids.iter().all(|id| seen.contains_key(id.as_str())),
+        "citation must come from a completed read_thread result"
+    );
+    let cited: Vec<&str> = cited_ids
+        .iter()
+        .flat_map(|id| [id.as_str(), seen[id.as_str()].as_str()])
+        .collect();
+    let missing = ungrounded(&answer.answer, &cited, question);
     ensure!(
         missing.is_empty(),
         "answer names {missing:?}, which no cited message contains"
@@ -635,7 +706,7 @@ async fn retrieve(host: Arc<Host>, question: &str) -> Result<(String, Value)> {
         let head: String = text.chars().take(400).collect();
         format!("final answer must be structured JSON; the model wrote {head:?}")
     })?;
-    validate_answer(&answer, &*host.thread_seen.lock().await)?;
+    validate_answer(&answer, &*host.thread_seen.lock().await, &host.channel, question)?;
     let links = answer
         .source_ids
         .iter()
@@ -805,10 +876,64 @@ mod tests {
             answer: text.into(),
             source_ids: ids,
         };
-        assert!(validate_answer(&answer("SOLVED-9bf89012805c", vec![source.clone()]), &seen).is_ok());
-        assert!(validate_answer(&answer("SOLVED-123456", vec![source.clone()]), &seen).is_err());
-        assert!(validate_answer(&answer("SOLVED-9bf89012805c", vec!["d".repeat(64)]), &seen).is_err());
-        assert!(validate_answer(&answer("SOLVED-9bf89012805c", vec![]), &seen).is_err());
+        let channel = "f0351dc5-9307-45e2-a43f-180c234a838f";
+        let question = "Find incident 1a2b3c4d and report the recovery code.";
+        let check = |a: Answer| validate_answer(&a, &seen, channel, question);
+        assert!(check(answer("SOLVED-9bf89012805c", vec![source.clone()])).is_ok());
+        assert!(check(answer("SOLVED-123456", vec![source.clone()])).is_err());
+        assert!(check(answer("SOLVED-9bf89012805c", vec!["d".repeat(64)])).is_err());
+        assert!(check(answer("SOLVED-9bf89012805c", vec![])).is_err());
+    }
+
+    /// The channel's own id beside a real citation is a category error the host
+    /// can name, so it is dropped; the same answer citing only the channel, or
+    /// citing a message the host never returned, still fails.
+    #[test]
+    fn the_channels_own_id_is_dropped_but_never_stands_alone() {
+        let source = "b".repeat(64);
+        let channel = "f0351dc5-9307-45e2-a43f-180c234a838f";
+        let question = "Find incident 1a2b3c4d and report the recovery code.";
+        let seen = HashMap::from([(
+            source.clone(),
+            "Resolution: restart the worker using recovery code SOLVED-9bf89012805c.".to_owned(),
+        )]);
+        let answer = |ids: Vec<String>| Answer {
+            answer: "SOLVED-9bf89012805c".into(),
+            source_ids: ids,
+        };
+        assert!(
+            validate_answer(&answer(vec![source.clone(), channel.to_owned()]), &seen, channel, question).is_ok(),
+            "a real citation plus the channel id is the run-8 case and should pass"
+        );
+        assert!(
+            validate_answer(&answer(vec![channel.to_owned()]), &seen, channel, question).is_err(),
+            "the channel id alone cites nothing"
+        );
+        assert!(
+            validate_answer(&answer(vec![source, "d".repeat(64)]), &seen, channel, question).is_err(),
+            "an id the host never returned still fails, dropped channel or not"
+        );
+    }
+
+    /// The batch on 2026-09-19 lost a run to "The recovery code for incident
+    /// 9b13a3e875ab is SOLVED-c1440dae5ca0" — the code was right and cited, and
+    /// the incident id came from the question. An echo of the question is not an
+    /// invention; an invention still fails.
+    #[test]
+    fn an_identifier_the_question_asks_about_is_grounded_by_it() {
+        let cited = ["Resolution: recovery code SOLVED-c1440dae5ca0."];
+        let question = "Find incident 9b13a3e875ab and report the recovery code.";
+        assert!(ungrounded(
+            "The recovery code for incident 9b13a3e875ab is SOLVED-c1440dae5ca0.",
+            &cited,
+            question
+        )
+        .is_empty());
+        assert_eq!(
+            ungrounded("The code is SOLVED-000000000000.", &cited, question),
+            vec!["SOLVED-000000000000".to_owned()],
+            "an invented code appears in neither the citation nor the question"
+        );
     }
 
     #[test]
@@ -822,5 +947,66 @@ mod tests {
         let schema = answer_schema();
         assert_eq!(schema["additionalProperties"], false);
         assert_eq!(schema["required"], json!(["answer", "source_ids"]));
+    }
+}
+
+#[cfg(test)]
+mod resolve_tests {
+    use super::*;
+
+    /// A host with no relay behind it: `resolve_found_id` reads only `seen`.
+    fn host_with(found: &[&str]) -> Host {
+        Host {
+            http: reqwest::Client::new(),
+            keys: Keys::generate(),
+            relay: "http://127.0.0.1:1".into(),
+            channel: "f0351dc5-9307-45e2-a43f-180c234a838f".into(),
+            seen: Mutex::new(found.iter().map(|id| (*id).to_owned()).collect()),
+            thread_seen: Mutex::new(HashMap::new()),
+            exclude: Mutex::new(None),
+            reads: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// qwen3-8b wrote 49 of a 64-character ID on 2026-09-19 and the run died on
+    /// "read a message found by search first" — a truncation, not a guess.
+    #[tokio::test]
+    async fn a_unique_prefix_of_a_found_id_resolves_to_it() {
+        let full = "86bfe714e74542e0c5ee31a845cbe96d88b5389ecb585b6b8aaaaaaaaaaaaaaaa";
+        let host = host_with(&[full]);
+        assert_eq!(
+            host.resolve_found_id(&full[..49]).await.expect("a truncation resolves"),
+            full
+        );
+        assert_eq!(host.resolve_found_id(full).await.expect("exact"), full);
+    }
+
+    #[tokio::test]
+    async fn an_ambiguous_or_unknown_prefix_is_refused_with_the_reason() {
+        let a = format!("{}{}", "abcdef1234567890", "a".repeat(48));
+        let b = format!("{}{}", "abcdef1234567890", "b".repeat(48));
+        let host = host_with(&[&a, &b]);
+        let ambiguous = host
+            .resolve_found_id("abcdef1234567890")
+            .await
+            .expect_err("two found IDs share that prefix");
+        assert!(format!("{ambiguous:#}").contains("more than one"), "{ambiguous:#}");
+        let unknown = host
+            .resolve_found_id(&"f".repeat(64))
+            .await
+            .expect_err("never returned by a search");
+        assert!(format!("{unknown:#}").contains("not a message search_messages returned"), "{unknown:#}");
+        let short = host.resolve_found_id("abcdef").await.expect_err("too short to be unambiguous");
+        assert!(format!("{short:#}").contains("6 characters"), "{short:#}");
+    }
+
+    #[tokio::test]
+    async fn nothing_resolves_before_a_search_has_run() {
+        let host = host_with(&[]);
+        let refused = host
+            .resolve_found_id(&"a".repeat(64))
+            .await
+            .expect_err("no search yet");
+        assert!(format!("{refused:#}").contains("search_messages first"), "{refused:#}");
     }
 }
