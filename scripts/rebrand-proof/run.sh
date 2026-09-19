@@ -48,6 +48,7 @@ REBRAND_PORT="${REBRAND_PORT:-8000}"
 REBRAND_EXTRA_ARGS="${REBRAND_EXTRA_ARGS:-}"
 OLLAMA_BASE="${OLLAMA_BASE:-http://127.0.0.1:11434}"
 OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3-8b-q4km:latest}"
+[[ "${OLLAMA_MODEL}" == *:* ]] || OLLAMA_MODEL="${OLLAMA_MODEL}:latest"   # Ollama reports tags in full
 TIMEOUT_S="${PROOF_TIMEOUT_S:-900}"
 SERVE_READY_TIMEOUT_S="${PROOF_SERVE_READY_TIMEOUT_S:-900}"
 
@@ -201,9 +202,9 @@ case "${MODE}" in
     curl -sf "${BACKEND}/v1/models" | grep -q "\"${MODEL_ID}\"" \
       || { log "Ollama at ${BACKEND} does not list ${MODEL_ID}"; exit 69; }
     put backend_version "ollama $(curl -sf "${BACKEND}/api/version" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("version",""))')"
-    OLLAMA_PRELOADED="$(curl -sf "${BACKEND}/api/ps" | python3 -c 'import json,sys; m=sys.argv[1]; print(int(any(x.get("name")==m for x in json.load(sys.stdin).get("models",[]))))' "${MODEL_ID}")"
+    OLLAMA_PRELOADED="$(curl -sf "${BACKEND}/api/ps" | python3 -c 'import json,sys; m=sys.argv[1]; print(int(any(m in (x.get("name"), x.get("model")) for x in json.load(sys.stdin).get("models",[]))))' "${MODEL_ID}")"
     blob="$(curl -sf "${BACKEND}/api/show" -d "{\"model\":\"${MODEL_ID}\"}" \
-      | python3 -c 'import json,sys; print(next((l[5:] for l in json.load(sys.stdin)["modelfile"].splitlines() if l.startswith("FROM /")), ""))')"
+      | python3 -c 'import json,sys; print(next((l[5:] for l in json.load(sys.stdin).get("modelfile", "").splitlines() if l.startswith("FROM /")), ""))')"
     if [[ -n "${blob}" ]]; then
       put model_path "${blob}"
       put model_bytes "$(stat -c %s "${blob}")"
@@ -362,7 +363,7 @@ sleep 4
 
 case "${MODE}" in
   ollama)   # Ollama picks its own default context; read what it loaded with.
-    put backend_context_len "$(curl -sf "${BACKEND}/api/ps" | python3 -c 'import json,sys; m=sys.argv[1]; print(next((x.get("context_length","") for x in json.load(sys.stdin).get("models",[]) if x.get("name")==m), ""))' "${MODEL_ID}")" ;;
+    put backend_context_len "$(curl -sf "${BACKEND}/api/ps" | python3 -c 'import json,sys; m=sys.argv[1]; print(next((x.get("context_length","") for x in json.load(sys.stdin).get("models",[]) if m in (x.get("name"), x.get("model"))), ""))' "${MODEL_ID}")" ;;
   rebrand) put backend_context_len "${MAX_SEQ_LEN}" ;;
 esac
 
