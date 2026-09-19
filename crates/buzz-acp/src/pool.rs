@@ -5436,9 +5436,27 @@ fn answered_reply_filter(author: nostr::PublicKey, ledger: &AnswerLedger) -> nos
         .since(nostr::Timestamp::from(ledger.since))
 }
 
+/// Whether a turn's outcome earns ✅ on the triggers it answered.
+///
+/// Only a turn that ran to its own end. `PromptOutcome::Ok` carries whatever
+/// `stopReason` the agent reported, and four of the five are not answers: a
+/// refusal, a token cap, an exhausted request budget and a cancel all end a
+/// turn early. Each can still leave a published reply in the thread — an "on
+/// it", or half an answer cut off mid-sentence — and ✅ is never removed, so
+/// crediting them marks an unfinished turn answered for good.
+///
+/// This is the harness half of the contract stated to the `rebrand-acp` author
+/// in `#buzz-platform` (2026-09-19): a worker may report a failed run as
+/// `end_turn` only if the harness does not read `end_turn` as success. It
+/// reads it as the only success.
+pub(crate) fn earns_answered_reaction(outcome: &PromptOutcome) -> bool {
+    matches!(outcome, PromptOutcome::Ok(StopReason::EndTurn))
+}
+
 /// Fire-and-forget: add ✅ to every target a successful turn answered. ✅ is
-/// never removed. Called by the main loop only for `PromptOutcome::Ok`, so a
-/// turn that failed after an interim reply ("on it") leaves no ✅.
+/// never removed. Called by the main loop only when
+/// [`earns_answered_reaction`] holds, so a turn that failed, refused, ran out
+/// of budget or was cancelled after an interim reply ("on it") leaves no ✅.
 ///
 /// Detection reads the relay, not the agent's tool calls: one query for our
 /// own reply-kind events created since the turn started that carry a target's
@@ -8430,6 +8448,59 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
         // A top-level post of ours that mentions nothing does not answer.
         let bare = json!([{ "kind": 9, "content": "hello", "tags": [["h", "x"]] }]);
         assert!(answered_event_ids(&targets, &bare).is_empty());
+    }
+
+    #[test]
+    fn only_end_turn_earns_the_answered_reaction() {
+        assert!(earns_answered_reaction(&PromptOutcome::Ok(
+            StopReason::EndTurn
+        )));
+        // Every other stop reason ends the turn early. ✅ is never removed, so
+        // a reply published before the stop must not be read as an answer.
+        for stop in [
+            StopReason::Refusal,
+            StopReason::MaxTokens,
+            StopReason::MaxTurnRequests,
+            StopReason::Cancelled,
+        ] {
+            assert!(
+                !earns_answered_reaction(&PromptOutcome::Ok(stop.clone())),
+                "{stop:?} is not an answer"
+            );
+        }
+    }
+
+    #[test]
+    fn no_answered_reaction_for_any_outcome_that_is_not_ok() {
+        // `PromptOutcome` has no `Debug`, so each case carries its own name.
+        for (name, outcome) in [
+            (
+                "error",
+                PromptOutcome::Error(AcpError::Protocol("boom".into())),
+            ),
+            (
+                "indeterminate project",
+                PromptOutcome::ProjectContextIndeterminate("no authority".into()),
+            ),
+            ("agent exited", PromptOutcome::AgentExited),
+            ("idle timeout", PromptOutcome::Timeout(TimeoutKind::Idle)),
+            (
+                "hard timeout",
+                PromptOutcome::Timeout(TimeoutKind::Hard {
+                    recently_active: true,
+                }),
+            ),
+            ("cancelled", PromptOutcome::Cancelled),
+            (
+                "cancel drain timeout",
+                PromptOutcome::CancelDrainTimeout(Duration::from_secs(5)),
+            ),
+        ] {
+            assert!(
+                !earns_answered_reaction(&outcome),
+                "{name} is not an answer"
+            );
+        }
     }
 
     #[test]
