@@ -3,7 +3,7 @@
 This lane builds our own macOS Buzz Desktop from `aitaco-llc/buzz`. It is signed under Apple team `5F7YLJS4YR` and updates from our own feed.
 - The lane script is `scripts/aitaco/desktop-release.sh`.
 - Builds run on the Mac. Signing, notarization and the updater private key never leave it.
-- This file and the script live under `aitaco/` paths, so upstream syncs cannot conflict with them. Block's `RELEASING.md` and `release.yml` do not apply. `release.yml` is disabled on the fork.
+- This file and the script live under `aitaco/` paths, so a Block fix we take (`UPSTREAM.md`) cannot conflict with them. Block's `RELEASING.md` and `release.yml` do not apply. `release.yml` is disabled on the fork.
 
 Status: written on hip, where nothing Apple can be built. The first run on the Mac settles the items under "Unverified".
 
@@ -13,7 +13,7 @@ Status: written on hip, where nothing Apple can be built. The first run on the M
 
 | | Value | Why |
 |---|---|---|
-| Bundle identifier | `co.aitaco.buzz.desktop` | Keeps our app's data, single-instance socket, agent marker and updater separate from Block's. It is set in the generated release overlay, so `tauri.conf.json` keeps Block's value and syncs never touch it. |
+| Bundle identifier | `co.aitaco.buzz.desktop` | Keeps our app's data, single-instance socket, agent marker and updater separate from Block's. It is set in the generated release overlay, so `tauri.conf.json` keeps Block's value and a Block merge never touches it. |
 | Dev identifier | `xyz.block.buzz.app.dev`, unchanged | `migration.rs:24,48-53` recognises dev builds by this exact name. A dev build under any other name is treated as production and uses `~/.buzz`. |
 | Product name / executable | `Buzz` / `buzz-desktop`, unchanged | `instance_reaper.rs:5-12` decides whether a desktop is alive by these names. Under any other name, a Block Desktop on the same Mac would kill our agents every 60 s. |
 | Keychain item | service `buzz-desktop`, account `secrets`, unchanged | This name is fixed for every release build (`app_state_keyring.rs:9-23`), so our build reads the **same** identity key as Block's. |
