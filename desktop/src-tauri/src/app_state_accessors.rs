@@ -58,7 +58,7 @@ impl AppState {
                 .load(std::sync::atomic::Ordering::Acquire)
         {
             return Err("identity is in recovery mode; event signing is disabled \
-                 until the identity is restored and Buzz is relaunched"
+                 until the identity is restored and aitaco is relaunched"
                 .to_string());
         }
         self.keys
