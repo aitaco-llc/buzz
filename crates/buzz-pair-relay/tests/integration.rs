@@ -39,9 +39,43 @@ async fn start_relay() -> String {
     format!("ws://127.0.0.1:{}", addr.port())
 }
 
-/// Connect a WebSocket client to the relay.
+/// Connect a WebSocket client and read the relay's NIP-42 challenge.
+async fn connect_challenged(url: &str) -> (WS, String) {
+    let (mut ws, _) = connect_async(url).await.unwrap();
+    let auth = recv(&mut ws).await;
+    assert_eq!(
+        auth[0], "AUTH",
+        "expected an AUTH challenge first, got {auth}"
+    );
+    let challenge = auth[1].as_str().expect("challenge string").to_string();
+    assert!(
+        challenge.len() == 64 && challenge.bytes().all(|b| b.is_ascii_hexdigit()),
+        "unexpected challenge: {challenge}"
+    );
+    (ws, challenge)
+}
+
+/// Connect a WebSocket client to the relay, without answering its challenge.
 async fn connect(url: &str) -> WS {
-    let (ws, _) = connect_async(url).await.unwrap();
+    connect_challenged(url).await.0
+}
+
+/// Connect and authenticate as `pubkey_hex`, the owner of that #p.
+async fn connect_as(url: &str, sk: &SecretKey, pubkey_hex: &str) -> WS {
+    let (mut ws, challenge) = connect_challenged(url).await;
+    let auth = sign_event(
+        sk,
+        pubkey_hex,
+        22242,
+        json!([["relay", url], ["challenge", challenge]]),
+        "",
+        now_ts(),
+    );
+    send(&mut ws, &json!(["AUTH", auth])).await;
+    let ok = recv(&mut ws).await;
+    assert_eq!(ok[0], "OK");
+    assert_eq!(ok[1], auth["id"]);
+    assert_eq!(ok[2], true, "AUTH rejected: {}", ok[3]);
     ws
 }
 
@@ -140,12 +174,6 @@ fn make_nip44_content() -> String {
 /// `nonce` is mixed into the content so callers can produce unique IDs from
 /// the same keypair without sleeping.
 fn make_signed_event(sk: &SecretKey, pubkey_hex: &str, p_hex: &str, nonce: u64) -> Value {
-    let secp = Secp256k1::new();
-    let created_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64;
-
     // Vary content per nonce so each call produces a unique event ID.
     let mut blob = vec![0x02u8];
     blob.extend_from_slice(&nonce.to_le_bytes()); // 8 bytes of nonce
@@ -154,8 +182,26 @@ fn make_signed_event(sk: &SecretKey, pubkey_hex: &str, p_hex: &str, nonce: u64) 
     blob.extend_from_slice(&[0xCC; 32]);
     let content = base64_encode(&blob);
 
-    let tags = json!([["p", p_hex]]);
-    let kind = 24134u64;
+    sign_event(
+        sk,
+        pubkey_hex,
+        24134,
+        json!([["p", p_hex]]),
+        &content,
+        now_ts(),
+    )
+}
+
+/// Sign an arbitrary NIP-01 event.
+fn sign_event(
+    sk: &SecretKey,
+    pubkey_hex: &str,
+    kind: u64,
+    tags: Value,
+    content: &str,
+    created_at: i64,
+) -> Value {
+    let secp = Secp256k1::new();
 
     // NIP-01 commitment: [0, pubkey, created_at, kind, tags, content]
     let commitment = json!([0, pubkey_hex, created_at, kind, tags, content]);
@@ -174,11 +220,11 @@ fn make_signed_event(sk: &SecretKey, pubkey_hex: &str, p_hex: &str, nonce: u64) 
     json!({
         "id":         id_hex,
         "pubkey":     pubkey_hex,
-        "kind":       24134,
+        "kind":       kind,
         "created_at": created_at,
         "content":    content,
         "sig":        sig_hex,
-        "tags":       [["p", p_hex]]
+        "tags":       tags
     })
 }
 
@@ -199,15 +245,17 @@ async fn subscribe(ws: &mut WS, sub_id: &str, p_hex: &str) {
 }
 
 /// 1. Hold: an event published before its subscriber connects is held, and
-///    the subscriber gets it right after EOSE.
+///    the #p's owner gets it right after EOSE. A subscriber that has not
+///    proved it owns the #p gets EOSE only.
 #[tokio::test]
 async fn test_event_before_subscriber_is_held() {
     let url = start_relay().await;
     let (sk, pk) = gen_keypair();
+    let (owner_sk, owner_pk) = gen_keypair();
 
     // Publish first — no subscriber yet, so the relay holds it.
     let mut pub_ws = connect(&url).await;
-    let ev = make_signed_event(&sk, &pk, P_A, 0);
+    let ev = make_signed_event(&sk, &pk, &owner_pk, 0);
     send(&mut pub_ws, &json!(["EVENT", ev])).await;
     let ok = recv(&mut pub_ws).await;
     assert_eq!(ok[0], "OK");
@@ -215,9 +263,19 @@ async fn test_event_before_subscriber_is_held() {
     assert_eq!(ok[2], true, "expected the event to be held: {}", ok[3]);
     assert_eq!(ok[3], "held: no live subscriber");
 
-    // Subscribe — EOSE, then the held event.
-    let mut sub_ws = connect(&url).await;
-    subscribe(&mut sub_ws, "s1", P_A).await;
+    // Someone who only knows the #p gets nothing held.
+    let mut other_ws = connect(&url).await;
+    subscribe(&mut other_ws, "s0", &owner_pk).await;
+    assert!(
+        try_recv(&mut other_ws).await.is_none(),
+        "a subscriber that is not the owner received a held event"
+    );
+    send(&mut other_ws, &json!(["CLOSE", "s0"])).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // The owner subscribes — EOSE, then the held event.
+    let mut sub_ws = connect_as(&url, &owner_sk, &owner_pk).await;
+    subscribe(&mut sub_ws, "s1", &owner_pk).await;
     let ev_msg = recv(&mut sub_ws).await;
     assert_eq!(ev_msg[0], "EVENT");
     assert_eq!(ev_msg[1], "s1");
@@ -692,7 +750,8 @@ async fn test_unknown_message() {
     let url = start_relay().await;
     let mut ws = connect(&url).await;
 
-    send(&mut ws, &json!(["AUTH", {}])).await;
+    // AUTH is supported now (NIP-42 ownership); COUNT (NIP-45) is not.
+    send(&mut ws, &json!(["COUNT", "c1", {}])).await;
     let resp = recv(&mut ws).await;
     assert_eq!(resp[0], "NOTICE");
     assert!(
@@ -1069,11 +1128,13 @@ async fn test_eose_try_send_failure() {
     let url = start_relay().await;
     let (sk, pk) = gen_keypair();
 
+    let (owner_sk, owner_pk) = gen_keypair();
+
     // Publisher sends an event before the subscriber connects — held.
     let mut pub_ws = connect(&url).await;
     send(
         &mut pub_ws,
-        &json!(["EVENT", make_signed_event(&sk, &pk, P_A, 0)]),
+        &json!(["EVENT", make_signed_event(&sk, &pk, &owner_pk, 0)]),
     )
     .await;
     let ok = recv(&mut pub_ws).await;
@@ -1081,8 +1142,8 @@ async fn test_eose_try_send_failure() {
     assert_eq!(ok[2], true, "expected the event to be held: {}", ok[3]);
 
     // Subscriber connects after the event — EOSE first, then the held EVENT.
-    let mut sub_ws = connect(&url).await;
-    send(&mut sub_ws, &json!(["REQ", "s1", {"#p": [P_A]}])).await;
+    let mut sub_ws = connect_as(&url, &owner_sk, &owner_pk).await;
+    send(&mut sub_ws, &json!(["REQ", "s1", {"#p": [owner_pk]}])).await;
     let first = recv(&mut sub_ws).await;
     assert_eq!(first[0], "EOSE", "first message must be EOSE, got {first}");
     let second = recv(&mut sub_ws).await;
@@ -1197,51 +1258,40 @@ async fn test_graceful_close() {
     assert_closed(&mut ws).await;
 }
 
-/// 44. A second subscriber on the same #p replaces the first, which gets
-///     CLOSED. There is still at most one subscriber per #p (tightening #2).
+/// 44. Multiple subscribers on the same #p value: a second subscriber that
+///     has not proved it owns the #p is refused while the first is live
+///     (tightening #2 — exactly one subscriber required).
 #[tokio::test]
 async fn test_multiple_subscribers_same_p() {
     let url = start_relay().await;
-    let (sk, pk) = gen_keypair();
+    let (other_sk, other_pk) = gen_keypair();
 
+    // First subscriber on #p succeeds.
     let mut sub1 = connect(&url).await;
     subscribe(&mut sub1, "s1", P_A).await;
 
-    // Second subscriber on the SAME #p takes over.
+    // Second subscriber on the SAME #p is rejected at REQ time, whether it is
+    // unauthenticated or authenticated as some other key.
     let mut sub2 = connect(&url).await;
-    subscribe(&mut sub2, "s2", P_A).await;
-    let closed = recv(&mut sub1).await;
-    assert_eq!(closed[0], "CLOSED");
-    assert_eq!(closed[1], "s1");
-    assert!(
-        closed[2].as_str().unwrap_or("").contains("replaced"),
-        "unexpected message: {}",
-        closed[2]
-    );
-
-    // Live events go to the newer subscriber only.
-    let mut pub_ws = connect(&url).await;
-    send(
-        &mut pub_ws,
-        &json!(["EVENT", make_signed_event(&sk, &pk, P_A, 0)]),
-    )
-    .await;
-    let ok = recv(&mut pub_ws).await;
-    assert_eq!(ok[2], true, "event rejected: {}", ok[3]);
-    assert_eq!(ok[3], "");
-    let ev_msg = recv(&mut sub2).await;
-    assert_eq!(ev_msg[0], "EVENT");
-    assert_eq!(ev_msg[1], "s2");
+    let mut sub3 = connect_as(&url, &other_sk, &other_pk).await;
+    for (ws, id) in [(&mut sub2, "s2"), (&mut sub3, "s3")] {
+        send(ws, &json!(["REQ", id, {"#p": [P_A]}])).await;
+        let resp = recv(ws).await;
+        assert_eq!(resp[0], "CLOSED");
+        assert_eq!(resp[1], id);
+        assert!(
+            resp[2]
+                .as_str()
+                .unwrap_or("")
+                .contains("already has a live subscriber"),
+            "unexpected message: {}",
+            resp[2]
+        );
+    }
     assert!(
         try_recv(&mut sub1).await.is_none(),
-        "replaced subscriber received an event"
+        "first subscriber was disturbed"
     );
-
-    // The replaced connection stays open and may subscribe again.
-    send(&mut sub1, &json!(["REQ", "s3", {"#p": [P_B]}])).await;
-    let eose = recv(&mut sub1).await;
-    assert_eq!(eose[0], "EOSE");
-    assert_eq!(eose[1], "s3");
 }
 
 /// 45. Uppercase hex in #p filter value is rejected.
@@ -1417,15 +1467,38 @@ async fn expect_event(ws: &mut WS, sub_id: &str, ev: &Value) {
     assert_eq!(&msg[2], ev);
 }
 
+/// Subscribe, retrying while the relay is still closing an earlier connection
+/// that held this #p.
+async fn subscribe_when_free(ws: &mut WS, sub_id: &str, p_hex: &str) {
+    for _ in 0..50 {
+        send(ws, &json!(["REQ", sub_id, {"#p": [p_hex]}])).await;
+        let resp = recv(ws).await;
+        if resp[0] == "EOSE" {
+            assert_eq!(resp[1], sub_id);
+            return;
+        }
+        assert!(
+            resp[2]
+                .as_str()
+                .unwrap_or("")
+                .contains("already has a live subscriber"),
+            "unexpected response: {resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("#p never became free");
+}
+
 /// 52. Held events replay in the order they arrived.
 #[tokio::test]
 async fn test_hold_replays_in_arrival_order() {
     let url = start_relay().await;
     let (sk, pk) = gen_keypair();
+    let (owner_sk, owner_pk) = gen_keypair();
 
     let mut pub_ws = connect(&url).await;
     let evs: Vec<Value> = (0..3u64)
-        .map(|i| make_signed_event(&sk, &pk, P_A, i))
+        .map(|i| make_signed_event(&sk, &pk, &owner_pk, i))
         .collect();
     for ev in &evs {
         send(&mut pub_ws, &json!(["EVENT", ev])).await;
@@ -1433,8 +1506,8 @@ async fn test_hold_replays_in_arrival_order() {
         assert_eq!(ok[3], "held: no live subscriber");
     }
 
-    let mut sub_ws = connect(&url).await;
-    subscribe(&mut sub_ws, "s1", P_A).await;
+    let mut sub_ws = connect_as(&url, &owner_sk, &owner_pk).await;
+    subscribe(&mut sub_ws, "s1", &owner_pk).await;
     for ev in &evs {
         expect_event(&mut sub_ws, "s1", ev).await;
     }
@@ -1447,13 +1520,14 @@ async fn test_hold_replays_in_arrival_order() {
 async fn test_hold_per_p_cap() {
     let url = start_relay().await;
     let (sk, pk) = gen_keypair();
+    let (owner_sk, owner_pk) = gen_keypair();
 
     // Six events fill one connection's session cap and the #p's hold.
     let mut pub1 = connect(&url).await;
     for i in 0..6u64 {
         send(
             &mut pub1,
-            &json!(["EVENT", make_signed_event(&sk, &pk, P_A, i)]),
+            &json!(["EVENT", make_signed_event(&sk, &pk, &owner_pk, i)]),
         )
         .await;
         let ok = recv(&mut pub1).await;
@@ -1461,7 +1535,7 @@ async fn test_hold_per_p_cap() {
     }
 
     let mut pub2 = connect(&url).await;
-    let seventh = make_signed_event(&sk, &pk, P_A, 6);
+    let seventh = make_signed_event(&sk, &pk, &owner_pk, 6);
     send(&mut pub2, &json!(["EVENT", seventh])).await;
     let ok = recv(&mut pub2).await;
     assert_eq!(ok[2], false);
@@ -1476,9 +1550,9 @@ async fn test_hold_per_p_cap() {
     let ok = recv(&mut pub2).await;
     assert_eq!(ok[3], "held: no live subscriber");
 
-    // Once a subscriber is live, the rejected event can be sent again.
-    let mut sub_ws = connect(&url).await;
-    subscribe(&mut sub_ws, "s1", P_A).await;
+    // Once the owner is live, the rejected event can be sent again.
+    let mut sub_ws = connect_as(&url, &owner_sk, &owner_pk).await;
+    subscribe(&mut sub_ws, "s1", &owner_pk).await;
     for _ in 0..6 {
         assert_eq!(recv(&mut sub_ws).await[0], "EVENT");
     }
@@ -1488,32 +1562,136 @@ async fn test_hold_per_p_cap() {
     expect_event(&mut sub_ws, "s1", &seventh).await;
 }
 
-/// 54. A subscriber that reconnects gets every event for its #p again,
-///     including events already written to its old connection. The relay
-///     can't tell a suspended socket from a live one.
+/// 54. An owner whose old socket is suspended (open, never read again)
+///     reconnects: its new subscription replaces the old one, which gets
+///     CLOSED, and replays the event already written to the old socket.
 #[tokio::test]
-async fn test_hold_replays_delivered_events_on_resubscribe() {
+async fn test_owner_resubscribe_replaces_suspended_socket() {
     let url = start_relay().await;
     let (sk, pk) = gen_keypair();
+    let (owner_sk, owner_pk) = gen_keypair();
 
-    let mut old_ws = connect(&url).await;
-    subscribe(&mut old_ws, "s1", P_A).await;
+    let mut old_ws = connect_as(&url, &owner_sk, &owner_pk).await;
+    subscribe(&mut old_ws, "s1", &owner_pk).await;
 
     let mut pub_ws = connect(&url).await;
-    let ev = make_signed_event(&sk, &pk, P_A, 0);
+    let ev = make_signed_event(&sk, &pk, &owner_pk, 0);
     send(&mut pub_ws, &json!(["EVENT", ev])).await;
     let ok = recv(&mut pub_ws).await;
     assert_eq!(ok[2], true);
     assert_eq!(ok[3], "", "expected live delivery");
-    // The old connection never reads it, as a suspended app wouldn't.
-    drop(old_ws);
 
-    let mut new_ws = connect(&url).await;
-    subscribe(&mut new_ws, "s1", P_A).await;
-    expect_event(&mut new_ws, "s1", &ev).await;
+    let mut new_ws = connect_as(&url, &owner_sk, &owner_pk).await;
+    subscribe(&mut new_ws, "s2", &owner_pk).await;
+    expect_event(&mut new_ws, "s2", &ev).await;
+
+    // The old socket, read at last, has the event and then CLOSED.
+    expect_event(&mut old_ws, "s1", &ev).await;
+    let closed = recv(&mut old_ws).await;
+    assert_eq!(closed[0], "CLOSED");
+    assert_eq!(closed[1], "s1");
+    assert!(
+        closed[2].as_str().unwrap_or("").contains("replaced"),
+        "unexpected message: {}",
+        closed[2]
+    );
+
+    // Live events go to the new subscription only.
+    let ev2 = make_signed_event(&sk, &pk, &owner_pk, 1);
+    send(&mut pub_ws, &json!(["EVENT", ev2])).await;
+    assert_eq!(recv(&mut pub_ws).await[3], "");
+    expect_event(&mut new_ws, "s2", &ev2).await;
+    assert!(try_recv(&mut old_ws).await.is_none());
 }
 
-/// 55. The two-apps-on-one-phone handshake. Each side spends part of the
+/// 55. Someone who has the pairing QR code (so knows the source's #p) gets
+///     nothing held and can't displace the source. If they squat the #p while
+///     the source is away, they get only what arrives live, as before the hold,
+///     and the source takes the #p back when it returns.
+#[tokio::test]
+async fn test_qr_viewer_cannot_take_the_hold() {
+    let url = start_relay().await;
+    let (source_sk, source_pk) = gen_keypair();
+    let (target_sk, target_pk) = gen_keypair();
+    let (viewer_sk, viewer_pk) = gen_keypair();
+
+    let mut source = connect_as(&url, &source_sk, &source_pk).await;
+    subscribe(&mut source, "pair", &source_pk).await;
+
+    // The viewer can't displace a live source, authenticated or not.
+    let mut viewer = connect_as(&url, &viewer_sk, &viewer_pk).await;
+    send(&mut viewer, &json!(["REQ", "v", {"#p": [source_pk]}])).await;
+    let resp = recv(&mut viewer).await;
+    assert_eq!(resp[0], "CLOSED");
+
+    // The target's offer reaches the source.
+    let mut target = connect_as(&url, &target_sk, &target_pk).await;
+    subscribe(&mut target, "pair", &target_pk).await;
+    let offer = make_signed_event(&target_sk, &target_pk, &source_pk, 0);
+    send(&mut target, &json!(["EVENT", offer])).await;
+    assert_eq!(recv(&mut target).await[3], "");
+    expect_event(&mut source, "pair", &offer).await;
+
+    // The source goes away; the viewer squats its #p and gets no replay, so it
+    // never learns the target's key from the offer.
+    drop(source);
+    let mut viewer = connect(&url).await;
+    subscribe_when_free(&mut viewer, "v", &source_pk).await;
+    assert!(
+        try_recv(&mut viewer).await.is_none(),
+        "the viewer received a held event"
+    );
+
+    // The source returns, takes the #p back, and gets the offer again.
+    let mut source = connect_as(&url, &source_sk, &source_pk).await;
+    subscribe(&mut source, "pair", &source_pk).await;
+    expect_event(&mut source, "pair", &offer).await;
+    let closed = recv(&mut viewer).await;
+    assert_eq!(closed[0], "CLOSED");
+}
+
+/// 56. An AUTH that doesn't answer this connection's challenge is refused, and
+///     the connection gets no owner rights.
+#[tokio::test]
+async fn test_auth_with_wrong_challenge_is_refused() {
+    let url = start_relay().await;
+    let (sk, pk) = gen_keypair();
+    let (mut ws, _challenge) = connect_challenged(&url).await;
+
+    let (_, other_challenge) = connect_challenged(&url).await;
+    let auth = sign_event(
+        &sk,
+        &pk,
+        22242,
+        json!([["relay", url], ["challenge", other_challenge]]),
+        "",
+        now_ts(),
+    );
+    send(&mut ws, &json!(["AUTH", auth])).await;
+    let ok = recv(&mut ws).await;
+    assert_eq!(ok[0], "OK");
+    assert_eq!(ok[1], auth["id"]);
+    assert_eq!(ok[2], false);
+    assert_eq!(ok[3], "auth-required: challenge mismatch");
+
+    // A bad signature is refused too.
+    let (mut ws2, challenge2) = connect_challenged(&url).await;
+    let mut forged = sign_event(
+        &sk,
+        &pk,
+        22242,
+        json!([["relay", url], ["challenge", challenge2]]),
+        "",
+        now_ts(),
+    );
+    let (_, pk2) = gen_keypair();
+    forged["pubkey"] = json!(pk2);
+    send(&mut ws2, &json!(["AUTH", forged])).await;
+    let ok = recv(&mut ws2).await;
+    assert_eq!(ok[2], false, "forged AUTH accepted");
+}
+
+/// 57. The two-apps-on-one-phone handshake. Each side spends part of the
 ///     session in the background: first with its socket closed, then with a
 ///     socket that is still open but no longer read (suspended). Every message
 ///     still arrives after the side reconnects.
@@ -1524,25 +1702,25 @@ async fn test_two_apps_one_phone_handshake() {
     let (target_sk, target_pk) = gen_keypair();
 
     // Source (app A) shows the code, then goes to the background: socket closed.
-    let mut source = connect(&url).await;
+    let mut source = connect_as(&url, &source_sk, &source_pk).await;
     subscribe(&mut source, "pair", &source_pk).await;
     source.close(None).await.unwrap();
     drop(source);
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Target (app B) subscribes and sends its offer while A is away.
-    let mut target = connect(&url).await;
+    // Target (app B) subscribes and sends its offer while A is away (or while
+    // the relay is still closing A's connection).
+    let mut target = connect_as(&url, &target_sk, &target_pk).await;
     subscribe(&mut target, "pair", &target_pk).await;
     let offer = make_signed_event(&target_sk, &target_pk, &source_pk, 0);
     send(&mut target, &json!(["EVENT", offer])).await;
     let ok = recv(&mut target).await;
-    assert_eq!(ok[3], "held: no live subscriber");
+    assert_eq!(ok[2], true, "offer rejected: {}", ok[3]);
 
     // B goes to the background: its socket stays open but is never read again.
     let _suspended_target = target;
 
     // A comes back, reconnects, and gets the offer.
-    let mut source = connect(&url).await;
+    let mut source = connect_as(&url, &source_sk, &source_pk).await;
     subscribe(&mut source, "pair", &source_pk).await;
     expect_event(&mut source, "pair", &offer).await;
 
@@ -1558,7 +1736,7 @@ async fn test_two_apps_one_phone_handshake() {
 
     // B comes back on a new connection, replaces its dead subscription, and
     // gets both, in order.
-    let mut target = connect(&url).await;
+    let mut target = connect_as(&url, &target_sk, &target_pk).await;
     subscribe(&mut target, "pair", &target_pk).await;
     expect_event(&mut target, "pair", &sas_confirm).await;
     expect_event(&mut target, "pair", &payload).await;

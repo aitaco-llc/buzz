@@ -1216,6 +1216,7 @@ name = "buzz-pair-relay"
 version = "0.1.0"
 dependencies = [
  "futures-util",
+ "getrandom 0.4.3",
  "http-body-util",
  "hyper",
  "hyper-util",

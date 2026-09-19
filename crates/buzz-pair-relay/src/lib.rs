@@ -26,24 +26,31 @@
 //! - **Freshness** — `created_at` must be within ±120 s of relay wall-clock.
 //! - **Deduplication** — duplicate event IDs are rejected; dedup entries expire after 300 s.
 //!
+//! - **Ownership** — each connection is sent a NIP-42 `AUTH` challenge when it
+//!   opens. A connection that answers it has proved it holds that key, and so
+//!   owns the `#p` equal to its pubkey. NIP-AB clients answer with their
+//!   ephemeral key, which is their `#p`. Answering is optional.
+//!
 //! # Hold
 //!
 //! A phone that pairs with another app on the same phone spends part of the
 //! handshake in the background, where its socket can be suspended or torn down.
 //! So every accepted event is also held for [`HOLD_TTL`], at most
 //! [`HOLD_PER_P`] per `#p` and [`HOLD_TOTAL`] in all:
-//! - With no live subscriber for its `#p`, the event is held (`OK` true,
-//!   `"held: no live subscriber"`). If the hold is full, it is rejected as before.
-//! - A new subscription for a `#p` gets `EOSE`, then every held event for that
-//!   `#p` in arrival order, including ones already written to an earlier
+//! - With no live subscriber for its `#p`, or one that has stopped reading, the
+//!   event is held (`OK` true, `"held: …"`). If the hold is full it is rejected
+//!   as before.
+//! - A subscription from the `#p`'s owner gets `EOSE`, then every held event for
+//!   that `#p` in arrival order, including ones already written to an earlier
 //!   subscription. The relay can't tell a suspended socket from a live one, so
 //!   an event it "delivered" may never have been read. NIP-AB requires clients
-//!   to discard duplicates.
-//! - A new subscription for a `#p` replaces a subscription for the same `#p` on
+//!   to discard duplicates. The replay goes out whole or not at all.
+//! - The owner's subscription replaces a subscription for the same `#p` on
 //!   another connection, which gets `CLOSED`. That is how a client that
-//!   reconnects gets past its own dead socket. Anyone who knows the `#p` could
-//!   already take the held events while the owner was away, and events are
-//!   NIP-44 encrypted to the owner's ephemeral key, so this adds no exposure.
+//!   reconnects gets past its own dead socket.
+//! - Anyone else gets the rules from before the hold: no replay, and no
+//!   subscription while the `#p` has a live one. So a QR code gives nobody the
+//!   held events, the peer's key, or a way to displace the owner.
 //! - A timer drops each held event at [`HOLD_TTL`], whether or not it was
 //!   delivered.
 
@@ -112,6 +119,14 @@ const ENTRY_TTL: Duration = Duration::from_secs(300);
 /// Freshness window in seconds (±).
 const FRESHNESS_SECS: i64 = 120;
 
+/// NIP-42 auth event kind.
+const KIND_AUTH: u64 = 22242;
+
+/// Freshness window for AUTH events (±). NIP-42 suggests about ten minutes. A
+/// rejected AUTH ends the pairing on mobile and iPad, so this is wider than
+/// [`FRESHNESS_SECS`].
+const AUTH_FRESHNESS_SECS: i64 = 600;
+
 /// How long an accepted event is held for a later subscription. Matches the
 /// NIP-AB session timeout.
 pub const HOLD_TTL: Duration = Duration::from_secs(120);
@@ -173,6 +188,8 @@ enum Accepted {
     Delivered,
     /// No live subscriber; held for the next one.
     Held,
+    /// The live subscriber's writer is full; held for its owner's next subscription.
+    Stalled,
 }
 
 fn event_msg(sub_id: &str, event: &Value) -> Option<String> {
@@ -240,24 +257,20 @@ impl Relay {
         }
     }
 
-    /// Check that the per-#p delivery budget has room for one more delivery.
-    /// [`Relay::count_delivery`] spends it.
-    fn check_budget(
+    /// How many more deliveries the per-#p budget allows.
+    fn budget_left(
         delivered: &mut HashMap<[u8; 32], (u32, tokio::time::Instant)>,
         p_value: &[u8; 32],
-    ) -> Result<(), &'static str> {
+    ) -> Result<u32, &'static str> {
         // Evict entries older than ENTRY_TTL before checking capacity.
         delivered.retain(|_, (_, ts)| ts.elapsed() < ENTRY_TTL);
 
-        let count = delivered.get(p_value).map(|(c, _)| *c).unwrap_or(0);
-        if count >= MAX_DELIVERED_PER_P {
-            return Err("recipient session budget exhausted");
-        }
         // Fail closed if still at capacity after eviction and key is new.
         if delivered.len() >= DELIVERED_MAP_CAP && !delivered.contains_key(p_value) {
             return Err("relay at capacity");
         }
-        Ok(())
+        let count = delivered.get(p_value).map(|(c, _)| *c).unwrap_or(0);
+        Ok(MAX_DELIVERED_PER_P.saturating_sub(count))
     }
 
     fn count_delivery(
@@ -273,8 +286,9 @@ impl Relay {
     }
 
     /// Deliver an accepted event to the live subscriber for its `#p`, and hold
-    /// it for HOLD_TTL when the hold has room. With no live subscriber the
-    /// event is only held, and is rejected if the hold is full.
+    /// it for HOLD_TTL when the hold has room. With no live subscriber, or one
+    /// whose writer is full, the event is only held, and is rejected if the
+    /// hold is full.
     ///
     /// `Err(reason)` means the event went nowhere; the caller unreserves its ID.
     fn accept_event(
@@ -291,6 +305,10 @@ impl Relay {
         }
 
         let mut delivered = self.delivered.lock();
+        // A held event is only worth keeping if it can still be delivered.
+        if Self::budget_left(&mut delivered, &p_value)? == 0 {
+            return Err("recipient session budget exhausted");
+        }
         let mut hold = self.hold.lock();
         let hold_it = hold.has_room(&p_value);
 
@@ -298,13 +316,15 @@ impl Relay {
             None if hold_it => Accepted::Held,
             None => return Err("no live subscriber, hold full"),
             Some(sub) => {
-                Self::check_budget(&mut delivered, &p_value)?;
                 let text = event_msg(&sub.sub_id, event).ok_or("delivery failed")?;
-                if sub.writer_tx.try_send(OutMsg::Text(text)).is_err() {
+                if sub.writer_tx.try_send(OutMsg::Text(text)).is_ok() {
+                    Self::count_delivery(&mut delivered, &p_value);
+                    Accepted::Delivered
+                } else if hold_it {
+                    Accepted::Stalled
+                } else {
                     return Err("delivery failed");
                 }
-                Self::count_delivery(&mut delivered, &p_value);
-                Accepted::Delivered
             }
         };
 
@@ -325,29 +345,51 @@ impl Relay {
         Ok(accepted)
     }
 
-    /// Register `conn_id`'s subscription for `p_value`: send `EOSE`, replace any
-    /// subscription for the same `#p` on another connection, then replay the
-    /// hold for `p_value`. All under the subs lock, so no live event can land
-    /// between `EOSE` and the replay.
+    /// Register `conn_id`'s subscription for `p_value` and send `EOSE`.
     ///
-    /// `Err(Some(reason))` is a refusal for the client; `Err(None)` means the
-    /// connection's writer is full and the caller closes the connection.
+    /// When `owner` is true (the connection authenticated as `p_value`), this
+    /// replaces a subscription for the same `#p` on another connection and
+    /// replays the hold for `p_value` after `EOSE`. Otherwise a live
+    /// subscription elsewhere refuses this one, and nothing is replayed. All of
+    /// it happens under the subs lock, so no live event can land between `EOSE`
+    /// and the replay.
+    ///
+    /// `Err(Some(reason))` is a refusal for the client. `Err(None)` means the
+    /// connection's writer has no room for `EOSE` and the whole replay; nothing
+    /// has changed, and the caller closes the connection.
     fn subscribe(
         &self,
         conn_id: u64,
         sub_id: &str,
         p_value: [u8; 32],
+        owner: bool,
         writer_tx: &mpsc::Sender<OutMsg>,
     ) -> Result<(), Option<&'static str>> {
         let mut subs = self.subs.lock();
         if subs.iter().any(|s| s.conn_id == conn_id) {
             return Err(Some("error: already subscribed, send CLOSE first"));
         }
-        // EOSE before registering, so the caller can back out with nothing changed.
-        if writer_tx.try_send(OutMsg::Text(make_eose(sub_id))).is_err() {
-            return Err(None);
+        let live = subs.iter().position(|s| s.p_value == p_value);
+        if live.is_some() && !owner {
+            return Err(Some("error: #p already has a live subscriber"));
         }
-        if let Some(pos) = subs.iter().position(|s| s.p_value == p_value) {
+
+        let mut delivered = self.delivered.lock();
+        let hold = self.hold.lock();
+        let replay: &[HeldEvent] = match hold.by_p.get(&p_value) {
+            Some(held) if owner => {
+                let left = Self::budget_left(&mut delivered, &p_value).unwrap_or(0);
+                &held[..held.len().min(left as usize)]
+            }
+            _ => &[],
+        };
+        // Reserve room for EOSE and the whole replay first, so a replay is never
+        // cut short with live events following the gap.
+        let Ok(mut permits) = writer_tx.try_reserve_many(1 + replay.len()) else {
+            return Err(None);
+        };
+
+        if let Some(pos) = live {
             let old = subs.swap_remove(pos);
             let _ = old.writer_tx.try_send(OutMsg::Text(make_closed(
                 &old.sub_id,
@@ -362,27 +404,18 @@ impl Relay {
             writer_tx: writer_tx.clone(),
         });
 
-        let mut delivered = self.delivered.lock();
-        let hold = self.hold.lock();
-        let Some(held) = hold.by_p.get(&p_value) else {
-            return Ok(());
-        };
-        let mut replayed = 0usize;
-        for h in held {
-            if Self::check_budget(&mut delivered, &p_value).is_err() {
-                break;
-            }
-            let Some(text) = event_msg(sub_id, &h.event) else {
-                continue;
-            };
-            // A full writer stops the replay; the events stay held for the next REQ.
-            if writer_tx.try_send(OutMsg::Text(text)).is_err() {
-                break;
-            }
-            Self::count_delivery(&mut delivered, &p_value);
-            replayed += 1;
+        if let Some(permit) = permits.next() {
+            permit.send(OutMsg::Text(make_eose(sub_id)));
         }
-        eprintln!("sub replayed conn_id={conn_id} events={replayed}");
+        for (held, permit) in replay.iter().zip(permits) {
+            if let Some(text) = event_msg(sub_id, &held.event) {
+                permit.send(OutMsg::Text(text));
+                Self::count_delivery(&mut delivered, &p_value);
+            }
+        }
+        if !replay.is_empty() {
+            eprintln!("sub replayed conn_id={conn_id} events={}", replay.len());
+        }
         Ok(())
     }
 
@@ -464,6 +497,68 @@ fn make_notice(msg: &str) -> String {
         Value::String("NOTICE".into()),
         Value::String(msg.into()),
     ])
+}
+
+fn make_auth(challenge: &str) -> String {
+    jarr(vec![
+        Value::String("AUTH".into()),
+        Value::String(challenge.into()),
+    ])
+}
+
+/// A fresh NIP-42 challenge: 32 random bytes, hex.
+fn new_challenge() -> Option<String> {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).ok()?;
+    Some(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Validate a NIP-42 AUTH event against this connection's challenge. Returns
+/// `Ok((event_id, pubkey))` or `Err(reason)`.
+///
+/// The `relay` tag is not checked: this sidecar sits behind a proxy and doesn't
+/// know its public URL. The challenge is random per connection, which is what
+/// binds the event to this connection.
+fn validate_auth(ev: &Value, challenge: &str) -> Result<(String, [u8; 32]), &'static str> {
+    let obj = ev.as_object().ok_or("event must be an object")?;
+    let id = obj.get("id").and_then(|v| v.as_str()).ok_or("missing id")?;
+    if !is_lower_hex(id, 64) {
+        return Err("id must be 64 lowercase hex chars");
+    }
+    if obj.get("kind").and_then(|v| v.as_u64()) != Some(KIND_AUTH) {
+        return Err("kind must be 22242");
+    }
+    let created_at = obj
+        .get("created_at")
+        .and_then(|v| v.as_i64())
+        .ok_or("missing created_at")?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    if (created_at as i128 - now as i128).unsigned_abs() > AUTH_FRESHNESS_SECS as u128 {
+        return Err("created_at outside freshness window");
+    }
+    let tags = obj
+        .get("tags")
+        .and_then(|v| v.as_array())
+        .ok_or("missing tags")?;
+    let answers = tags.iter().any(|t| {
+        t.as_array().is_some_and(|t| {
+            t.first().and_then(|v| v.as_str()) == Some("challenge")
+                && t.get(1).and_then(|v| v.as_str()) == Some(challenge)
+        })
+    });
+    if !answers {
+        return Err("challenge mismatch");
+    }
+    let pubkey = obj
+        .get("pubkey")
+        .and_then(|v| v.as_str())
+        .and_then(decode_hex32)
+        .ok_or("pubkey must be 64 lowercase hex chars")?;
+    verify_event_sig(ev)?;
+    Ok((id.to_string(), pubkey))
 }
 
 fn is_lower_hex(s: &str, len: usize) -> bool {
@@ -806,6 +901,12 @@ async fn handle_conn(relay: Arc<Relay>, conn_id: u64, stream: WebSocketStream<To
     let mut msg_rate = RateWindow::new();
     let mut event_rate = RateWindow::new();
     let mut sub_id: Option<String> = None;
+    // NIP-42: the pubkey this connection proved it holds, if it answered.
+    let challenge = new_challenge();
+    let mut authed: Option<[u8; 32]> = None;
+    if let Some(challenge) = &challenge {
+        let _ = tx.try_send(OutMsg::Text(make_auth(challenge)));
+    }
     // Tightening #1: hard session cap — counts all valid+sig-verified EVENT attempts.
     let mut events_attempted: u32 = 0;
     let deadline = tokio::time::sleep(CONN_TIMEOUT);
@@ -907,7 +1008,8 @@ async fn handle_conn(relay: Arc<Relay>, conn_id: u64, stream: WebSocketStream<To
                                 continue;
                             }
                         };
-                        match relay.subscribe(conn_id, &client_sub_id, p_value, &tx) {
+                        let owner = authed == Some(p_value);
+                        match relay.subscribe(conn_id, &client_sub_id, p_value, owner, &tx) {
                             Ok(()) => {}
                             Err(Some(reason)) => {
                                 let _ =
@@ -994,6 +1096,13 @@ async fn handle_conn(relay: Arc<Relay>, conn_id: u64, stream: WebSocketStream<To
                                             "held: no live subscriber",
                                         )));
                                     }
+                                    Ok(Accepted::Stalled) => {
+                                        let _ = tx.try_send(OutMsg::Text(make_ok(
+                                            &event_id,
+                                            true,
+                                            "held: subscriber is not reading",
+                                        )));
+                                    }
                                     Err(reason) => {
                                         // Rejected — unreserve so ID can be retried.
                                         relay.unreserve_id(&id_bytes);
@@ -1009,6 +1118,43 @@ async fn handle_conn(relay: Arc<Relay>, conn_id: u64, stream: WebSocketStream<To
                                     &safe_id,
                                     false,
                                     &format!("invalid: {reason}"),
+                                )));
+                            }
+                        }
+                    }
+
+                    "AUTH" => {
+                        if arr.len() != 2 || !arr[1].is_object() {
+                            let _ = tx.try_send(OutMsg::Text(make_notice("error: invalid AUTH")));
+                            continue;
+                        }
+                        let safe_id = safe_event_id(&arr[1]);
+                        let Some(challenge) = &challenge else {
+                            let _ = tx.try_send(OutMsg::Text(make_ok(
+                                &safe_id,
+                                false,
+                                "error: no challenge issued",
+                            )));
+                            continue;
+                        };
+                        if authed.is_some() {
+                            let _ = tx.try_send(OutMsg::Text(make_ok(
+                                &safe_id,
+                                false,
+                                "error: already authenticated",
+                            )));
+                            continue;
+                        }
+                        match validate_auth(&arr[1], challenge) {
+                            Ok((event_id, pubkey)) => {
+                                authed = Some(pubkey);
+                                let _ = tx.try_send(OutMsg::Text(make_ok(&event_id, true, "")));
+                            }
+                            Err(reason) => {
+                                let _ = tx.try_send(OutMsg::Text(make_ok(
+                                    &safe_id,
+                                    false,
+                                    &format!("auth-required: {reason}"),
                                 )));
                             }
                         }
@@ -1189,6 +1335,10 @@ mod tests {
         matches!(msg, Ok(OutMsg::Text(t)) if t.starts_with("[\"EOSE\""))
     }
 
+    fn is_event(msg: Result<OutMsg, mpsc::error::TryRecvError>, n: u64) -> bool {
+        matches!(msg, Ok(OutMsg::Text(t)) if t.starts_with("[\"EVENT\"") && t.contains(&format!("{{\"n\":{n}}}")))
+    }
+
     #[tokio::test(start_paused = true)]
     async fn held_event_is_dropped_at_the_window() {
         let relay = Arc::new(Relay::new());
@@ -1206,9 +1356,9 @@ mod tests {
         assert_eq!(relay.hold.lock().total, 0, "kept past the window");
         assert!(relay.hold.lock().by_p.is_empty());
 
-        // A subscriber after the window gets EOSE and nothing else.
+        // The owner, subscribing after the window, gets EOSE and nothing else.
         let (tx, mut rx) = mpsc::channel(CHANNEL_CAP);
-        relay.subscribe(1, "s", p, &tx).unwrap();
+        relay.subscribe(1, "s", p, true, &tx).unwrap();
         assert!(is_eose(rx.try_recv()));
         assert!(rx.try_recv().is_err());
     }
@@ -1218,7 +1368,7 @@ mod tests {
         let relay = Arc::new(Relay::new());
         let p = key(1);
         let (tx, mut rx) = mpsc::channel(CHANNEL_CAP);
-        relay.subscribe(1, "s", p, &tx).unwrap();
+        relay.subscribe(1, "s", p, true, &tx).unwrap();
         assert!(is_eose(rx.try_recv()));
 
         assert_eq!(
@@ -1251,7 +1401,7 @@ mod tests {
         // A live subscriber still gets events while the hold is full; they
         // just aren't held.
         let (tx, mut rx) = mpsc::channel(CHANNEL_CAP);
-        relay.subscribe(1, "s", p, &tx).unwrap();
+        relay.subscribe(1, "s", p, true, &tx).unwrap();
         assert!(is_eose(rx.try_recv()));
         assert_eq!(
             relay.accept_event(p, key(200_001), &ev),
@@ -1274,16 +1424,95 @@ mod tests {
         // Four subscriptions replay 3 events each: 12, the per-#p budget.
         for conn in 0..4u64 {
             let (tx, mut rx) = mpsc::channel(CHANNEL_CAP);
-            relay.subscribe(conn, "s", p, &tx).unwrap();
+            relay.subscribe(conn, "s", p, true, &tx).unwrap();
             assert!(is_eose(rx.try_recv()));
-            for _ in 0..3 {
-                assert!(rx.try_recv().is_ok(), "conn {conn} missed a replay");
+            for n in 0..3 {
+                assert!(is_event(rx.try_recv(), n), "conn {conn} missed replay {n}");
             }
         }
-        // The fifth gets EOSE only.
+        // The fifth gets EOSE only, and nothing more is held for this #p.
         let (tx, mut rx) = mpsc::channel(CHANNEL_CAP);
-        relay.subscribe(4, "s", p, &tx).unwrap();
+        relay.subscribe(4, "s", p, true, &tx).unwrap();
         assert!(is_eose(rx.try_recv()));
         assert!(rx.try_recv().is_err());
+        assert_eq!(
+            relay.accept_event(p, key(20), &json!({})),
+            Err("recipient session budget exhausted")
+        );
+    }
+
+    #[tokio::test]
+    async fn only_the_owner_gets_the_replay() {
+        let relay = Arc::new(Relay::new());
+        let p = key(1);
+        assert_eq!(
+            relay.accept_event(p, key(2), &json!({"n": 0})),
+            Ok(Accepted::Held)
+        );
+
+        let (tx, mut rx) = mpsc::channel(CHANNEL_CAP);
+        relay.subscribe(1, "s", p, false, &tx).unwrap();
+        assert!(is_eose(rx.try_recv()));
+        assert!(rx.try_recv().is_err(), "non-owner got a replay");
+
+        // A second non-owner is refused while the first is live; the owner
+        // replaces it and gets the replay.
+        let (tx2, _rx2) = mpsc::channel(CHANNEL_CAP);
+        assert_eq!(
+            relay.subscribe(2, "s", p, false, &tx2),
+            Err(Some("error: #p already has a live subscriber"))
+        );
+        let (tx3, mut rx3) = mpsc::channel(CHANNEL_CAP);
+        relay.subscribe(3, "s", p, true, &tx3).unwrap();
+        assert!(is_eose(rx3.try_recv()));
+        assert!(is_event(rx3.try_recv(), 0));
+        assert!(matches!(rx.try_recv(), Ok(OutMsg::Text(t)) if t.starts_with("[\"CLOSED\"")));
+    }
+
+    #[tokio::test]
+    async fn stalled_subscriber_gets_the_event_held() {
+        let relay = Arc::new(Relay::new());
+        let p = key(1);
+        let (tx, _rx) = mpsc::channel(CHANNEL_CAP);
+        relay.subscribe(1, "s", p, true, &tx).unwrap();
+        // The writer never drains: fill what EOSE left.
+        while tx.try_send(OutMsg::Pong(Vec::new())).is_ok() {}
+
+        assert_eq!(
+            relay.accept_event(p, key(2), &json!({"n": 7})),
+            Ok(Accepted::Stalled)
+        );
+
+        // The owner's next subscription gets it.
+        let (tx2, mut rx2) = mpsc::channel(CHANNEL_CAP);
+        relay.subscribe(2, "s", p, true, &tx2).unwrap();
+        assert!(is_eose(rx2.try_recv()));
+        assert!(is_event(rx2.try_recv(), 7));
+    }
+
+    #[tokio::test]
+    async fn replay_is_all_or_nothing() {
+        let relay = Arc::new(Relay::new());
+        let p = key(1);
+        for i in 0..3 {
+            relay
+                .accept_event(p, key(10 + i), &json!({ "n": i }))
+                .unwrap();
+        }
+        let (old_tx, mut old_rx) = mpsc::channel(CHANNEL_CAP);
+        relay.subscribe(1, "s", p, true, &old_tx).unwrap();
+        while old_rx.try_recv().is_ok() {}
+
+        // Room for EOSE and two events, not three: refused, nothing changes.
+        let (tx, mut rx) = mpsc::channel(CHANNEL_CAP);
+        for _ in 0..CHANNEL_CAP - 3 {
+            tx.try_send(OutMsg::Pong(Vec::new())).unwrap();
+        }
+        assert_eq!(relay.subscribe(2, "s", p, true, &tx), Err(None));
+        while rx.try_recv().is_ok() {}
+        assert!(old_rx.try_recv().is_err(), "old subscription was replaced");
+        let subs = relay.subs.lock();
+        assert_eq!(subs.len(), 1);
+        assert_eq!(subs[0].conn_id, 1);
     }
 }
