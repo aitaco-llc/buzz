@@ -2,6 +2,7 @@ import * as React from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { AlertCircle, ArrowLeft, LoaderCircle, RefreshCw } from "lucide-react";
 
+import { isHostedCommunityCreationEnabled } from "@/features/communities/hostedCommunityAvailability";
 import { useMyRelayMembershipLookupQuery } from "@/features/community-members/hooks";
 import {
   canManageCommunityMembers,
@@ -143,6 +144,11 @@ export function SettingsView({
         ) {
           return false;
         }
+      }
+      // Hosted communities are Builderlab accounts; builds without hosted
+      // creation have nothing to show there.
+      if (s.value === "hosted-communities") {
+        return isHostedCommunityCreationEnabled();
       }
       // Invites and member management require a discovered owner/admin role.
       // Open relays have no membership snapshot or invite controls.

@@ -2,6 +2,7 @@ import * as React from "react";
 import { ArrowLeft, ChevronRight, Link2, Plus } from "lucide-react";
 
 import type { AddCommunityPrefillRequest } from "@/features/communities/addCommunityPrefill";
+import { isHostedCommunityCreationEnabled } from "@/features/communities/hostedCommunityAvailability";
 import { HostedCommunityCreateFlow } from "@/features/communities/ui/HostedCommunityCreateFlow";
 import { useCommunityOnboarding } from "@/features/onboarding/communityOnboarding";
 import { InviteRedeemForm } from "@/features/onboarding/ui/InviteRedeemForm";
@@ -33,7 +34,11 @@ export function AddCommunityDialog({
   onOpenChange,
 }: AddCommunityDialogProps) {
   const communityOnboarding = useCommunityOnboarding();
-  const [mode, setMode] = React.useState<AddCommunityMode>("choose");
+  // Without hosted creation, joining is the only option, so the dialog opens
+  // straight onto the join form instead of a one-item chooser.
+  const canCreate = isHostedCommunityCreationEnabled();
+  const initialMode: AddCommunityMode = canCreate ? "choose" : "join";
+  const [mode, setMode] = React.useState<AddCommunityMode>(initialMode);
   const [joinError, setJoinError] = React.useState<string | null>(null);
   const appliedPrefillId = React.useRef<string | null>(null);
 
@@ -46,9 +51,9 @@ export function AddCommunityDialog({
 
   const handleClose = React.useCallback(() => {
     onOpenChange(false);
-    setMode("choose");
+    setMode(initialMode);
     setJoinError(null);
-  }, [onOpenChange]);
+  }, [initialMode, onOpenChange]);
 
   const startConnection = React.useCallback(
     ({
@@ -106,7 +111,7 @@ export function AddCommunityDialog({
       >
         <DialogHeader className="px-6 pb-3 pt-5 pr-14">
           <div className="flex min-w-0 items-center gap-2">
-            {mode !== "choose" ? (
+            {mode !== "choose" && canCreate ? (
               <button
                 aria-label="Back to add community options"
                 className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors duration-150 ease-out hover:bg-accent hover:text-accent-foreground focus:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
@@ -180,7 +185,8 @@ export function AddCommunityDialog({
               key={prefill?.requestId ?? "manual-add-community"}
               onCancel={() => {
                 setJoinError(null);
-                setMode("choose");
+                if (canCreate) setMode("choose");
+                else handleClose();
               }}
               onConnect={(relayUrl) => startConnection({ relayUrl })}
               onRedeem={(relayUrl, inviteCode, policyReceipt) =>
@@ -188,9 +194,9 @@ export function AddCommunityDialog({
               }
               variant="add-community"
             />
-          ) : (
+          ) : canCreate ? (
             <HostedCommunityCreateFlow onComplete={handleClose} />
-          )}
+          ) : null}
         </div>
       </DialogContent>
     </Dialog>

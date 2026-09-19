@@ -202,6 +202,8 @@ type MockHuddleSeed = {
 
 type E2eConfig = {
   mode?: "mock" | "relay";
+  /** Set false to see the production aitaco build: no Builderlab hosting entry points. */
+  hostedCommunities?: boolean;
   mock?: {
     /** Tauri window label exposed to the app. Defaults to the main window. */
     windowLabel?: string;
