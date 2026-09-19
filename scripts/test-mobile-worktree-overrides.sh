@@ -179,9 +179,9 @@ grep -q 'WorktreeOverrides' "$release_xcconfig" \
 grep -q '^BUNDLE_IDENTIFIER = co\.aitaco\.buzz$' "$release_xcconfig" \
   && pass "Release.xcconfig keeps the production bundle identifier" \
   || fail "Release.xcconfig must keep BUNDLE_IDENTIFIER = co.aitaco.buzz"
-grep -q '^APP_DISPLAY_NAME = Buzz$' "$release_xcconfig" \
-  && pass "Release.xcconfig keeps the production display name" \
-  || fail "Release.xcconfig must keep APP_DISPLAY_NAME = Buzz"
+grep -q '^APP_DISPLAY_NAME = aitaco$' "$release_xcconfig" \
+  && pass "Release.xcconfig keeps the production display name (aitaco)" \
+  || fail "Release.xcconfig must keep APP_DISPLAY_NAME = aitaco"
 
 grep -q '<string>$(APP_DISPLAY_NAME)</string>' "$plist" \
   && pass "Info.plist display name resolves from build settings" \
