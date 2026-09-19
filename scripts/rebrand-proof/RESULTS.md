@@ -75,10 +75,15 @@ restart reconciliation. Codex and Claude runtime paths are unchanged.
 (nothing on this path sends `reasoning_effort`, and serve's default for qwen3 is
 on). Two batches of ten, differing only in `--temperature`:
 
-| batch | temperature | passes | failures |
-|---|---|---|---|
-| A | 0.0 (rebrand-acp's default) | **0/10** | 9 the answer's shape, 1 the model |
-| B | 0.7 (serve's own default) | **3/10** | 2 the answer's shape, 3 the model, 2 an empty citation list refused by rebrand-acp |
+| batch | temperature | attempts | passes | failures |
+|---|---|---|---|---|
+| A | 0.0 (rebrand-acp's default) | 11 | **0/11** | 9 the answer's shape, 1 the model, 1 whose text was never recorded |
+| B | 0.7 (serve's own default) | 10 | **3/10** | 2 the answer's shape, 3 the model, 2 an empty citation list refused by rebrand-acp |
+
+Batch A is eleven attempts, not ten: `results.jsonl` carries 21 rows, 11 greedy and 10 sampled. The extra greedy
+row is the first run of the evening, whose build predates the `answer_text` field, so its text was never
+recorded — its citation was still not an ID `read_thread` returned. Counting it changes nothing (zero passes
+either way) and the denominator is now what was actually run.
 
 **Retrieval is not what failed.** Every run reached `rebrand serve`, and the
 loop, the MCP tools and the narrowing behaved as designed: `tools/list` offered
@@ -147,10 +152,15 @@ of an array, for string or integer items.
 same model, same flags, `rebrand-acp` back on its default temperature 0.0. The only variable is the Rebrand
 build: `31fc194` → `530cd1f` (`rebrand` sha256 `eebab34d…`, `rebrand-acp` `7b3a9bb8…`, `0.3.25+530cd1f4ab20`).
 
-| build | passes | answer-shape failures |
-|---|---|---|
-| `31fc194`, temperature 0.0 | 0/10 | 9 |
-| `530cd1f`, temperature 0.0 | **4/10** | **0** |
+| build | attempts | rows | passes | answer-shape failures |
+|---|---|---|---|---|
+| `31fc194`, temperature 0.0 | 11 | 11 | 0 | 9 |
+| `530cd1f`, temperature 0.0 | 11 | 10 | **4** | **0** |
+
+Attempts and rows differ on the fixed build: `runs-530cd1f/20260919T230614Z-rebrand/` holds only a `run.log`
+reading `finished (exit 75)`. 75 is the kit's own card guard (`native/run.sh:65-74`) refusing to start above the
+3,500 MiB idle baseline, so that attempt produced no model output and is not a sample. It is excluded from the
+rows and named here, because a reader counting directories finds 11.
 
 Not one run showed the `']}` signature. Every remaining failure is the model's tool use, and five of the six are
 one behaviour: it answers after `search_messages` without calling `read_thread` — citing the search hit, saying
@@ -159,9 +169,34 @@ the incident ID "does not match any available event_id", or (run 7) returning `s
 channel's UUID alongside the resolution event, which the host refused.
 
 A pass costs 43–154 s in the loop, 1.5–2.0k input and ~190 output tokens, and 3.6–11.2k thinking tokens: three of
-the four passes spent four iterations and about 10k thinking tokens. The proof's own serve holds a 1.25 GB KV
-pool and about 6.7 GB over idle; two runs' `vram.tsv` samples peak near the card's 24 GB limit because another
-job shared the card, not because of this workload.
+the four passes spent four iterations and about 10k thinking tokens. This workload's own footprint is flat: seven
+runs peak between 8,275 and 8,504 MiB, against a card that reads about 1,500 MiB idle.
+
+**Three runs were contended, and no timing from them is usable.** A 32B model belonging to another seat was
+resident for part of this batch. Each run's own samples say which:
+
+| run | peak | verdict |
+|---|---|---|
+| `20260919T230514Z` | 24,461 MiB | contended |
+| `20260919T230638Z` | 23,652 MiB | contended |
+| `20260919T231149Z` | 13,620 MiB | contended |
+| the other seven | 8,275–8,504 MiB | alone |
+
+**The pass rate stands and the clock does not.** Greedy decode of a fixed model at a fixed context emits the same
+tokens whatever else holds memory; contention moves wall-clock, headroom, and the risk of an OOM that did not
+happen. So 4 of 10 is sound, and no latency or throughput number from those three runs is.
+
+**A start-time guard cannot see this, so the run now marks itself.** Exit 75 is evaluated when a run starts.
+`20260919T230614Z` was refused at 23:06:14Z, and the next attempt was admitted 24 s later at a genuine
+1,490 MiB trough — the neighbour's allocation had actually gone, then returned 14 s later and stayed for that
+run's whole 2m26s. A cycling allocation defeats any check made once. Two changes follow, and neither needs
+anyone to read a channel:
+
+- `native/run.sh` compares each run's own `vram.tsv` peak against this workload's ceiling
+  (`PROOF_VRAM_OWN_MAX_MIB`, 10,000 MiB) and writes a `contended` marker plus a log line. Against this batch's
+  saved samples it flags exactly the three runs above and none of the seven.
+- `acp/batch.sh` stops the whole batch on exit 75 rather than moving to the next run, and reports attempts, rows
+  and refusals. A refusal is evidence the card is shared for the batch, not a run to skip.
 
 **The model's own failures** are qwen3-8b not using the narrowed tool: it reads
 the `enum` as a list of candidate answers and replies that "the incident ID does
