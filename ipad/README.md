@@ -43,6 +43,30 @@ compile with Xcode 27's standard library (`UInt256.words` ambiguity).
 - `BuzzUITests/`: exercises the production UI/store through a local fixture
   relay compiled only in Debug. There are no demo credentials in Release.
 
+### Two build systems compile `Buzz/`
+
+`project.yml` generates `BuzzNative.xcodeproj` — the standalone app that
+`scripts/check.sh` and the `native-ipad` CI job build. `Package.swift` builds
+the same directory as the `BuzzPadApp` library, which the universal Flutter app
+links as a local package (`mobile/ios/Runner.xcodeproj`) and launches on iPad
+from `mobile/ios/Runner/main.swift`. The `Mobile Swift` CI job builds that one.
+
+They reach shared `mobile/` sources differently. The xcodegen side names them by
+path and excludes `Buzz/Embedded/**`; SwiftPM cannot reference sources outside
+its target path, so the same files appear as symlinks *in* `Buzz/Embedded/`.
+**Adding a shared file means doing both** — a `project.yml` entry and an
+`Embedded/` symlink. Only the first leaves `native-ipad` green while
+`Mobile Swift` fails with `cannot find <Type> in scope`. The two copies land in
+different modules, so there is no duplicate symbol. `HuddleAudioEngine.swift`
+and `MediaSanitizer.swift` are the current examples.
+
+`check.sh` does not build the universal app. To check that path:
+
+```sh
+export PATH="$PWD/bin:$PATH"   # hermit; there is no system flutter
+cd mobile && flutter pub get && flutter build ios --simulator --debug --no-pub
+```
+
 The identity is stored in Keychain, never preferences or an event cache. Account
 metadata and credentials share one Keychain record, so successful imports
 remain discoverable after a restart without a separate manifest write. Records
