@@ -37,7 +37,7 @@ It runs from any directory inside the clone.
 3. **Pin** `BUZZ_IMAGE=<target>` in `/opt/buzz/.env`. The relay and the pair-relay sidecar share this variable.
 4. **Start** with `buzzctl start` (`compose up -d --wait`).
 5. **Check** three things:
-   - both containers report the target revision
+   - both containers run exactly the target image ref and its revision
    - NIP-11 answers at `https://buzz.aitaco.co`
    - a canary message, posted with the operator's `buzz` CLI to `https://buzz.aitaco.co` whatever `BUZZ_RELAY_URL` says, can be read back from `--canary-channel`
 
