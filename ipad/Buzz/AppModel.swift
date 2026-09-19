@@ -694,9 +694,9 @@ final class Workspace {
         tags += channel.participants.filter { $0 != identity.pubkey }.map { ["p", $0] }
       }
       let kind = channel.type == "forum" ? (root == nil ? 45001 : 45003) : 9
-      let identity = identity
+      let signer = identity
       let event = try await Task.detached {
-        try identity.sign(kind: kind, content: text, tags: tags)
+        try signer.sign(kind: kind, content: text, tags: tags)
       }.value
       try await store.enqueue(event, replacingDraft: key, expectedDraft: text)
       await reload()
@@ -718,9 +718,9 @@ final class Workspace {
     guard let relay = relay as? any CommandRelayTransport else {
       throw BuzzError.invalidResponse
     }
-    let identity = identity
+    let signer = identity
     let event = try await Task.detached {
-      try identity.sign(kind: 41010, content: "", tags: recipients.map { ["p", $0] })
+      try signer.sign(kind: 41010, content: "", tags: recipients.map { ["p", $0] })
     }.value
     let message = try await relay.publishCommand(event)
     guard let channelID = Self.commandChannelID(from: message) else {
@@ -763,9 +763,9 @@ final class Workspace {
   @discardableResult
   func action(kind: Int, content: String, tags: [[String]]) async -> Bool {
     do {
-      let identity = identity
+      let signer = identity
       let event = try await Task.detached {
-        try identity.sign(kind: kind, content: content, tags: tags)
+        try signer.sign(kind: kind, content: content, tags: tags)
       }.value
       try await store.enqueue(event)
       await reload()

@@ -30,12 +30,20 @@ public struct BlobDescriptor: Codable, Equatable, Sendable {
   }
 
   public func imetaTag(filename: String? = nil) -> [String] {
-    ["imeta", "url \(url)", "m \(type)", "x \(sha256)", "size \(size)"]
-      + (dim.map { ["dim \($0)"] } ?? [])
-      + (blurhash.map { ["blurhash \($0)"] } ?? [])
-      + (thumb.map { ["thumb \($0)"] } ?? [])
-      + (duration.map { ["duration \($0)"] } ?? [])
-      + (filename.map { ["filename \($0)"] } ?? [])
+    // Built by appending rather than chaining `+`: six array operands, each
+    // behind an optional map, cost the type checker more than its budget on a
+    // slow machine even though a fast one gets under the wire.
+    var tag: [String] = ["imeta"]
+    tag.append("url \(url)")
+    tag.append("m \(type)")
+    tag.append("x \(sha256)")
+    tag.append("size \(size)")
+    if let dim { tag.append("dim \(dim)") }
+    if let blurhash { tag.append("blurhash \(blurhash)") }
+    if let thumb { tag.append("thumb \(thumb)") }
+    if let duration { tag.append("duration \(duration)") }
+    if let filename { tag.append("filename \(filename)") }
+    return tag
   }
 }
 
