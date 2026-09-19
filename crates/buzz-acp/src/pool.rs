@@ -32,7 +32,7 @@ use uuid::Uuid;
 use crate::acp::{
     extract_model_config_options, extract_model_state, extract_thought_level_config_id,
     model_in_catalog, resolve_model_switch_method, AcpClient, AcpError, EnvVar, McpServer,
-    ModelSwitchMethod, StopReason, SystemPromptTransport, BUZZ_PI_ACP_NAME,
+    McpServerConfig, ModelSwitchMethod, StopReason, SystemPromptTransport, BUZZ_PI_ACP_NAME,
 };
 use crate::config::{compose_scoped_session_title, DedupMode, PermissionMode};
 use crate::observer;
@@ -828,6 +828,10 @@ pub struct PromptContext {
     /// Channel sessions add the channel name; thread sessions also add the root
     /// ID prefix. Never part of the prompt.
     pub session_title: Option<String>,
+    /// `_meta.rebrand` for `session/new`: the answer schema and budget a Rebrand
+    /// worker is given. `None` for every seat that runs a Claude or Goose
+    /// adapter, and absent from the request entirely in that case.
+    pub rebrand_meta: Option<serde_json::Value>,
     pub team_instructions: Option<String>,
     pub heartbeat_prompt: Option<String>,
     /// Base instructions with the configured policy's Session Model appended,
@@ -1569,7 +1573,12 @@ async fn create_session_and_apply_model(
         .acp
         .session_new_full(
             &ctx.cwd,
-            mcp_servers,
+            // The git-origin env belongs to stdio children only; an HTTP MCP
+            // server carries its scope in its URL and bearer.
+            mcp_servers
+                .into_iter()
+                .map(McpServerConfig::Stdio)
+                .collect(),
             session_new_system_prompt(
                 is_goose,
                 agent.protocol_version,
@@ -1577,6 +1586,7 @@ async fn create_session_and_apply_model(
                 combined_system_prompt.as_deref(),
             ),
             session_title.as_deref(),
+            ctx.rebrand_meta.as_ref(),
         )
         .await?;
 
@@ -10426,6 +10436,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
     ) -> PromptContext {
         use crate::relay::RestClient;
         PromptContext {
+            rebrand_meta: None,
             mcp_servers: vec![],
             initial_message: None,
             idle_timeout: Duration::from_secs(60),

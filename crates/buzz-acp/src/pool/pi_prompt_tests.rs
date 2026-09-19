@@ -307,6 +307,7 @@ async fn real_pi_preserves_buzz_prompt_and_launch_skills_on_restore() {
             vec![],
             Some(SystemPromptTransport::PiMeta("OTHER_SESSION")),
             None,
+            None,
         )
         .await
         .unwrap();
