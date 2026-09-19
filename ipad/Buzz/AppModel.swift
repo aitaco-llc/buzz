@@ -615,9 +615,13 @@ final class Workspace {
     }
   }
 
+  /// Read-only: views call this from `body`. Writing `typing` here, even a
+  /// no-op prune, would invalidate the view and re-render it without end.
   func typingNames(for channel: Channel, root: Event?) -> [String] {
-    pruneTyping(channelID: channel.id)
-    return (typing[channel.id] ?? []).filter { $0.rootID == root?.id }.map { name($0.pubkey) }
+    let now = Date()
+    return (typing[channel.id] ?? [])
+      .filter { $0.rootID == root?.id && $0.expiresAt > now }
+      .map { name($0.pubkey) }
   }
 
   private func recordTyping(_ event: Event, channelID: String) {
@@ -632,8 +636,11 @@ final class Workspace {
   }
 
   private func pruneTyping(channelID: String) {
-    typing[channelID]?.removeAll { $0.expiresAt <= Date() }
-    if typing[channelID]?.isEmpty == true { typing.removeValue(forKey: channelID) }
+    guard let entries = typing[channelID] else { return }
+    let now = Date()
+    let live = entries.filter { $0.expiresAt > now }
+    guard live.count != entries.count else { return }
+    typing[channelID] = live.isEmpty ? nil : live
   }
 
   func saveDraft(_ text: String, key: String) {
