@@ -30,7 +30,8 @@ struct NewDirectMessageView: View {
         if !selected.isEmpty {
           Section("Recipients (\(selected.count)/8)") {
             ForEach(Array(selected).sorted(), id: \.self) { pubkey in
-              HStack {
+              HStack(spacing: 10) {
+                Avatar(workspace: workspace, pubkey: pubkey, size: 24)
                 Text(workspace.name(pubkey))
                 Spacer()
                 Button("Remove", systemImage: "minus.circle") { selected.remove(pubkey) }

@@ -46,7 +46,8 @@ struct ReactionRow: View {
           }
         } label: {
           HStack(spacing: 4) {
-            ReactionGlyph(value: group.value, url: imageURL).accessibilityHidden(true)
+            ReactionGlyph(value: group.value, url: imageURL, auth: workspace.media)
+              .accessibilityHidden(true)
             Text("\(group.count)").font(.callout)
           }
         }

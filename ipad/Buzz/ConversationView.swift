@@ -151,7 +151,7 @@ struct ConversationView: View {
       HuddleView(workspace: workspace, channel: channel)
     }
     .fullScreenCover(item: $mediaViewer) { item in
-      MediaViewer(item: item)
+      MediaViewer(item: item, loader: workspace.media)
     }
     .onChange(of: draft) { _, text in
       workspace.saveDraft(text, key: draftKey)
@@ -242,7 +242,12 @@ struct ConversationView: View {
         Form {
           Section("About") { Text(channel.about.isEmpty ? "No description" : channel.about) }
           Section("People") {
-            ForEach(channel.participants, id: \.self) { Text(workspace.name($0)) }
+            ForEach(channel.participants, id: \.self) { pubkey in
+              HStack(spacing: 10) {
+                Avatar(workspace: workspace, pubkey: pubkey, size: 28)
+                Text(workspace.name(pubkey))
+              }
+            }
             if channel.type != "dm" {
               Button("Add member", systemImage: "person.badge.plus") { showAddMember = true }
             }
@@ -358,12 +363,7 @@ struct ConversationView: View {
       return (url, kind, imeta[url])
     }
     return HStack(alignment: .top, spacing: 12) {
-      Text(String(workspace.name(event.pubkey).prefix(1)).uppercased())
-        .font(.headline).foregroundStyle(Aitaco.accent)
-        .frame(width: 36, height: 36).background(
-          Aitaco.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 12)
-        )
-        .accessibilityHidden(true)
+      Avatar(workspace: workspace, pubkey: event.pubkey)
       VStack(alignment: .leading, spacing: 6) {
         HStack(alignment: .firstTextBaseline) {
           Button(workspace.name(event.pubkey)) {
@@ -451,25 +451,21 @@ struct ConversationView: View {
       Button {
         mediaViewer = MediaViewerItem(url: url, kind: .image, alt: imeta?.alt)
       } label: {
-        AsyncImage(url: url) { phase in
-          switch phase {
-          case .success(let image):
-            image.resizable().scaledToFit().frame(maxWidth: 420, maxHeight: 280)
-              .clipShape(RoundedRectangle(cornerRadius: 12))
-          case .failure:
-            Label("Image unavailable", systemImage: "photo.badge.exclamationmark")
-              .foregroundStyle(.secondary)
-          default:
-            ProgressView("Loading image…")
-          }
+        MediaImage(url: url, loader: workspace.media, maxPixel: 1280) {
+          ProgressView("Loading image…")
+        } failure: {
+          Label("Image unavailable", systemImage: "photo.badge.exclamationmark")
+            .foregroundStyle(.secondary)
         }
+        .scaledToFit().frame(maxWidth: 420, maxHeight: 280)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
       }
       .buttonStyle(.plain)
       .accessibilityLabel(imeta?.alt ?? "Open image attachment")
       .accessibilityHint("Opens the image viewer")
     } else if let url = URL(string: urlString) {
       if kind == .audio {
-        AudioAttachmentView(url: url)
+        AudioAttachmentView(url: url, loader: workspace.media)
       } else {
         Button {
           mediaViewer = MediaViewerItem(url: url, kind: .video, alt: imeta?.alt)

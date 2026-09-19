@@ -3,7 +3,12 @@ import ImageIO
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Public emoji assets use no account credentials and have bounded network/decoded sizes.
+/// Emoji assets have bounded network and decoded sizes.
+///
+/// A custom emoji URL can point anywhere, so credentials are attached only when
+/// the optional loader vouches that the URL is this community's own media —
+/// relay-hosted emoji 401 without them, and a third-party host must never
+/// receive them. Everything else is fetched bare, as before.
 actor EmojiImages {
   static let shared = EmojiImages()
   private var cache: [URL: Data] = [:]
@@ -14,7 +19,7 @@ actor EmojiImages {
 
   init(configuration: URLSessionConfiguration = .ephemeral) { self.configuration = configuration }
 
-  func thumbnail(_ url: URL) async throws -> Data {
+  func thumbnail(_ url: URL, auth: MediaLoader? = nil) async throws -> Data {
     if let cached = cache[url] { return cached }
     guard waiting < 64 else { throw BuzzError.responseTooLarge }
     waiting += 1
@@ -38,7 +43,12 @@ actor EmojiImages {
     config.timeoutIntervalForResource = 15
     let session = URLSession(configuration: config, delegate: EmojiRedirects(), delegateQueue: nil)
     defer { session.invalidateAndCancel() }
-    let (stream, response) = try await session.bytes(from: url)
+    var request = URLRequest(url: url)
+    // Empty unless the loader recognises this as our own relay's media path.
+    for (field, value) in (try? await auth?.headers(for: url)) ?? [:] {
+      request.setValue(value, forHTTPHeaderField: field)
+    }
+    let (stream, response) = try await session.bytes(for: request)
     guard let http = response as? HTTPURLResponse, http.statusCode == 200,
       response.expectedContentLength <= 1024 * 1024
     else { throw BuzzError.invalidResponse }
@@ -99,6 +109,7 @@ private final class EmojiRedirects: NSObject, URLSessionTaskDelegate {
 struct ReactionGlyph: View {
   let value: String
   let url: URL?
+  var auth: MediaLoader?
   @State private var thumbnail: Data?
   @State private var imageError: String?
 
@@ -122,7 +133,7 @@ struct ReactionGlyph: View {
       imageError = nil
       guard let url else { return }
       do {
-        let data = try await EmojiImages.shared.thumbnail(url)
+        let data = try await EmojiImages.shared.thumbnail(url, auth: auth)
         try Task.checkCancellation()
         thumbnail = data
       } catch is CancellationError { return } catch { imageError = "Image unavailable. \(value)" }

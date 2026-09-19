@@ -25,7 +25,10 @@ struct SearchView: View {
             dismiss()
           } label: {
             VStack(alignment: .leading, spacing: 6) {
-              Text(workspace.name(event.pubkey)).font(.headline)
+              HStack(spacing: 8) {
+                Avatar(workspace: workspace, pubkey: event.pubkey, size: 24)
+                Text(workspace.name(event.pubkey)).font(.headline)
+              }
               Text(event.content).lineLimit(4).foregroundStyle(.primary)
               Text(Date(timeIntervalSince1970: Double(event.createdAt)), style: .date)
                 .font(.caption).foregroundStyle(.secondary)

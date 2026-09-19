@@ -18,7 +18,9 @@ struct UserProfileView: View {
     return object
   }
 
-  private var avatarURL: URL? { (fields["picture"] as? String).flatMap(URL.init(string:)) }
+  private var resolved: UserProfile {
+    workspace.profiles.profile(pubkey: pubkey, events: workspace.events)
+  }
   private var about: String { fields["about"] as? String ?? "" }
   private var status: Event? {
     workspace.events.filter { $0.kind == 30315 && $0.pubkey == pubkey && $0.tag("d") == "general" }
@@ -29,23 +31,10 @@ struct UserProfileView: View {
     NavigationStack {
       ScrollView {
         VStack(spacing: 16) {
-          if let avatarURL {
-            AsyncImage(url: avatarURL) { phase in
-              if case .success(let image) = phase {
-                image.resizable().scaledToFill()
-              } else {
-                Image(systemName: "person.crop.circle.fill").resizable().scaledToFit().padding(18)
-                  .foregroundStyle(.secondary)
-              }
-            }
-            .frame(width: 96, height: 96).clipShape(Circle())
-            .accessibilityLabel("Profile picture")
-          } else {
-            Image(systemName: "person.crop.circle.fill").font(.system(size: 80)).foregroundStyle(
-              .secondary
-            )
-            .accessibilityHidden(true)
-          }
+          Avatar(workspace: workspace, pubkey: pubkey, size: 96)
+            .accessibilityHidden(false)
+            .accessibilityLabel(
+              resolved.isAgent ? "Agent profile picture" : "Profile picture")
           Text(workspace.name(pubkey)).font(.title2.weight(.semibold))
           if let status, !status.content.isEmpty || status.tag("emoji") != nil {
             HStack(spacing: 6) {
