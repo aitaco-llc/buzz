@@ -280,6 +280,7 @@ final class BuzzUITests: XCTestCase {
     XCUIDevice.shared.press(.home)
     app.activate()
     XCTAssertTrue(app.otherElements["paste-image"].waitForExistence(timeout: 10))
+    add(screenshot(app, named: "composer-paste-control"))
     UIPasteboard.general.items = []
   }
 

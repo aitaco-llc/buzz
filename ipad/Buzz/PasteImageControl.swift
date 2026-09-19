@@ -32,7 +32,12 @@ struct PasteImageControl: UIViewRepresentable {
       configuration: {
         let configuration = UIPasteControl.Configuration()
         configuration.displayMode = .iconOnly
-        configuration.cornerStyle = .medium
+        configuration.cornerStyle = .capsule
+        // Left at its defaults the glyph inherits the app tint and disappears
+        // into the teal composer chrome — the control renders as a blank block.
+        // These match the bare paperclip and mic it sits between.
+        configuration.baseBackgroundColor = .clear
+        configuration.baseForegroundColor = .label
         return configuration
       }())
     control.target = view

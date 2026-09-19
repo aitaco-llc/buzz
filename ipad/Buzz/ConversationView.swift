@@ -588,7 +588,7 @@ struct ConversationView: View {
               }
             }
           }
-          .frame(width: 44, height: 32)
+          .frame(width: 34, height: 34)
           .accessibilityLabel("Paste image")
         }
         Button {
