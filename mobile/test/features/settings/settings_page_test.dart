@@ -161,7 +161,7 @@ void main() {
 
     expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
     expect(
-      find.text('Enabled in Buzz, but disabled in iOS Settings'),
+      find.text('Enabled in aitaco, but disabled in iOS Settings'),
       findsOneWidget,
     );
     await tester.tap(
@@ -207,7 +207,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(
-      find.text('Enabled in Buzz; iOS permission status unavailable'),
+      find.text('Enabled in aitaco; iOS permission status unavailable'),
       findsOneWidget,
     );
     expect(
