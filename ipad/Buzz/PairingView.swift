@@ -49,7 +49,7 @@ struct PairingView: View {
       } else {
         Section {
           Text(
-            "On your desktop app, open Settings → Mobile pairing. Scan its QR code or paste its pairing link below."
+            "On aitaco Desktop, open Settings → Mobile pairing. On your iPhone, open Settings → Add a device. Scan its QR code or paste its pairing code below."
           )
           Button("Scan pairing QR code", systemImage: "qrcode.viewfinder") { showScanner = true }
             .disabled(busy)

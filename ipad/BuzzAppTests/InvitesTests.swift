@@ -19,6 +19,16 @@ final class InvitesTests: XCTestCase {
     XCTAssertEqual(invite.code, "one-time")
   }
 
+  func testAitacoSchemeJoinInviteParses() throws {
+    let url = try XCTUnwrap(
+      URL(
+        string:
+          "co.aitaco.buzz://join?relay=wss%3A%2F%2Fbuzz.aitaco.co&code=abc&policy_receipt=r"))
+    let invite = try XCTUnwrap(InviteLink.parse(url))
+    XCTAssertEqual(invite.relay.absoluteString, "https://buzz.aitaco.co")
+    XCTAssertEqual(invite.code, "abc")
+  }
+
   func testMalformedInviteDoesNotBecomeAJoinTarget() throws {
     let urls = [
       "https://relay.example/invite/",
