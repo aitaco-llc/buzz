@@ -1,0 +1,36 @@
+name: Native iPad
+on:
+  pull_request:
+    paths:
+      - 'ipad/**'
+      - 'mobile/ios/BuzzPushKit/**'
+      - 'mobile/assets/emoji/**'
+      - '.github/workflows/native-ipad.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'ipad/**'
+      - 'mobile/ios/BuzzPushKit/**'
+      - 'mobile/assets/emoji/**'
+      - '.github/workflows/native-ipad.yml'
+permissions:
+  contents: read
+concurrency:
+  group: native-ipad-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  native-ipad:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install project generator
+        run: command -v xcodegen || brew install xcodegen
+      - name: Test packages, exercise iPad UI, and build Release
+        run: ipad/scripts/check.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-ipad-test-results
+          path: ipad/DerivedData/Logs/Test/*.xcresult
+          retention-days: 14
