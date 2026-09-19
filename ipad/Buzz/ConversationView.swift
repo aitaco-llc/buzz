@@ -23,6 +23,7 @@ struct ConversationView: View {
   @State private var photoItem: PhotosPickerItem?
   @State private var mediaTags: [[String]] = []
   @State private var uploadingMedia = false
+  @State private var pasteboardHasImage = false
   @State private var showPreview = false
   @State private var voiceRecorder: VoiceNoteRecorder?
   @State private var lastTypingSentAt = Date.distantPast
@@ -174,13 +175,22 @@ struct ConversationView: View {
             throw BuzzError.invalidResponse
           }
           let mime = item.supportedContentTypes.first?.preferredMIMEType ?? "image/jpeg"
-          let descriptor = try await workspace.uploadMedia(data, mimeType: mime)
-          mediaTags.append(descriptor.imetaTag())
-          draft += (draft.isEmpty ? "" : "\n") + "![image](\(descriptor.url))"
+          try await attach(data: data, mimeType: mime)
         } catch {
           workspace.error = error.localizedDescription
         }
       }
+    }
+    .task { refreshPasteboardAvailability() }
+    .onReceive(NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)) { _ in
+      refreshPasteboardAvailability()
+    }
+    .onReceive(
+      NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)
+    ) { _ in
+      // A screenshot copied in another app never posts `changedNotification`
+      // here, so coming back to the foreground is the moment that matters.
+      refreshPasteboardAvailability()
     }
     .confirmationDialog(
       "Delete this message?",
@@ -491,6 +501,22 @@ struct ConversationView: View {
       }, query: Mentions.activeQuery(in: draft) ?? "")
   }
 
+  /// `hasImages` is one of the pasteboard's detection APIs, which iOS answers
+  /// without the "Allow Paste?" alert. Only the paste itself reads content.
+  private func refreshPasteboardAvailability() {
+    pasteboardHasImage = UIPasteboard.general.hasImages
+  }
+
+  /// Sanitizes one image and uploads it, then records its imeta tag and puts a
+  /// Markdown reference in the draft. Shared by the photo picker and by paste so
+  /// both land on the same scrubbed bytes.
+  private func attach(data: Data, mimeType: String) async throws {
+    let upload = try MediaSanitizer.forUpload(data: data, mimeType: mimeType)
+    let descriptor = try await workspace.uploadMedia(upload.data, mimeType: upload.mimeType)
+    mediaTags.append(descriptor.imetaTag())
+    draft += (draft.isEmpty ? "" : "\n") + "![image](\(descriptor.url))"
+  }
+
   private var composer: some View {
     VStack(alignment: .leading, spacing: 8) {
       if showPreview {
@@ -550,6 +576,21 @@ struct ConversationView: View {
         .disabled(uploadingMedia || workspace.sending || channel.archived)
         .accessibilityLabel("Attach image")
         .accessibilityIdentifier("attach-image")
+        // `.disabled` does not reach inside a `UIViewRepresentable`, so the
+        // control is withheld outright while an upload is already in flight.
+        if pasteboardHasImage, !channel.archived, !uploadingMedia, !workspace.sending {
+          PasteImageControl { data, mime in
+            uploadingMedia = true
+            Task {
+              defer { uploadingMedia = false }
+              do { try await attach(data: data, mimeType: mime) } catch {
+                workspace.error = error.localizedDescription
+              }
+            }
+          }
+          .frame(width: 44, height: 32)
+          .accessibilityLabel("Paste image")
+        }
         Button {
           if let recorder = voiceRecorder, recorder.isRecording {
             let url = recorder.stop()

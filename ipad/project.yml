@@ -23,6 +23,7 @@ targets:
       - path: Buzz
         excludes: ["Embedded/**"]
       - path: ../mobile/ios/Runner/HuddleAudioEngine.swift
+      - path: ../mobile/ios/Runner/MediaSanitizer.swift
       - path: ../mobile/assets/emoji/emoji-data.json
         buildPhase: resources
       - path: ../mobile/assets/images/aitaco-mark.png

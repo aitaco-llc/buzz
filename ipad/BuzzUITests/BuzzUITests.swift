@@ -1,3 +1,4 @@
+import UIKit
 import XCTest
 
 final class BuzzUITests: XCTestCase {
@@ -207,6 +208,86 @@ final class BuzzUITests: XCTestCase {
     XCTAssertTrue(app.buttons["Pair with desktop"].isEnabled)
     app.buttons["Pair with desktop"].tap()
     XCTAssertTrue(app.staticTexts["pairing-error"].waitForExistence(timeout: 5))
+  }
+
+  /// The reported defect rendered a heading, a list and two paragraphs as one
+  /// run-together line. Separate `staticTexts` are what proves the breaks are
+  /// back: with the bug there is a single element holding the whole body.
+  ///
+  /// Order keeps the two halves apart. The preview is checked while nothing has
+  /// been sent, and the message is checked once the draft — and so the preview —
+  /// is empty, so neither assertion can be satisfied by the other surface.
+  @MainActor func testAgentStyleMarkdownRendersItsBreaksInMessageAndPreview() throws {
+    let app = XCUIApplication()
+    app.launchArguments = ["--ui-testing", "--reset-test-data"]
+    app.launch()
+    let general = app.staticTexts["general"]
+    XCTAssertTrue(general.waitForExistence(timeout: 15))
+    general.tap()
+
+    let composer = app.textFields["message-composer"]
+    XCTAssertTrue(composer.waitForExistence(timeout: 10))
+    composer.tap()
+    composer.typeText(
+      "Opening paragraph.\n\n## Findings\n\n- first bullet\n- second bullet\n\n"
+        + "Closing paragraph.\n\n```swift\nlet value = 1\n```")
+
+    app.buttons["composer-preview-toggle"].tap()
+    XCTAssertTrue(app.otherElements["composer-preview"].waitForExistence(timeout: 5))
+    XCTAssertTrue(app.staticTexts["Findings"].waitForExistence(timeout: 5))
+    XCTAssertTrue(app.staticTexts["first bullet"].exists)
+    XCTAssertTrue(app.staticTexts["second bullet"].exists)
+    XCTAssertTrue(app.staticTexts["Closing paragraph."].exists)
+
+    app.buttons["Send message"].tap()
+    // Sending clears the draft, so the preview empties and every match below is
+    // the rendered message.
+    XCTAssertTrue(app.staticTexts["Nothing to preview yet."].waitForExistence(timeout: 10))
+    XCTAssertTrue(app.staticTexts["Opening paragraph."].waitForExistence(timeout: 10))
+    XCTAssertTrue(app.staticTexts["Findings"].exists)
+    XCTAssertTrue(app.staticTexts["first bullet"].exists)
+    XCTAssertTrue(app.staticTexts["second bullet"].exists)
+    XCTAssertTrue(app.staticTexts["Closing paragraph."].exists)
+    // The fenced block keeps its own path, so its chrome is still present.
+    XCTAssertTrue(app.buttons["Copy code"].exists)
+    add(screenshot(app, named: "message-markdown"))
+  }
+
+  /// The paste control is the only image-paste affordance, so its gating is the
+  /// whole feature: it must not occupy the composer when there is nothing to
+  /// paste, and it must appear as soon as there is.
+  ///
+  /// `UIPasteboard.general` is shared across processes on the simulator, so the
+  /// runner can stage the pasteboard the app will read.
+  @MainActor func testPasteControlAppearsOnlyWhileAnImageIsOnThePasteboard() throws {
+    UIPasteboard.general.items = []
+    let app = XCUIApplication()
+    app.launchArguments = ["--ui-testing", "--reset-test-data"]
+    app.launch()
+    let general = app.staticTexts["general"]
+    XCTAssertTrue(general.waitForExistence(timeout: 15))
+    general.tap()
+    XCTAssertTrue(app.textFields["message-composer"].waitForExistence(timeout: 10))
+    XCTAssertFalse(app.otherElements["paste-image"].exists)
+
+    let swatch = UIGraphicsImageRenderer(size: CGSize(width: 12, height: 9)).image { context in
+      UIColor.systemPink.setFill()
+      context.fill(CGRect(x: 0, y: 0, width: 12, height: 9))
+    }
+    UIPasteboard.general.image = swatch
+    // The app refreshes on foreground, which is what happens after a real
+    // screenshot is copied in another app.
+    XCUIDevice.shared.press(.home)
+    app.activate()
+    XCTAssertTrue(app.otherElements["paste-image"].waitForExistence(timeout: 10))
+    UIPasteboard.general.items = []
+  }
+
+  @MainActor private func screenshot(_ app: XCUIApplication, named name: String) -> XCTAttachment {
+    let attachment = XCTAttachment(screenshot: app.screenshot())
+    attachment.name = name
+    attachment.lifetime = .keepAlways
+    return attachment
   }
 
   @MainActor func testComposeThreadSearchAndDurableDraft() throws {

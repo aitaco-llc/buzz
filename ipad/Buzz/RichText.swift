@@ -16,10 +16,116 @@ enum RichText {
   private static let maxSourceBytes = 256 * 1024
   private static let maxCodeBytes = 64 * 1024
 
-  static func attributed(_ source: String) -> AttributedString? {
-    guard !source.isEmpty else { return AttributedString("") }
-    guard source.utf8.count <= maxSourceBytes else { return nil }
-    return try? AttributedString(markdown: source)
+  /// One Markdown block, with its inline markup intact.
+  ///
+  /// `AttributedString(markdown:)` records block structure in `presentationIntent`
+  /// runs rather than in the text: parsing a heading, a list and two paragraphs
+  /// yields one string whose characters run together, and `Text` has no way to
+  /// put the breaks back. Splitting the runs into blocks here is what lets the
+  /// view lay each one out on its own line.
+  struct Block: Equatable {
+    enum Kind: Equatable {
+      case paragraph
+      case heading(level: Int)
+      case listItem(marker: String, depth: Int)
+      case blockQuote
+      case thematicBreak
+    }
+    let kind: Kind
+    let text: AttributedString
+  }
+
+  /// Groups the parsed runs into blocks. Returns an empty array when the source
+  /// is over budget or unparseable, which the view renders as the source text so
+  /// a signed body is never dropped.
+  static func blocks(_ source: String) -> [Block] {
+    guard source.utf8.count <= maxSourceBytes,
+      let parsed = try? AttributedString(
+        markdown: source,
+        options: .init(
+          interpretedSyntax: .full, failurePolicy: .returnPartiallyParsedIfPossible))
+    else { return [] }
+
+    var result: [Block] = []
+    var currentKey: Int?
+    var currentIntent: PresentationIntent?
+    var currentText = AttributedString()
+    var started = false
+
+    func flush() {
+      guard started else { return }
+      let kind = kind(for: currentIntent)
+      if kind == .thematicBreak {
+        result.append(Block(kind: kind, text: AttributedString()))
+      } else {
+        let trimmed = trimmingNewlinesAndSpaces(currentText)
+        if !trimmed.characters.isEmpty { result.append(Block(kind: kind, text: trimmed)) }
+      }
+    }
+
+    for run in parsed.runs {
+      let key = run.presentationIntent?.components.first?.identity
+      if !started || key != currentKey {
+        flush()
+        started = true
+        currentKey = key
+        currentIntent = run.presentationIntent
+        currentText = AttributedString()
+      }
+      // A soft break arrives as a run holding a single space. Chat authors mean
+      // a new line by it, so keep it as one rather than letting it collapse.
+      if run.inlinePresentationIntent?.contains(.softBreak) == true {
+        currentText.append(AttributedString("\n"))
+      } else {
+        currentText.append(AttributedString(parsed[run.range]))
+      }
+    }
+    flush()
+    return result
+  }
+
+  /// Block kinds arrive innermost-first, so a list item inside a quote inside a
+  /// list reads as `[paragraph, listItem, unorderedList, ...]`. The first list
+  /// marker wins and every enclosing list adds a level of indent.
+  private static func kind(for intent: PresentationIntent?) -> Block.Kind {
+    guard let intent else { return .paragraph }
+    var listDepth = 0
+    var ordinal: Int?
+    var marker: String?
+    var quoted = false
+    for component in intent.components {
+      switch component.kind {
+      case .header(let level):
+        return .heading(level: max(1, min(level, 6)))
+      case .thematicBreak:
+        return .thematicBreak
+      case .listItem(let value):
+        if marker == nil, ordinal == nil { ordinal = value }
+      case .unorderedList:
+        listDepth += 1
+        if marker == nil { marker = "\u{2022}" }
+      case .orderedList:
+        listDepth += 1
+        if marker == nil { marker = "\(ordinal ?? 1)." }
+      case .blockQuote:
+        quoted = true
+      default:
+        break
+      }
+    }
+    if let marker { return .listItem(marker: marker, depth: listDepth) }
+    return quoted ? .blockQuote : .paragraph
+  }
+
+  private static func trimmingNewlinesAndSpaces(_ value: AttributedString) -> AttributedString {
+    var value = value
+    while let first = value.characters.first, first == "\n" || first == " " {
+      value.removeSubrange(value.startIndex..<value.index(afterCharacter: value.startIndex))
+    }
+    while let last = value.characters.last, last == "\n" || last == " " {
+      value.removeSubrange(value.index(beforeCharacter: value.endIndex)..<value.endIndex)
+    }
+    return value
   }
 
   /// Splits fenced code blocks before Markdown parsing, so code is displayed
@@ -113,15 +219,73 @@ struct RichMessageText: View {
       ForEach(Array(RichText.segments(source).enumerated()), id: \.offset) { _, segment in
         switch segment.kind {
         case .markdown:
-          if let value = RichText.attributed(segment.text) {
-            Text(value).textSelection(.enabled).tint(Aitaco.accent)
-          } else {
-            Text(segment.text).textSelection(.enabled)
-          }
+          RichMarkdownBlocks(source: segment.text)
         case .code(let language):
           RichCodeBlock(language: language, source: segment.text)
         }
       }
+    }
+  }
+}
+
+/// Lays out one Markdown segment a block at a time, which is what keeps
+/// paragraphs, lists and headings on separate lines.
+private struct RichMarkdownBlocks: View {
+  let source: String
+
+  var body: some View {
+    let blocks = RichText.blocks(source)
+    if blocks.isEmpty {
+      Text(source).textSelection(.enabled)
+    } else {
+      VStack(alignment: .leading, spacing: 6) {
+        ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+          RichBlockView(block: block)
+        }
+      }
+    }
+  }
+}
+
+private struct RichBlockView: View {
+  let block: RichText.Block
+
+  var body: some View {
+    switch block.kind {
+    case .paragraph:
+      body(for: block.text)
+    case .heading(let level):
+      body(for: block.text).font(headingFont(level)).padding(.top, 2)
+    case .listItem(let marker, let depth):
+      HStack(alignment: .firstTextBaseline, spacing: 6) {
+        Text(marker).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+        body(for: block.text).frame(maxWidth: .infinity, alignment: .leading)
+      }
+      .padding(.leading, CGFloat(max(0, depth - 1)) * 16)
+    case .blockQuote:
+      HStack(alignment: .top, spacing: 8) {
+        RoundedRectangle(cornerRadius: 1.5)
+          .fill(Color.secondary.opacity(0.4))
+          .frame(width: 3)
+        body(for: block.text).foregroundStyle(.secondary)
+      }
+      .fixedSize(horizontal: false, vertical: true)
+    case .thematicBreak:
+      Divider()
+    }
+  }
+
+  private func body(for value: AttributedString) -> some View {
+    Text(value).textSelection(.enabled).tint(Aitaco.accent)
+      .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  private func headingFont(_ level: Int) -> Font {
+    switch level {
+    case 1: return .title2.bold()
+    case 2: return .title3.bold()
+    case 3: return .headline
+    default: return .subheadline.bold()
     }
   }
 }

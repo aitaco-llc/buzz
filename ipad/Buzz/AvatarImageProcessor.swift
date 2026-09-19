@@ -27,7 +27,10 @@ enum AvatarImageProcessor {
     } else {
       rendered = image
     }
-    return rendered.jpegData(compressionQuality: 0.85)
+    guard let encoded = rendered.jpegData(compressionQuality: 0.85) else { return nil }
+    // Same scrub the attachment path uses. An avatar takes the identical relay
+    // validation on the way in, so it cannot be the one encoder that skips it.
+    return try? MediaSanitizer.scrubJpeg(encoded)
   }
 
   private static func normalized(_ image: UIImage) -> UIImage? {
