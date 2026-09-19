@@ -229,9 +229,10 @@ fn is_admin_spa_path(path: &str) -> bool {
 }
 
 /// Files served from the admin bundle directory verbatim. `/assets/*` is the
-/// hashed Vite output; `/favicon.svg` is the one root-level file the bundle
-/// emits and the document links. Everything else on the admin host is a 404 —
-/// the directory is not browsable.
+/// hashed Vite output, which includes the favicon the document links.
+/// `/favicon.svg` is the one root-level file an admin bundle may emit from
+/// `public/`. Everything else on the admin host is a 404 — the directory is
+/// not browsable.
 fn is_admin_static_path(path: &str) -> bool {
     path.starts_with("/assets/") || path == "/favicon.svg"
 }
