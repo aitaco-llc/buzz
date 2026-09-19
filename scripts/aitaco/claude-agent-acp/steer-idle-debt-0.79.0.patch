@@ -1,0 +1,33 @@
+--- a/dist/acp-agent.js
++++ b/dist/acp-agent.js
+@@ -2861,6 +2861,30 @@
+                                         }
+                                         await settleDeferredIfDrained();
+                                     }
++                                    else if (isSteering(session.activeTurn) &&
++                                        session.activeTurn.steeredEchoes.size === 0 &&
++                                        session.activeTurn.steeredSettle !== undefined) {
++                                        // A steered turn whose steered echo has replayed and whose
++                                        // last cycle has a recorded result: this idle is its
++                                        // turn-over signal (see Turn.steeredEchoes), even when a
++                                        // trailing-idle debt is outstanding. The CLI emits no idle
++                                        // mid-cycle, so an idle after the steered echo cannot belong
++                                        // to a cycle that ran before it. Results that ended inside
++                                        // the steered sequence without an idle of their own (an
++                                        // autonomous task-notification followup, or a held turn's
++                                        // result while background agents ran) coalesce into this
++                                        // one idle. Letting the owed branch below absorb it leaves
++                                        // the prompt unresolved forever. Pay one unit of the debt;
++                                        // any remainder is swept at the next running transition.
++                                        if (session.owedTrailingIdles > 0) {
++                                            session.owedTrailingIdles--;
++                                        }
++                                        const steered = session.activeTurn;
++                                        steered.deferredSettle = steered.steeredSettle;
++                                        steered.steeredEchoes = undefined;
++                                        steered.steeredSettle = undefined;
++                                        await settleDeferredIfDrained();
++                                    }
+                                     else if (session.owedTrailingIdles > 0) {
+                                         // Absorb a settled turn's trailing idle. Also covers a
+                                         // cancel that landed between a turn's counted result and
