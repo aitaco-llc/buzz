@@ -200,15 +200,15 @@ impl RelayInfo {
         });
 
         Self {
-            name: "Buzz Relay".to_string(),
-            description: "Buzz — private team communication relay".to_string(),
+            name: "aitaco".to_string(),
+            description: "aitaco — private team communication relay".to_string(),
             icon: icon.filter(|s| !s.is_empty()).map(|s| s.to_string()),
             pubkey: None,
             contact: None,
             supported_nips,
             supported_extensions: Some(supported_extensions),
             push: None,
-            software: "https://github.com/block/buzz".to_string(),
+            software: "https://github.com/aitaco-llc/buzz".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             limitation: Some(relay_limitation(max_message_length)),
             pairing_relay_url: pairing_relay_url.map(str::to_string),
@@ -450,9 +450,14 @@ mod tests {
     }
 
     #[test]
-    fn build_advertises_buzz_repository_url() {
+    fn build_advertises_aitaco_name_and_repository_url() {
         let info = RelayInfo::build(None, None, false, DEFAULT_MAX_FRAME_BYTES, None, None, None);
-        assert_eq!(info.software, "https://github.com/block/buzz");
+        assert_eq!(info.name, "aitaco");
+        assert_eq!(
+            info.description,
+            "aitaco — private team communication relay"
+        );
+        assert_eq!(info.software, "https://github.com/aitaco-llc/buzz");
     }
 
     #[test]
