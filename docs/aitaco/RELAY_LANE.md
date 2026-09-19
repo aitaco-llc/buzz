@@ -9,12 +9,13 @@ This lane moves `wss://buzz.aitaco.co` to a relay image built from `aitaco-llc/b
 
 - **What publishes them.** `docker.yml` on the fork builds `ghcr.io/aitaco-llc/buzz` (repo variable `GHCR_IMAGE`) and `ghcr.io/aitaco-llc/buzz-push-gateway` (`GHCR_PUSH_GATEWAY_IMAGE`) on every push to `main`. Its `qualify` job waits for a green `ci.yml` run on the same commit before publishing.
 - **Tags.** Each image is tagged `:main` and `:sha-<7>`. Deploy by **digest** only (`ghcr.io/aitaco-llc/buzz@sha256:…`). The script refuses anything else.
-- **Pulling private packages.** GHCR creates packages private. Either make them public, or log docker on `buzz-relay` in to GHCR. Reading the target's revision label from hip then also needs `GHCR_TOKEN` (a token with `read:packages`).
+- **Private packages.** GHCR creates packages private, and ours stay private. `buzz-relay` holds no registry credential. Only hip reads the registry, with `GHCR_TOKEN` (a token with `read:packages`, for example `GHCR_TOKEN="$(gh auth token)"`), and the script carries the image to the host (see `carry`).
 
 ## Commands
 
 ```bash
 scripts/aitaco/relay-deploy.sh plan   ghcr.io/aitaco-llc/buzz@sha256:<digest>
+scripts/aitaco/relay-deploy.sh carry  ghcr.io/aitaco-llc/buzz@sha256:<digest>
 scripts/aitaco/relay-deploy.sh deploy ghcr.io/aitaco-llc/buzz@sha256:<digest> --canary-channel <uuid>
 ```
 
@@ -31,18 +32,25 @@ It refuses three kinds of target:
 
 It runs from any directory inside the clone.
 
+**`carry`** runs `plan`, then puts the target image on the host. It changes nothing that runs.
+- hip reads the image from GHCR: the index, every platform's manifest, config and layers. It checks each blob against its digest.
+- hip writes an OCI layout and streams it over `gcloud compute ssh` into `sudo docker load`. No registry credential reaches the host.
+- The host's Docker (29.x) uses the containerd image store. That store keeps the index digest, and the layout names the image by its digest ref. So `docker image inspect <target>` returns the target digest as its Id, and `compose up` finds the image locally instead of pulling it.
+- If the host already has the target, `carry` does nothing.
+
 **`deploy`** runs `plan`, then checks that the operator's `buzz` identity can read `--canary-channel` on `https://buzz.aitaco.co`, and stops if not. Nothing has changed at that point. Then it runs these steps in order:
-1. **Backup.** It copies `/opt/buzz/.env` to `.env.pre-<stamp>` and runs `/opt/buzz/backup.sh`, which sends Postgres, MinIO, the git volume and `.env` to `gs://aitaco-buzz-backups/<stamp>/`. It then confirms a backup from this run exists.
-2. **Pull** the target on the host.
-3. **Pin** `BUZZ_IMAGE=<target>` in `/opt/buzz/.env`. The relay and the pair-relay sidecar share this variable.
-4. **Start** with `buzzctl start` (`compose up -d --wait`).
-5. **Check** three things:
+1. **Carry** the target to the host, as `carry` does.
+2. **Backup.** It copies `/opt/buzz/.env` to `.env.pre-<stamp>` and runs `/opt/buzz/backup.sh`, which sends Postgres, MinIO, the git volume and `.env` to `gs://aitaco-buzz-backups/<stamp>/`. It then confirms a backup from this run exists.
+3. **Save the logs.** It writes each container's `docker logs` to `/var/tmp/<container>-<id12>-<stamp>-deploy.log.gz` on the host. Docker deletes a container's `json-file` log when the container is removed, and that log holds the only record of which pubkey each connection was (the `NIP-42 auth successful` lines). A recreate without this step loses it. The files stay until someone removes them.
+4. **Pin** `BUZZ_IMAGE=<target>` in `/opt/buzz/.env`. The relay and the pair-relay sidecar share this variable.
+5. **Start** with `buzzctl start` (`compose up -d --wait`).
+6. **Check** three things:
    - both containers run exactly the target image ref and its revision
    - NIP-11 answers at `https://buzz.aitaco.co`
    - a canary message, posted with the operator's `buzz` CLI to `https://buzz.aitaco.co` whatever `BUZZ_RELAY_URL` says, can be read back from `--canary-channel`
 
-**Rollback.** A failure or an interrupt (Ctrl-C, SIGTERM, SIGHUP) in steps 3–5 **rolls back**:
-- `.env.pre-<stamp>` is put back and `buzzctl start` runs again.
+**Rollback.** A failure or an interrupt (Ctrl-C, SIGTERM, SIGHUP) in steps 4–6 **rolls back**:
+- The new containers' logs are saved (`…-rollback.log.gz`), then `.env.pre-<stamp>` is put back and `buzzctl start` runs again.
 - The rollback is then **verified**: `.env` and both containers must be back on the previous image, and NIP-11 must answer. If any check fails, the script says ROLLBACK DID NOT VERIFY, and a human takes over.
 
 Each run appends one line to `/opt/buzz/deploys.log` on the host. Logs stay on hip under `~/.local/state/buzz-relay-deploys/`.
@@ -66,7 +74,7 @@ Run `deploy` in a terminal or background job that can outlive a 2-minute tool ti
 - **Order:**
   1. CI green on `main`.
   2. `docker.yml` re-enabled (`gh workflow enable docker.yml -R aitaco-llc/buzz`) and one image published.
-  3. `plan` against its digest.
+  3. `plan` against its digest, then `carry` it.
   4. rock's go.
   5. `deploy`.
 

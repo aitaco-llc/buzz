@@ -7,19 +7,23 @@
 #   scripts/aitaco/relay-deploy.sh plan   <image@sha256:…>
 #       Read-only. Live digest and revision, target revision, and the commits
 #       and migrations between them.
+#   scripts/aitaco/relay-deploy.sh carry  <image@sha256:…>
+#       Plan, then copy the image from GHCR onto the host through hip, so the
+#       host needs no registry credential. Changes nothing that runs.
 #   scripts/aitaco/relay-deploy.sh deploy <image@sha256:…> --canary-channel <uuid>
 #       [--allow-migrations]
-#       Backup, pull, pin, start, then check the running image and revision,
-#       NIP-11 and a canary post. Any failure or interrupt after the pin restores
-#       the previous .env and starts the previous digest again, then verifies that
-#       it runs. A run that applied migrations is never rolled back by digest.
+#       Carry, backup, save the relay logs, pin, start, then check the running
+#       image and revision, NIP-11 and a canary post. Any failure or interrupt
+#       after the pin restores the previous .env and starts the previous digest
+#       again, then verifies that it runs. A run that applied migrations is never
+#       rolled back by digest.
 set -euo pipefail
 
 die() { echo "relay-deploy: $*" >&2; exit 1; }
 
 CMD="${1:-}"
 TARGET="${2:-}"
-[[ "$CMD" == "plan" || "$CMD" == "deploy" ]] || die "usage: $0 plan|deploy <image@sha256:…> [--canary-channel <uuid>] [--allow-migrations]"
+[[ "$CMD" == "plan" || "$CMD" == "carry" || "$CMD" == "deploy" ]] || die "usage: $0 plan|carry|deploy <image@sha256:…> [--canary-channel <uuid>] [--allow-migrations]"
 shift 2 || true
 CANARY_CHANNEL=""
 ALLOW_MIGRATIONS=0
@@ -57,16 +61,22 @@ TARGET_REPO="${BASH_REMATCH[1]}"
 TARGET_DIGEST="${BASH_REMATCH[2]}"
 [[ "$TARGET_REPO" == "$RELAY_REPO" ]] || die "target repo is ${TARGET_REPO}; only ghcr.io/${RELAY_REPO} is deployed here"
 
-# Revision label of a GHCR image, read from the registry without pulling. The
-# host is linux/amd64. GHCR_TOKEN (read:packages) is needed for private images.
-image_revision() {
-  local repo="$1" digest="$2" token manifest accept
+MANIFEST_ACCEPT='application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json'
+# Pull token for one GHCR repository. GHCR_TOKEN (read:packages) is needed for
+# private images. It is only ever used from hip.
+registry_token() {
   if [[ -n "${GHCR_TOKEN:-}" ]]; then
-    token="$(curl -fsS -u "x:${GHCR_TOKEN}" "https://ghcr.io/token?scope=repository:${repo}:pull" | jq -r .token)"
+    curl -fsS -u "x:${GHCR_TOKEN}" "https://ghcr.io/token?scope=repository:$1:pull" | jq -r .token
   else
-    token="$(curl -fsS "https://ghcr.io/token?scope=repository:${repo}:pull" | jq -r .token)"
+    curl -fsS "https://ghcr.io/token?scope=repository:$1:pull" | jq -r .token
   fi
-  accept='application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json'
+}
+
+# Revision label of a GHCR image, read from the registry without pulling. The
+# host is linux/amd64.
+image_revision() {
+  local repo="$1" digest="$2" token manifest accept="$MANIFEST_ACCEPT"
+  token="$(registry_token "$repo")"
   manifest="$(curl -fsSL -H "Authorization: Bearer ${token}" -H "Accept: ${accept}" \
     "https://ghcr.io/v2/${repo}/manifests/${digest}")"
   if jq -e '.manifests' <<<"$manifest" >/dev/null; then
@@ -119,17 +129,82 @@ if [[ "$CMD" == "plan" ]]; then
   exit 0
 fi
 
-# ── deploy ───────────────────────────────────────────────────────────────────
-[[ -n "$CANARY_CHANNEL" ]] || die "deploy needs --canary-channel <uuid>"
-# The canary talks to the relay being deployed, not whatever BUZZ_RELAY_URL says.
-canary_buzz() { BUZZ_RELAY_URL="$PUBLIC_URL" buzz --format compact "$@"; }
-canary_buzz messages get --channel "$CANARY_CHANNEL" --limit 1 >/dev/null \
-  || die "cannot read canary channel ${CANARY_CHANNEL} on ${PUBLIC_URL} with this identity; nothing changed"
-[[ "$LIVE_IMAGE" != "$TARGET" ]] || die "the live relay already runs ${TARGET}"
-if [[ -n "$MIGRATIONS" && "$ALLOW_MIGRATIONS" != "1" ]]; then
-  die "the target adds migrations; rollback would then need a database restore, not a digest swap. Re-run with --allow-migrations once that is accepted."
+# ── deploy preconditions ────────────────────────────────────────────────────
+if [[ "$CMD" == "deploy" ]]; then
+  [[ -n "$CANARY_CHANNEL" ]] || die "deploy needs --canary-channel <uuid>"
+  # The canary talks to the relay being deployed, not whatever BUZZ_RELAY_URL says.
+  canary_buzz() { BUZZ_RELAY_URL="$PUBLIC_URL" buzz --format compact "$@"; }
+  canary_buzz messages get --channel "$CANARY_CHANNEL" --limit 1 >/dev/null \
+    || die "cannot read canary channel ${CANARY_CHANNEL} on ${PUBLIC_URL} with this identity; nothing changed"
+  [[ "$LIVE_IMAGE" != "$TARGET" ]] || die "the live relay already runs ${TARGET}"
+  if [[ -n "$MIGRATIONS" && "$ALLOW_MIGRATIONS" != "1" ]]; then
+    die "the target adds migrations; rollback would then need a database restore, not a digest swap. Re-run with --allow-migrations once that is accepted."
+  fi
 fi
 
+# ── carry ────────────────────────────────────────────────────────────────────
+# The GHCR packages are private, and buzz-relay holds no registry credential.
+# hip reads the image with GHCR_TOKEN, writes it as an OCI layout (every
+# platform, every blob checked against its digest) and streams it into the
+# host's `docker load`. The host's Docker uses the containerd image store, which
+# keeps the index digest and the name below, so BUZZ_IMAGE stays pinned by
+# digest and compose finds the image locally instead of pulling it.
+host_has_target() {
+  [[ "$(remote "sudo docker image inspect -f '{{.Id}}' ${TARGET} 2>/dev/null" || true)" == "$TARGET_DIGEST" ]]
+}
+carry_image() {
+  local dir token top child blob
+  dir="$(mktemp -d)"
+  # shellcheck disable=SC2064 # expand $dir now; it is local
+  trap "rm -rf '${dir}'; trap - RETURN" RETURN
+  mkdir -p "${dir}/blobs/sha256"
+  token="$(registry_token "$TARGET_REPO")"
+  # fetch <digest> manifest|blob: store under blobs/ and check the digest.
+  fetch() {
+    local out="${dir}/blobs/sha256/${1#sha256:}" path=blobs
+    [[ -s "$out" ]] && return 0
+    [[ "$2" == manifest ]] && path=manifests
+    curl -fsSL -H "Authorization: Bearer ${token}" -H "Accept: ${MANIFEST_ACCEPT}" \
+      "https://ghcr.io/v2/${TARGET_REPO}/${path}/$1" -o "$out" || return 1
+    [[ "sha256:$(sha256sum "$out" | cut -d' ' -f1)" == "$1" ]] || { echo "digest mismatch: $1" >&2; return 1; }
+  }
+  # fetch_image <manifest digest>: the manifest, its config and its layers.
+  fetch_image() {
+    local m="${dir}/blobs/sha256/${1#sha256:}"
+    fetch "$1" manifest || return 1
+    for blob in $(jq -r '.config.digest, .layers[].digest' "$m"); do fetch "$blob" blob || return 1; done
+  }
+  fetch "$TARGET_DIGEST" manifest || return 1
+  top="${dir}/blobs/sha256/${TARGET_DIGEST#sha256:}"
+  if jq -e '.manifests' "$top" >/dev/null; then
+    for child in $(jq -r '.manifests[].digest' "$top"); do fetch_image "$child" || return 1; done
+  else
+    fetch_image "$TARGET_DIGEST" || return 1
+  fi
+  printf '{"imageLayoutVersion":"1.0.0"}' > "${dir}/oci-layout"
+  jq -n --arg mt "$(jq -r .mediaType "$top")" --arg d "$TARGET_DIGEST" \
+    --argjson size "$(stat -c %s "$top")" --arg name "$TARGET" \
+    '{schemaVersion:2, mediaType:"application/vnd.oci.image.index.v1+json",
+      manifests:[{mediaType:$mt, digest:$d, size:$size,
+                  annotations:{"io.containerd.image.name":$name}}]}' > "${dir}/index.json"
+  log "carry: $(du -sh "$dir" | cut -f1) in $(find "${dir}/blobs" -type f | wc -l) blobs, streaming to ${HOST}"
+  tar -C "$dir" -cf - oci-layout index.json blobs \
+    | gcloud compute ssh "$HOST" --zone "$ZONE" --command "sudo docker load" >&2 || return 1
+  host_has_target
+}
+
+if host_has_target; then
+  log "carry: ${HOST} already has ${TARGET}"
+else
+  carry_image || die "could not carry ${TARGET} to ${HOST}; nothing that runs has changed"
+  log "carry: ${HOST} has ${TARGET}"
+fi
+if [[ "$CMD" == "carry" ]]; then
+  echo "Carried; nothing that runs has changed. Log: ${LOG_DIR}"
+  exit 0
+fi
+
+# ── deploy ───────────────────────────────────────────────────────────────────
 log "backup: /opt/buzz/backup.sh to ${BACKUP_BUCKET}, and .env to .env.pre-${STAMP}"
 remote "sudo cp -p /opt/buzz/.env /opt/buzz/.env.pre-${STAMP} && sudo /opt/buzz/backup.sh" \
   || die "backup failed; nothing changed"
@@ -137,8 +212,12 @@ BACKUP="$(gcloud storage ls "${BACKUP_BUCKET}/" | sed -n 's#.*/\([0-9]\{8\}T[0-9
 [[ -n "$BACKUP" && ! "$BACKUP" < "$STAMP" ]] || die "no backup from this run in ${BACKUP_BUCKET}; nothing changed"
 log "backup: ${BACKUP_BUCKET}/${BACKUP}/"
 
-log "pull ${TARGET} on ${HOST}"
-remote "sudo docker pull ${TARGET} >/dev/null" || die "pull failed; nothing changed"
+# Removing a container deletes its json-file log, and that log holds the only
+# record of which pubkey each conn_id was (the NIP-42 auth lines). Keep a copy
+# of each container's log on the host before anything recreates it.
+save_logs() {
+  remote "set -eo pipefail; for c in buzz-prod-relay-1 buzz-prod-pair-relay-1; do f=/var/tmp/\$c-\$(sudo docker inspect -f '{{.Id}}' \$c | cut -c1-12)-${STAMP}-$1.log.gz; sudo docker logs \$c 2>&1 | gzip | sudo tee \$f >/dev/null; echo \$f; done"
+}
 
 STARTED=0
 rollback() {
@@ -154,6 +233,7 @@ rollback() {
   fi
   log "ROLLBACK (${reason}): restoring .env.pre-${STAMP} (${LIVE_IMAGE}) and starting it"
   local ok=1
+  save_logs rollback >&2 || log "warning: could not save the relay logs before rollback"
   remote "sudo cp -p /opt/buzz/.env.pre-${STAMP} /opt/buzz/.env && sudo /opt/buzz/buzzctl start" || ok=0
   # Verify, don't assume: .env and both containers must be back on the live image.
   [[ "$(remote 'sudo grep -E "^BUZZ_IMAGE=" /opt/buzz/.env | cut -d= -f2-' || true)" == "$LIVE_IMAGE" ]] || ok=0
@@ -165,6 +245,9 @@ rollback() {
   fi
   die "deploy failed at: ${reason}. ROLLBACK DID NOT VERIFY: check /opt/buzz/.env (.env.pre-${STAMP} is the previous one) and the containers by hand NOW. Log: ${LOG_DIR}"
 }
+
+log "logs: saving the relay and pair-relay logs on ${HOST}"
+save_logs deploy >&2 || die "could not save the relay logs; nothing that runs has changed"
 
 trap 'rollback "interrupted"' INT TERM HUP
 log "pin BUZZ_IMAGE=${TARGET}"
