@@ -12,7 +12,7 @@
 #       host needs no registry credential. Changes nothing that runs.
 #   scripts/aitaco/relay-deploy.sh deploy <image@sha256:…> --canary-channel <uuid>
 #       [--allow-migrations]
-#       Carry, backup, save the relay logs, pin, start, then check the running
+#       Carry, backup, follow the relay logs, pin, start, then check the running
 #       image and revision, NIP-11 and a canary post. Any failure or interrupt
 #       after the pin restores the previous .env and starts the previous digest
 #       again, then verifies that it runs. A run that applied migrations is never
@@ -45,8 +45,17 @@ STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 LOG_DIR="${RELAY_DEPLOY_STATE:-${HOME}/.local/state/buzz-relay-deploys}/${STAMP}-${CMD}"
 mkdir -p "$LOG_DIR"
 
-log() { printf '%s %s\n' "$(date -u +%H:%M:%SZ)" "$*" | tee -a "${LOG_DIR}/deploy.log" >&2; }
+# The log file is written first; stderr is best effort, so a closed terminal or
+# pipe cannot stop a rollback halfway.
+log() {
+  local line
+  line="$(date -u +%H:%M:%SZ) $*"
+  printf '%s\n' "$line" >> "${LOG_DIR}/deploy.log"
+  printf '%s\n' "$line" >&2 || true
+}
 remote() { gcloud compute ssh "$HOST" --zone "$ZONE" --command "$1" < /dev/null; }
+# remote_sh <args…> < script: run a bash script from stdin on the host, as root.
+remote_sh() { gcloud compute ssh "$HOST" --zone "$ZONE" --command "sudo bash -s -- $*"; }
 for tool in gcloud git curl jq buzz; do command -v "$tool" >/dev/null || die "missing tool: $tool"; done
 # Git pathspecs below are relative; run from the repository root.
 cd "$(git rev-parse --show-toplevel)" || die "run this inside a clone of aitaco-llc/buzz"
@@ -152,11 +161,12 @@ fi
 host_has_target() {
   [[ "$(remote "sudo docker image inspect -f '{{.Id}}' ${TARGET} 2>/dev/null" || true)" == "$TARGET_DIGEST" ]]
 }
+CARRY_DIR=""
+trap 'rm -rf -- ${CARRY_DIR:+"$CARRY_DIR"}' EXIT
 carry_image() {
   local dir token top child blob
-  dir="$(mktemp -d)"
-  # shellcheck disable=SC2064 # expand $dir now; it is local
-  trap "rm -rf '${dir}'; trap - RETURN" RETURN
+  CARRY_DIR="$(mktemp -d)"
+  dir="$CARRY_DIR"
   mkdir -p "${dir}/blobs/sha256"
   token="$(registry_token "$TARGET_REPO")"
   # fetch <digest> manifest|blob: store under blobs/ and check the digest.
@@ -190,6 +200,7 @@ carry_image() {
   log "carry: $(du -sh "$dir" | cut -f1) in $(find "${dir}/blobs" -type f | wc -l) blobs, streaming to ${HOST}"
   tar -C "$dir" -cf - oci-layout index.json blobs \
     | gcloud compute ssh "$HOST" --zone "$ZONE" --command "sudo docker load" >&2 || return 1
+  rm -rf "$dir"
   host_has_target
 }
 
@@ -213,15 +224,59 @@ BACKUP="$(gcloud storage ls "${BACKUP_BUCKET}/" | sed -n 's#.*/\([0-9]\{8\}T[0-9
 log "backup: ${BACKUP_BUCKET}/${BACKUP}/"
 
 # Removing a container deletes its json-file log, and that log holds the only
-# record of which pubkey each conn_id was (the NIP-42 auth lines). Keep a copy
-# of each container's log on the host before anything recreates it.
-save_logs() {
-  remote "set -eo pipefail; for c in buzz-prod-relay-1 buzz-prod-pair-relay-1; do f=/var/tmp/\$c-\$(sudo docker inspect -f '{{.Id}}' \$c | cut -c1-12)-${STAMP}-$1.log.gz; sudo docker logs \$c 2>&1 | gzip | sudo tee \$f >/dev/null; echo \$f; done"
+# record of which pubkey each conn_id was (the NIP-42 auth lines). Before a
+# recreate, follow_logs starts a detached `docker logs -f` per container into
+# LOG_KEEP. It writes the history, keeps writing until compose stops the
+# container, then exits, so the copy ends where the container did. timeout
+# bounds a follower whose container is not recreated. Fails only if the relay's
+# follower did not start.
+LOG_KEEP=/opt/buzz/deploy-logs
+follow_logs() {
+  remote_sh "$1" "$STAMP" "$LOG_KEEP" <<'SH'
+tag=$1 stamp=$2 keep=$3 ok=0
+mkdir -p "$keep"
+for c in buzz-prod-relay-1 buzz-prod-pair-relay-1; do
+  id=$(docker inspect -f '{{.Id}}' "$c" 2>/dev/null | cut -c1-12)
+  if [ -z "$id" ]; then echo "skip $c: no such container" >&2; continue; fi
+  f="$keep/$c-$id-$stamp-$tag.log.gz"
+  setsid sh -c 'timeout 1800 docker logs -f "$1" 2>&1 | gzip > "$2"' sh "$c" "$f" </dev/null >/dev/null 2>&1 &
+  sleep 1
+  if [ -e "$f" ] && pgrep -f -- "$f" >/dev/null; then
+    echo "following $c -> $f"
+    [ "$c" = buzz-prod-relay-1 ] && ok=1
+  else
+    echo "follower for $c did not start" >&2
+  fi
+done
+[ "$ok" = 1 ]
+SH
 }
+# check_logs <tag>: once the containers are recreated, each follower has exited
+# and left a complete gzip.
+check_logs() {
+  remote_sh "$1" "$STAMP" "$LOG_KEEP" <<'SH'
+tag=$1 stamp=$2 keep=$3 rc=0
+for f in "$keep"/*-"$stamp"-"$tag".log.gz; do
+  [ -e "$f" ] || continue
+  for _ in $(seq 30); do pgrep -f -- "$f" >/dev/null || break; sleep 1; done
+  if pgrep -f -- "$f" >/dev/null; then echo "still following (container not recreated?): $f" >&2; rc=1
+  elif gzip -t "$f"; then echo "saved $f ($(zcat "$f" | wc -l) lines)"
+  else echo "not a complete gzip: $f" >&2; rc=1
+  fi
+done
+exit $rc
+SH
+}
+# Both starts take this lock, so a rollback's start waits for a start that an
+# interrupted ssh left running on the host.
+START_LOCK=/run/lock/buzz-relay-deploy.lock
 
 STARTED=0
 rollback() {
-  trap - INT TERM HUP
+  # Ignore further signals (children inherit this) and stop on no single
+  # failure: every step below is checked on its own.
+  trap '' INT TERM HUP PIPE
+  set +e
   local reason="$1"
   if [[ "$STARTED" == "1" && -n "$MIGRATIONS" ]]; then
     # The new relay may have applied migrations (BUZZ_AUTO_MIGRATE), and the
@@ -233,8 +288,9 @@ rollback() {
   fi
   log "ROLLBACK (${reason}): restoring .env.pre-${STAMP} (${LIVE_IMAGE}) and starting it"
   local ok=1
-  save_logs rollback >&2 || log "warning: could not save the relay logs before rollback"
-  remote "sudo cp -p /opt/buzz/.env.pre-${STAMP} /opt/buzz/.env && sudo /opt/buzz/buzzctl start" || ok=0
+  follow_logs rollback >&2 || log "warning: could not follow the relay logs before rollback"
+  remote "sudo flock -w 300 ${START_LOCK} sh -c 'cp -p /opt/buzz/.env.pre-${STAMP} /opt/buzz/.env && /opt/buzz/buzzctl start'" || ok=0
+  check_logs rollback >&2 || log "warning: rollback logs incomplete; see ${LOG_KEEP} on ${HOST}"
   # Verify, don't assume: .env and both containers must be back on the live image.
   [[ "$(remote 'sudo grep -E "^BUZZ_IMAGE=" /opt/buzz/.env | cut -d= -f2-' || true)" == "$LIVE_IMAGE" ]] || ok=0
   [[ "$(running 2>/dev/null || true)" == "$LIVE_RUNNING" ]] || ok=0
@@ -246,17 +302,20 @@ rollback() {
   die "deploy failed at: ${reason}. ROLLBACK DID NOT VERIFY: check /opt/buzz/.env (.env.pre-${STAMP} is the previous one) and the containers by hand NOW. Log: ${LOG_DIR}"
 }
 
-log "logs: saving the relay and pair-relay logs on ${HOST}"
-save_logs deploy >&2 || die "could not save the relay logs; nothing that runs has changed"
+log "logs: following the relay and pair-relay logs into ${LOG_KEEP} on ${HOST}"
+follow_logs deploy >&2 || die "could not follow the relay log; nothing that runs has changed"
 
-trap 'rollback "interrupted"' INT TERM HUP
+# On a signal, send all output to a file first: the terminal or pipe that
+# carried stderr may be what just went away.
+trap 'exec >>"${LOG_DIR}/rollback.out" 2>&1; rollback "interrupted"' INT TERM HUP PIPE
 log "pin BUZZ_IMAGE=${TARGET}"
 remote "sudo sed -i 's#^BUZZ_IMAGE=.*#BUZZ_IMAGE=${TARGET}#' /opt/buzz/.env && sudo grep -qx 'BUZZ_IMAGE=${TARGET}' /opt/buzz/.env" \
   || rollback "pin"
 
 log "start: buzzctl start (compose up -d --wait)"
 STARTED=1
-remote "sudo /opt/buzz/buzzctl start" || rollback "start"
+remote "sudo flock -w 300 ${START_LOCK} /opt/buzz/buzzctl start" || rollback "start"
+check_logs deploy >&2 || log "warning: saved logs incomplete; see ${LOG_KEEP} on ${HOST}"
 
 NOW_RUNNING="$(running)" || rollback "inspect"
 [[ "$NOW_RUNNING" == "$(printf '%s\n%s\n%s\n%s' "$TARGET" "$TARGET_REV" "$TARGET" "$TARGET_REV")" ]] \
@@ -284,7 +343,7 @@ done
 [[ "$canary_ok" == "1" ]] || rollback "canary read-back"
 log "canary: ${CANARY_ID} posted and read back"
 
-trap - INT TERM HUP
+trap - INT TERM HUP PIPE
 remote "echo '${STAMP} ${LIVE_IMAGE} -> ${TARGET} (${TARGET_REV}) ok backup=${BACKUP} canary=${CANARY_ID}' | sudo tee -a /opt/buzz/deploys.log >/dev/null" \
   || log "warning: could not append to /opt/buzz/deploys.log"
 log "DONE: ${HOST} runs ${TARGET} (${TARGET_REV}). Previous .env kept as /opt/buzz/.env.pre-${STAMP}. Log: ${LOG_DIR}"
