@@ -34,7 +34,8 @@ struct InviteLink: Identifiable, Equatable, Sendable {
 
   private static func parseCustom(_ url: URL) -> InviteLink? {
     guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-      ["buzz", "co.aitaco.buzz"].contains(components.scheme?.lowercased()), components.host == "join",
+      ["buzz", "co.aitaco.buzz"].contains(components.scheme?.lowercased()),
+      components.host == "join",
       let relayValue = components.queryItems?.first(where: { $0.name == "relay" })?.value,
       let code = components.queryItems?.first(where: { $0.name == "code" })?.value,
       let relay = URL(string: relayValue),
