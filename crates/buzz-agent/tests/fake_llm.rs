@@ -1320,7 +1320,7 @@ async fn mid_turn_usage_includes_earlier_turns() {
 /// Setup: round 1 is a tool call WITH usage (tokens are captured). After the
 /// tool_call_update notification (proving round 1 is fully processed), we gate
 /// the round-2 LLM response behind a `oneshot` barrier that only releases after
-/// cancel is sent. This guarantees the turn exits with `stopReason: "cancelled"`
+/// the agent acknowledges the cancel. This guarantees the turn exits with `stopReason: "cancelled"`
 /// deterministically, even on a slow CI worker.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelled_turn_with_usage_emits_notification_before_response() {
@@ -1415,10 +1415,15 @@ async fn cancelled_turn_with_usage_emits_notification_before_response() {
     })
     .await;
 
-    // Now send cancel and release the round-2 gate. Cancel is enqueued before
-    // round 2 can respond, so the turn exits with stopReason: cancelled.
+    // Now send cancel, and release the round-2 gate only once the agent has
+    // acknowledged it. Writing the cancel to stdin is not the agent reading
+    // it: releasing the gate right after the write let a slow worker take the
+    // round-2 error before the cancel, ending the turn with a JSON-RPC error
+    // instead of stopReason: cancelled. The ack is sent after the session's
+    // cancel flag is set (`cancel_session`), and the LLM select polls that flag
+    // first (biased), so the turn exits cancelled whatever round 2 returns.
     let c_id = h.send("session/cancel", json!({"sessionId": sid})).await;
-    let _ = gate_tx.send(()); // unblock round 2
+    let mut gate_tx = Some(gate_tx);
 
     let mut saw_usage_before_prompt_response = false;
     let mut saw_usage = false;
@@ -1428,6 +1433,9 @@ async fn cancelled_turn_with_usage_emits_notification_before_response() {
         let v = h.recv().await;
         if v["id"] == json!(c_id) {
             saw_cancel_ok = true;
+            if let Some(tx) = gate_tx.take() {
+                let _ = tx.send(()); // unblock round 2
+            }
         } else if is_usage_update(&v) {
             saw_usage = true;
             if !saw_prompt_response {
