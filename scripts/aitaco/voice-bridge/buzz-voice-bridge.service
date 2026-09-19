@@ -1,0 +1,33 @@
+# ~/.config/systemd/user/buzz-voice-bridge.service
+#
+# rock's voice in Lloyd's huddles (V1). Install and start only on rock's go:
+#   install -m 0755 <build>/buzz-voice-bridge ~/.local/bin/buzz-voice-bridge
+#   systemctl --user daemon-reload && systemctl --user enable --now buzz-voice-bridge
+#
+# The bridge signs with rock's key, read from the file rock's seat reads; it
+# keeps no copy. The rock seat must run a buzz-acp with --self-wake-tag and
+# BUZZ_ACP_SELF_WAKE_TAG=voice-bridge=ask, or asks never wake it.
+
+[Unit]
+Description=aitaco voice bridge (rock's voice in Lloyd's huddles)
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+Environment=BUZZ_RELAY_URL=wss://buzz.aitaco.co
+Environment=VOICE_BRIDGE_KEY_FILE=%h/.config/buzz-agents/rock.env
+# V1 scope (rock's condition 4): only huddles Lloyd starts in his DM with rock.
+Environment=VOICE_BRIDGE_PARENT_CHANNELS=daa0371a-17fc-41a8-bb70-272b7c7e8be0
+Environment=VOICE_BRIDGE_STARTERS=0f8471300f7806058507999b06f16805168c640aad3ffa5474cf8ec9e7c6a0ca
+Environment=VOICE_BRIDGE_GEMINI_KEY_COMMAND=gcloud secrets versions access latest --secret gemini-live-api-key --project aitaco-ml-dev
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=RUST_LOG=buzz_voice_bridge=info
+ExecStart=%h/.local/bin/buzz-voice-bridge
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target
