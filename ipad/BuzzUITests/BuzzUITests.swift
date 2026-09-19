@@ -177,13 +177,14 @@ final class BuzzUITests: XCTestCase {
   @MainActor func testPairingEntryRejectsInvalidLinkAndAllowsRetry() throws {
     XCUIDevice.shared.orientation = .landscapeLeft
     let app = XCUIApplication()
-    app.launchArguments = ["--ui-testing", "--reset-test-data"]
+    app.launchArguments = ["--ui-testing", "--signed-out", "--reset-test-data"]
     app.launch()
-    XCTAssertTrue(app.buttons["Switch community"].waitForExistence(timeout: 15))
-    app.buttons["Switch community"].tap()
-    app.buttons["Add community"].tap()
+    XCTAssertTrue(app.buttons["connect-community"].waitForExistence(timeout: 15))
+    app.buttons["connect-community"].tap()
     XCTAssertTrue(app.secureTextFields["identity-private-key"].waitForExistence(timeout: 5))
-    app.buttons["Pair with Buzz Desktop"].tap()
+    let relayHost = NSPredicate(format: "label CONTAINS %@", "buzz.aitaco.co")
+    XCTAssertTrue(app.descendants(matching: .any).matching(relayHost).firstMatch.exists)
+    app.buttons["Pair with Desktop"].tap()
     let link = app.secureTextFields["Desktop pairing link"]
     XCTAssertTrue(link.waitForExistence(timeout: 5))
     app.buttons["Scan pairing QR code"].tap()

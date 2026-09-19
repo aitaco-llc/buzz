@@ -53,9 +53,9 @@ struct AgeRestrictionView: View {
   var body: some View {
     VStack(spacing: 18) {
       Image(systemName: "lock").font(.system(size: 48)).accessibilityHidden(true)
-      Text("Buzz is for people 18 and older").font(.title2.weight(.semibold))
+      Text("aitaco is for people 18 and older").font(.title2.weight(.semibold))
         .multilineTextAlignment(.center)
-      Text("You must be 18 or older to use Buzz under Buzz’s Terms.")
+      Text("You must be 18 or older to use aitaco under its Terms.")
         .font(.body).foregroundStyle(.secondary).multilineTextAlignment(.center)
     }
     .padding(32)

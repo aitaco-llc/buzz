@@ -10,7 +10,7 @@ final class NativePreferencesTests: XCTestCase {
 
     let preferences = NativePreferences(defaults: defaults)
     XCTAssertEqual(preferences.scheme, .system)
-    XCTAssertEqual(preferences.accent, .indigo)
+    XCTAssertEqual(preferences.accent, .aitaco)
     preferences.setScheme(.dark)
     preferences.setAccent(.orange)
     preferences.setMuted(true, channelID: "channel-muted")

@@ -114,7 +114,7 @@ struct RichMessageText: View {
         switch segment.kind {
         case .markdown:
           if let value = RichText.attributed(segment.text) {
-            Text(value).textSelection(.enabled).tint(.indigo)
+            Text(value).textSelection(.enabled).tint(Aitaco.accent)
           } else {
             Text(segment.text).textSelection(.enabled)
           }

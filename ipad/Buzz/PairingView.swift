@@ -33,7 +33,7 @@ struct PairingView: View {
         }
       } else if let code {
         Section {
-          Text("You are about to copy your Buzz identity from your desktop to this iPad.")
+          Text("You are about to copy your aitaco identity from your desktop to this iPad.")
           Text(code).font(.largeTitle.monospacedDigit().bold())
             .accessibilityLabel("Pairing code: " + code.map(String.init).joined(separator: ", "))
             .accessibilityIdentifier("pairing-code")
@@ -49,7 +49,7 @@ struct PairingView: View {
       } else {
         Section {
           Text(
-            "On Buzz Desktop, open Settings → Mobile pairing. Scan its QR code or paste its pairing link below."
+            "On your desktop app, open Settings → Mobile pairing. Scan its QR code or paste its pairing link below."
           )
           Button("Scan pairing QR code", systemImage: "qrcode.viewfinder") { showScanner = true }
             .disabled(busy)
@@ -130,7 +130,8 @@ struct PairingView: View {
             status = "Checking community access…"
             busy = true
             // Authenticate to the actual community before persisting transferred credentials.
-            let relay = HTTPRelay(community: imported.community, identity: imported.identity)
+            let relay = HTTPRelay(
+              community: try Aitaco.require(imported.community), identity: imported.identity)
             _ = try await relay.query([
               EventFilter(kinds: [39002], tags: ["p": [imported.identity.pubkey]], limit: 1)
             ])

@@ -110,7 +110,8 @@ final class PairingScanner {
               result = parsed
               return
             }
-            message = "This isn’t a supported Buzz pairing code. Scan a new code from Buzz Desktop."
+            message =
+              "This isn’t a supported aitaco pairing code. Scan a new code from your desktop app."
           case .interrupted, .failed:
             state = .unavailable
             message = "The camera stopped. Try again or paste a pairing link."

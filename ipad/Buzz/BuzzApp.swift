@@ -1,7 +1,22 @@
 import BuzzPushKit
 import SwiftUI
 
-@main
+#if !SWIFT_PACKAGE
+  @main
+  enum BuzzAppMain {
+    @MainActor static func main() { BuzzApp.main() }
+  }
+#endif
+
+/// Runs the native iPad UI. The universal app calls this from
+/// `mobile/ios/Runner/main.swift` on iPad; iPhone runs the Flutter app.
+public enum BuzzPad {
+  @MainActor public static func run() -> Never {
+    BuzzApp.main()
+    fatalError("UIApplicationMain returned")
+  }
+}
+
 struct BuzzApp: App {
   @UIApplicationDelegateAdaptor(NativeAppDelegate.self) private var appDelegate
   @State private var model = AppModel()
@@ -43,7 +58,7 @@ struct BuzzApp: App {
         if phase == .background { Task { await model.workspace?.finishDraftWrites() } }
       }
       .alert(
-        "Buzz",
+        "aitaco",
         isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })
       ) {
         Button("OK") { model.error = nil }
@@ -60,20 +75,30 @@ struct WelcomeView: View {
 
   var body: some View {
     VStack(spacing: 24) {
-      Image(systemName: "bubble.left.and.bubble.right.fill")
-        .font(.system(size: 64)).foregroundStyle(.indigo).accessibilityHidden(true)
-      Text("Your workspace, together.").font(.largeTitle.bold())
-      Text("Conversations, people, and agents.\nConnect to your Buzz community to get started.")
-        .font(.title3).foregroundStyle(.secondary).multilineTextAlignment(.center)
-      Button("Connect a community", systemImage: "plus") { showConnection = true }
+      AitacoMark(size: 116)
+        .padding(18)
+        .background(Circle().fill(.white.opacity(0.3)))
+      Text("Welcome to aitaco").font(.largeTitle.bold())
+      Text("Conversations, people, and agents.\nPair with your desktop app to get started.")
+        .font(.title3).foregroundStyle(Aitaco.ink.opacity(0.7)).multilineTextAlignment(.center)
+      Button("Connect", systemImage: "qrcode") { showConnection = true }
         .buttonStyle(.borderedProminent).controlSize(.large)
+        .tint(Aitaco.ink)
+        .foregroundStyle(Aitaco.shell)
         .accessibilityIdentifier("connect-community")
-      if model.opening { ProgressView("Opening community…") }
-      ForEach(model.accounts) { account in
-        Button(account.community.name) { Task { await model.open(account) } }
+      if model.opening { ProgressView("Opening aitaco…") }
+      ForEach(model.accounts.filter { Aitaco.allows($0.community) }) { account in
+        Button("Open aitaco") { Task { await model.open(account) } }
+          .tint(Aitaco.ink)
       }
     }
+    .foregroundStyle(Aitaco.ink)
     .padding(32)
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .background(
+      LinearGradient(colors: [Aitaco.teal, Aitaco.shell], startPoint: .top, endPoint: .bottom)
+        .ignoresSafeArea()
+    )
     .sheet(isPresented: $showConnection) { ConnectionView(model: model) }
   }
 }
@@ -81,8 +106,6 @@ struct WelcomeView: View {
 struct ConnectionView: View {
   @Bindable var model: AppModel
   @Environment(\.dismiss) private var dismiss
-  @State private var name = ""
-  @State private var url = ""
   @State private var key = ""
   @State private var authTag = ""
   @State private var connecting = false
@@ -94,14 +117,11 @@ struct ConnectionView: View {
           NavigationLink {
             PairingView(model: model)
           } label: {
-            Label("Pair with Buzz Desktop", systemImage: "qrcode")
+            Label("Pair with Desktop", systemImage: "qrcode")
           }
         }
         Section("Community") {
-          TextField("Name", text: $name)
-          TextField("https://your-community.example", text: $url)
-            .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
-            .accessibilityLabel("Community URL")
+          LabeledContent(Aitaco.communityName, value: Aitaco.relayHost)
         }
         Section {
           SecureField("Private key (nsec or hexadecimal)", text: $key)
@@ -120,7 +140,8 @@ struct ConnectionView: View {
           Button {
             connecting = true
             Task {
-              let success = await model.add(url: url, name: name, privateKey: key, authTag: authTag)
+              let success = await model.add(
+                url: Aitaco.relayURL, name: Aitaco.communityName, privateKey: key, authTag: authTag)
               connecting = false
               if success {
                 key = ""
@@ -131,10 +152,10 @@ struct ConnectionView: View {
           } label: {
             if connecting { ProgressView("Connecting…") } else { Text("Connect") }
           }
-          .disabled(connecting || url.isEmpty || key.isEmpty)
+          .disabled(connecting || key.isEmpty)
         }
       }
-      .navigationTitle("Add community")
+      .navigationTitle("Connect to aitaco")
       .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
     }
     .presentationDetents([.large])

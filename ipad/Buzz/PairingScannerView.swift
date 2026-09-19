@@ -11,14 +11,14 @@ struct PairingScannerView: View {
     NavigationStack {
       ScrollView {
         VStack(spacing: 20) {
-          Text("Point your iPad’s camera at the pairing QR code on Buzz Desktop.")
+          Text("Point your iPad’s camera at the pairing QR code on your desktop app.")
             .font(.title3).multilineTextAlignment(.center)
           if let preview = scanner.preview {
             PairingCameraPreview(source: preview)
               .frame(minHeight: 240, idealHeight: 380, maxHeight: 480)
               .clipShape(RoundedRectangle(cornerRadius: 16))
               .accessibilityHidden(true)
-            Text("Scanning for a Buzz pairing code…")
+            Text("Scanning for an aitaco pairing code…")
           } else {
             Image(systemName: "qrcode.viewfinder").font(.largeTitle)
               .accessibilityHidden(true)
@@ -78,7 +78,7 @@ struct PairingScannerView: View {
     case .paused:
       Text("Camera paused")
       Button("Resume camera") { scanner.resume() }
-    case .scanning: Text("Scanning for a Buzz pairing code…")
+    case .scanning: Text("Scanning for an aitaco pairing code…")
     case .completed: ProgressView("Opening pairing…")
     }
   }

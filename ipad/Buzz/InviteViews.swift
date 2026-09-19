@@ -61,7 +61,7 @@ struct InviteJoinView: View {
 
   var body: some View {
     Form {
-      Label("Join this Buzz community?", systemImage: "person.badge.plus")
+      Label("Join this aitaco community?", systemImage: "person.badge.plus")
         .font(.headline)
       LabeledContent("Relay", value: invite.host)
       Text(

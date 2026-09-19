@@ -51,7 +51,7 @@ struct ReactionRow: View {
           }
         }
         .buttonStyle(.bordered)
-        .tint(mine ? .indigo : .secondary)
+        .tint(mine ? Aitaco.accent : .secondary)
         .disabled(workspace.reactionBusy.contains(message.id))
         .accessibilityLabel(
           "\(mine ? "Remove your" : "Add") \(group.value) reaction, \(group.count) \(group.count == 1 ? "person" : "people")"

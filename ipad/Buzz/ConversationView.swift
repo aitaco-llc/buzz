@@ -235,7 +235,7 @@ struct ConversationView: View {
         Button("Tomorrow") { scheduleReminder(event, after: 24 * 60 * 60) }
       }
     } message: {
-      Text("Buzz will notify you on this iPad and open the message when tapped.")
+      Text("aitaco will notify you on this iPad and open the message when tapped.")
     }
     .sheet(isPresented: $showDetails) {
       NavigationStack {
@@ -359,9 +359,9 @@ struct ConversationView: View {
     }
     return HStack(alignment: .top, spacing: 12) {
       Text(String(workspace.name(event.pubkey).prefix(1)).uppercased())
-        .font(.headline).foregroundStyle(.indigo)
+        .font(.headline).foregroundStyle(Aitaco.accent)
         .frame(width: 36, height: 36).background(
-          .indigo.opacity(0.10), in: RoundedRectangle(cornerRadius: 12)
+          Aitaco.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 12)
         )
         .accessibilityHidden(true)
       VStack(alignment: .leading, spacing: 6) {
@@ -397,7 +397,7 @@ struct ConversationView: View {
               systemImage: "bubble.right"
             )
           }
-          .font(.caption).buttonStyle(.plain).foregroundStyle(.indigo)
+          .font(.caption).buttonStyle(.plain).foregroundStyle(Aitaco.accent)
           .accessibilityIdentifier("thread-\(event.id)")
         }
         ReactionRow(workspace: workspace, message: event) {

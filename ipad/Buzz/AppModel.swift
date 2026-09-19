@@ -51,6 +51,8 @@ final class AppModel {
   func start() async {
     #if DEBUG
       if ProcessInfo.processInfo.arguments.contains("--ui-testing") {
+        // Signed out: the welcome and connection screens, with no community.
+        if ProcessInfo.processInfo.arguments.contains("--signed-out") { return }
         do { workspace = try await Demo.workspace() } catch {
           self.error = error.localizedDescription
         }
@@ -70,12 +72,19 @@ final class AppModel {
         // Each account is now independently discoverable from its atomic Keychain record.
         try FileManager.default.removeItem(at: url)
       }
-      if let account = accounts.first { await open(account) }
+      if let account = accounts.first(where: { Aitaco.allows($0.community) }) {
+        await open(account)
+      }
     } catch { self.error = error.localizedDescription }
   }
 
   func handle(url: URL) {
     if let invite = InviteLink.parse(url) {
+      guard (try? Aitaco.require(Community(url: invite.relay.absoluteString, name: ""))) != nil
+      else {
+        error = Aitaco.foreignCommunityMessage
+        return
+      }
       pendingInvite = invite
       return
     }
@@ -98,8 +107,9 @@ final class AppModel {
   /// Claims a relay invite with a newly generated identity and persists the
   /// account only after the relay has accepted the claim.
   func claim(invite: InviteLink) async throws -> Account {
+    let community = try Aitaco.require(
+      Community(url: invite.relay.absoluteString, name: invite.host))
     let identity = try Identity()
-    let community = try Community(url: invite.relay.absoluteString, name: invite.host)
     let relay = HTTPRelay(community: community, identity: identity)
     let body = try JSONSerialization.data(withJSONObject: ["code": invite.code])
     let response = try await relay.postJSON(path: "api/invites/claim", body: body)
@@ -108,7 +118,7 @@ final class AppModel {
       (object?["community_name"] as? String)
       ?? (object?["name"] as? String)
       ?? invite.host
-    let namedCommunity = try Community(url: invite.relay.absoluteString, name: name)
+    let namedCommunity = try Community(url: community.origin.absoluteString, name: name)
     return try save(community: namedCommunity, identity: identity)
   }
 
@@ -127,6 +137,7 @@ final class AppModel {
 
   // A pairing session acknowledges only this durable result, independent of opening the UI.
   func save(community: Community, identity: Identity, authTag: String = "") throws -> Account {
+    let community = try Aitaco.require(community)
     let account =
       accounts.first { $0.community.id == community.id && $0.pubkey == identity.pubkey }
       ?? Account(id: UUID(), community: community, pubkey: identity.pubkey)

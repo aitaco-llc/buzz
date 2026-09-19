@@ -8,7 +8,7 @@ enum NativeReminderService {
     event: Event, channel: Channel, workspace: Workspace, after interval: TimeInterval
   ) async throws {
     let content = UNMutableNotificationContent()
-    content.title = "Buzz reminder"
+    content.title = "aitaco reminder"
     content.body = "Return to (workspace.channelName(channel))"
     content.sound = .default
     content.userInfo = [

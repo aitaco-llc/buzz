@@ -8,7 +8,6 @@ struct WorkspaceView: View {
   @State private var selection: String?
   @State private var thread: Event?
   @State private var showSearch = false
-  @State private var showConnection = false
   @State private var showSettings = false
   @State private var showDirectory = false
   @State private var showNewDM = false
@@ -48,7 +47,7 @@ struct WorkspaceView: View {
                 Text(unread > 99 ? "99+" : "\(unread)")
                   .font(.caption2.weight(.semibold)).foregroundStyle(.white)
                   .padding(.horizontal, 6).padding(.vertical, 3)
-                  .background(.indigo, in: Capsule())
+                  .background(Aitaco.deepTeal, in: Capsule())
                   .accessibilityLabel("\(unread) unread")
                   .accessibilityIdentifier("unread-channel-\(channel.id)")
               }
@@ -76,19 +75,12 @@ struct WorkspaceView: View {
           }
         }
       }
+      .scrollContentBackground(.hidden)
+      .background(AitacoGradient().ignoresSafeArea())
       .navigationTitle(workspace.account.community.name)
       .navigationSplitViewColumnWidth(min: 220, ideal: 270, max: 340)
       .toolbar {
-        ToolbarItem(placement: .topBarTrailing) {
-          Menu {
-            ForEach(model.accounts) { account in
-              Button(account.community.name) { Task { await model.open(account) } }
-            }
-            Button("Add community", systemImage: "plus") { showConnection = true }
-          } label: {
-            Label("Switch community", systemImage: "building.2.crop.circle")
-          }
-        }
+        ToolbarItem(placement: .topBarLeading) { AitacoMark(size: 30) }
       }
       .refreshable { await workspace.refresh() }
     } detail: {
@@ -193,7 +185,6 @@ struct WorkspaceView: View {
       }
     }
     .sheet(isPresented: $showPulse) { PulseView(workspace: workspace) }
-    .sheet(isPresented: $showConnection) { ConnectionView(model: model) }
     .sheet(isPresented: $showSettings) {
       SettingsView(workspace: workspace, preferences: preferences)
     }
@@ -238,7 +229,7 @@ struct WorkspaceView: View {
               Text(unread > 99 ? "99+" : "\(unread)")
                 .font(.caption2.weight(.semibold)).foregroundStyle(.white)
                 .padding(.horizontal, 6).padding(.vertical, 3)
-                .background(.indigo, in: Capsule())
+                .background(Aitaco.deepTeal, in: Capsule())
                 .accessibilityLabel("\(unread) unread")
                 .accessibilityIdentifier("unread-channel-\(channel.id)")
             }

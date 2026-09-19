@@ -18,11 +18,12 @@ final class NativePreferences {
   }
 
   enum Accent: String, CaseIterable, Identifiable {
-    case indigo, blue, purple, pink, orange, green, red
+    case aitaco, indigo, blue, purple, pink, orange, green, red
     var id: String { rawValue }
-    var label: String { rawValue.capitalized }
+    var label: String { self == .aitaco ? "aitaco" : rawValue.capitalized }
     var color: Color {
       switch self {
+      case .aitaco: Aitaco.accent
       case .indigo: .indigo
       case .blue: .blue
       case .purple: .purple
@@ -70,12 +71,12 @@ final class NativePreferences {
       let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data)
     {
       scheme = Scheme(rawValue: snapshot.scheme) ?? .system
-      accent = Accent(rawValue: snapshot.accent) ?? .indigo
+      accent = Accent(rawValue: snapshot.accent) ?? .aitaco
       mutedChannels = snapshot.mutedChannels
       starredChannels = snapshot.starredChannels
     } else {
       scheme = .system
-      accent = .indigo
+      accent = .aitaco
       mutedChannels = []
       starredChannels = []
     }

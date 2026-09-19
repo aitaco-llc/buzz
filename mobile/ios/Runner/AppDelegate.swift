@@ -6,7 +6,6 @@ import UIKit
 import UserNotifications
 import os.log
 
-@main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private var mediaUploadChannel: FlutterMethodChannel?
   private var pushChannel: FlutterMethodChannel?

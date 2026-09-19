@@ -6,7 +6,12 @@ actor EmojiCatalogStore {
   private var catalog: EmojiCatalog?
   func load() throws -> EmojiCatalog {
     if let catalog { return catalog }
-    guard let url = Bundle.main.url(forResource: "emoji-data", withExtension: "json") else {
+    #if SWIFT_PACKAGE
+      let bundle = Bundle.module
+    #else
+      let bundle = Bundle.main
+    #endif
+    guard let url = bundle.url(forResource: "emoji-data", withExtension: "json") else {
       throw BuzzError.storage("The emoji catalog is unavailable.")
     }
     let loaded = try EmojiCatalog(data: Data(contentsOf: url))
