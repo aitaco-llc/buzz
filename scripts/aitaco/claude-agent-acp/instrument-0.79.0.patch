@@ -1,0 +1,26 @@
+--- a/dist/acp-agent.js
++++ b/dist/acp-agent.js
+@@ -2782,6 +2782,7 @@
+                             case "session_state_changed": {
+                                 const previousState = session.lastSessionState;
+                                 session.lastSessionState = message.state;
++                                this.logger.log(`[instr] state ${previousState}->${message.state} owed=${session.owedTrailingIdles} steering=${isSteering(session.activeTurn)} echoes=${session.activeTurn?.steeredEchoes?.size} steeredSettle=${session.activeTurn?.steeredSettle !== undefined} held=${isHeldOpen(session.activeTurn)} active=${session.activeTurn ? (session.activeTurn.settled ? "settled" : "open") : "none"}`);
+                                 if (message.state === "running" &&
+                                     previousState !== "running" &&
+                                     session.owedTrailingIdles > 0) {
+@@ -3443,6 +3444,7 @@
+                                 (isAutonomousResult || !session.cancelled || !session.activeTurn)) {
+                                 session.owedTrailingIdles++;
+                             }
++                            this.logger.log(`[instr] result origin=${message.origin?.kind} subtype=${message.subtype} autonomous=${isAutonomousResult} owes=${owesTrailingIdle} owed=${session.owedTrailingIdles} steering=${isSteering(session.activeTurn)} echoes=${session.activeTurn?.steeredEchoes?.size}`);
+                             // Accumulate usage into the user turn's tally. Skip autonomous
+                             // results: their cost is real but is reported separately via the
+                             // usage_update below, and `session.accumulatedUsage` is only reset on
+@@ -4057,6 +4059,7 @@
+                                 if (isSteering(session.activeTurn)) {
+                                     session.activeTurn.steeredEchoes.delete(message.uuid);
+                                 }
++                                this.logger.log(`[instr] replay echo uuid=${message.uuid} steering=${isSteering(session.activeTurn)} echoes=${session.activeTurn?.steeredEchoes?.size}`);
+                                 // Unrelated replay (e.g. the echo of an already-settled turn).
+                                 break;
+                             }
