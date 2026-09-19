@@ -39,6 +39,30 @@ struct MediaUploadTests {
   }
 }
 
+@Suite struct ImetaTagTests {
+  /// The tag is what the relay and every client read an attachment out of, so
+  /// its field order and its handling of the optional members are pinned here.
+  @Test func everyOptionalFieldAppearsInOrderAndOnlyWhenPresent() {
+    let full = BlobDescriptor(
+      url: "https://media.example/a.png", sha256: "abc", size: 5, type: "image/png",
+      uploaded: 1, dim: "8x6", blurhash: "LEHV6n", thumb: "https://media.example/t.png",
+      duration: 1.5)
+    #expect(
+      full.imetaTag(filename: "shot.png") == [
+        "imeta", "url https://media.example/a.png", "m image/png", "x abc", "size 5",
+        "dim 8x6", "blurhash LEHV6n", "thumb https://media.example/t.png", "duration 1.5",
+        "filename shot.png",
+      ])
+
+    let bare = BlobDescriptor(
+      url: "https://media.example/a.png", sha256: "abc", size: 5, type: "image/png", uploaded: 1)
+    #expect(
+      bare.imetaTag() == [
+        "imeta", "url https://media.example/a.png", "m image/png", "x abc", "size 5",
+      ])
+  }
+}
+
 private final class UploadURLProtocol: URLProtocol {
   nonisolated(unsafe) static var handler: ((URLRequest) -> (HTTPURLResponse, Data))?
 
