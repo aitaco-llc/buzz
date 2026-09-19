@@ -10,6 +10,8 @@ p.add_argument("--run-dir", type=Path, required=True)
 p.add_argument("--seat", required=True)
 p.add_argument("--caller", required=True)
 p.add_argument("--results", type=Path, required=True)
+p.add_argument("--fault", default="none",
+               choices=["none", "room_join", "gemini_connect", "mid_call", "relay_gone"])
 a = p.parse_args()
 
 
@@ -37,9 +39,19 @@ def tag(row, name):
 nonce = text("nonce")
 gemini = jsonl(a.run_dir / "gemini.jsonl")
 prompts = jsonl(a.run_dir / "seat-prompts.jsonl")
-calls = sorted((a.run_dir / "bridge-calls").glob("*.jsonl"))
+calls = sorted(p for p in (a.run_dir / "bridge-calls").glob("*.jsonl") if p.name != "bridge.jsonl")
 call_log = jsonl(calls[0]) if calls else []
 call_events = [e["event"] for e in call_log]
+bridge_log = jsonl(a.run_dir / "bridge-calls" / "bridge.jsonl")
+bridge_events = [e["event"] for e in bridge_log]
+
+
+def first(log, event):
+    return next((e["data"] for e in log if e["event"] == event), None)
+
+
+def last(log, event):
+    return next((e["data"] for e in reversed(log) if e["event"] == event), None)
 t_start = int(text("t_start") or 0)
 eph = rows("ephemeral-messages.json")
 dm = [r for r in rows("dm-messages.json") if r.get("created_at", 0) >= t_start]
@@ -56,7 +68,64 @@ seat_audio = [r for r in caller.get("received", []) if r["pubkey"] == a.seat]
 
 real = text("gemini_mode") == "real"
 lines_logged = [e["data"]["text"] for e in call_log if e["event"] == "transcript_line"]
-if real:
+
+# ── instrumentation: true of every run, however it ended ─────────────────────
+start = first(call_log, "call_start") or {}
+audio = last(call_log, "audio_stats") or {}
+inbound = audio.get("in") or [{}]
+ending = first(call_log, "call_end") or first(call_log, "call_failed") or {}
+outcome_posts = [r for r in dm if tag(r, "voice-bridge") == "transcript"
+                 and r.get("content", "").startswith("Voice call `")]
+
+instrumented = {
+    "call_start_names_the_build_and_the_config":
+        bool(start.get("build_sha")) and start["build_sha"] != "unknown"
+        and bool(start.get("pid")) and bool((start.get("config") or {}).get("relay_url")),
+    "every_call_writes_an_ending":
+        ("call_end" in call_events) != ("call_failed" in call_events)
+        and bool(ending.get("reason") or ending.get("error"))
+        and ending.get("duration_ms") is not None and bool(ending.get("phase")),
+    "the_watcher_logs_its_own_run":
+        all(e in bridge_events for e in ["up", "identity", "subscribed", "heartbeat"])
+        and bool((first(bridge_log, "up") or {}).get("build_sha")),
+    "the_heartbeat_proves_the_subscription":
+        any(e["event"] == "heartbeat" and e["data"].get("rtt_ms") is not None for e in bridge_log),
+    "the_bridge_log_survives_a_restart":
+        bridge_events.count("up") >= 2 and "down" in bridge_events,
+    # One relay connection per start, and no subscription churn. The relay
+    # answers a client CLOSE with a CLOSED, and reading that as the huddle
+    # subscription dying reconnects the watcher every few seconds.
+    "the_watcher_holds_one_subscription":
+        bridge_events.count("relay_connected") == bridge_events.count("up")
+        and "subscription_closed" not in bridge_events,
+    "an_outcome_reaches_the_parent": len(outcome_posts) == 1
+        and "log `" in outcome_posts[0]["content"],
+}
+
+if a.fault != "none":
+    # A forced failure: the call must name what stopped it, in the log and in
+    # the parent. Nothing else about the call is expected to have worked.
+    want = {
+        "room_join": ("call_failed", "phase", "room_join"),
+        "gemini_connect": ("call_failed", "phase", "gemini_connect"),
+        "mid_call": ("call_end", "reason", "Gemini session lost"),
+        "relay_gone": (None, None, ""),
+    }[a.fault]
+    record, field, expected = want
+    cause = str(ending.get("error") or ending.get("reason") or "")
+    checks = dict(instrumented)
+    if a.fault == "relay_gone":
+        # Either socket can notice first; both endings name their cause.
+        del checks["an_outcome_reaches_the_parent"]  # the relay is gone
+        del checks["the_bridge_log_survives_a_restart"]
+        del checks["the_watcher_holds_one_subscription"]
+        checks["the_call_ended_with_a_cause"] = bool(cause)
+    else:
+        checks["the_expected_record_was_written"] = record in call_events
+        checks["it_names_the_stage_that_failed"] = expected in str(ending.get(field, ""))
+        checks["it_names_the_cause"] = len(cause) > 20
+    result_mode = a.fault
+elif real:
     # The real model is not scripted: check the path, not the words.
     checks = {
         "gemini_session_opened": "gemini_connected" in call_events,
@@ -99,10 +168,34 @@ else:
                                ["call_start", "room_joined", "ask_posted", "rock_answer", "gemini_go_away", "call_end"])
           and any(e["event"] == "gemini_connected" and e["data"].get("resumed") for e in call_log),
   }
-result = {"pass": all(checks.values()), "mode": "real" if real else "fake", "checks": checks, "run_dir": str(a.run_dir),
+
+if a.fault == "none":
+    checks.update(instrumented)
+    checks.update({
+        "audio_counted_in_both_directions":
+            inbound[0].get("opus_frames", 0) > 50
+            and inbound[0].get("pcm_samples_to_gemini", 0) > 0
+            and (audio.get("from_gemini") or {}).get("audio_frames", 0) > 0
+            and (audio.get("out") or {}).get("opus_frames", 0) > 50
+            and (audio.get("out") or {}).get("silence_injections", 0) > 0,
+        "timings_on_join_connect_answer_and_end":
+            (first(call_log, "room_joined") or {}).get("join_ms") is not None
+            and (first(call_log, "gemini_connected") or {}).get("connect_ms") is not None
+            and (first(call_log, "rock_answer") or {}).get("waited_ms") is not None
+            and ending.get("duration_ms") is not None,
+        "the_answer_latency_is_measured":
+            any(e["event"] == "response_latency"
+                and e["data"].get("gemini_first_audio_ms") is not None for e in call_log),
+        "the_watcher_saw_the_huddle_and_spawned_the_call":
+            all(e in bridge_events for e in ["huddle_seen", "call_spawned", "call_ended"]),
+    })
+    result_mode = "real" if real else "fake"
+
+result = {"pass": all(checks.values()), "mode": result_mode, "checks": checks, "run_dir": str(a.run_dir),
           "binaries": text("binaries"), "repo_commit": text("repo_commit"),
           "caller": caller, "transcript_lines": lines, "call_log_lines": lines_logged,
-          "end_reason": next((e["data"].get("reason") for e in call_log if e["event"] == "call_end"), None)}
+          "fault": a.fault, "audio_stats": audio, "bridge_events": bridge_events,
+          "end_reason": ending.get("reason") or ending.get("error")}
 with a.results.open("a") as out:
     out.write(json.dumps(result) + "\n")
 print(json.dumps(result, indent=2))
