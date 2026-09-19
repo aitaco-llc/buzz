@@ -104,14 +104,43 @@ until the grammar can close it:
 ```
 
 That is schema-valid JSON, so `rebrand-acp` returns `end_turn`, and the host
-refuses it: the citation is not an ID any `read_thread` returned. `grammar_repro.py`
-reduces it to one request — three conditions, all needed: thinking on, an array
-of strings in the schema, and greedy sampling. With `reasoning_effort: "none"`,
-or with no array in the schema, or unconstrained, the same request answers
-correctly and stops. Serve's own documentation of that transition is at
-`crates/rebrand/src/ml/serve.rs:6-19`; the constraint is built at `:289` and `:566`.
+refuses it: the citation is not an ID any `read_thread` returned. It fired in 9 of
+the 11 greedy runs and 2 of the 10 at temperature 0.7. `grammar_repro.py` reduces
+it to one request.
+
+**Diagnosed and fixed by neil, aitaco-llc/rebrand#300 (`a8a0500`)**, reported in
+`#buzz-platform` `0aeb45e9`. `ArrayScope::items()` credited an element only once it
+reached a structural position of its array, so an array being written at its first
+element read as holding nothing. The `minItems` deficit that followed denied the
+tokens that close the string and the array together. His probe, against the real
+qwen3-8b vocabulary at that prefix:
+
+| token | id | at `31fc194` | fixed |
+|---|---|---|---|
+| `"` | 1 | allowed | allowed |
+| `"]` | 1341 | **denied** | allowed |
+| `"]}` | 92446 | **denied** | allowed |
+| `']` | 660 | allowed | allowed |
+| `']}` | 32741 | allowed | allowed |
+
+The apostrophe twins were never denied, because they never leave the string, and
+greedy takes the best survivor. So the condition is neither thinking nor greedy —
+the mask is the same either way — but **an array with `minItems ≥ 1` closed at its
+first element**, which every citation list of one is. Those decide only whether a
+model reaches for a denied token. The same undercount let a one-item array take a
+second element past `maxItems: 1`, which is schema-invalid output from a constraint
+whose job is to prevent exactly that.
 
 **The model's own failures** are qwen3-8b not using the narrowed tool: it reads
 the `enum` as a list of candidate answers and replies that "the incident ID does
 not match any available event IDs", instead of calling `read_thread` with the one
 ID search returned. A tool description that says so explicitly is Stage 2 work.
+
+**The two empty citation lists (B9, B10) were never constrained.** Both answered
+while `read_thread` was still on offer, and `of-agent` sends a turn that has tools
+without a `response_format` (`crates/of-agent/src/agent.rs:36-43`), so no automaton
+saw that answer; `rebrand-acp` refused it afterwards against the session schema.
+The schema the host sends does carry `minItems`, and
+`test_empty_citation_list_from_an_unconstrained_turn` pins both halves: the
+constrained turn's request carries `minItems: 1` and `maxItems: 5`, and the turn
+that produced `[]` carried tools and no `response_format`.
