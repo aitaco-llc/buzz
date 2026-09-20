@@ -288,6 +288,8 @@ class _ThreadMessage extends HookConsumerWidget {
                       ],
                     ),
                   ),
+                  if (message.turnReceipt != null)
+                    AgentTurnReceiptFooter(receipt: message.turnReceipt!),
                   if (isThreadHead || message.reactions.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(

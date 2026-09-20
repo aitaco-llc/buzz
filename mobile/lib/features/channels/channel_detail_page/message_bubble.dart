@@ -278,6 +278,8 @@ class _MessageBubble extends HookConsumerWidget {
                     ],
                   ),
                 ),
+                if (message.turnReceipt != null)
+                  AgentTurnReceiptFooter(receipt: message.turnReceipt!),
                 if (message.reactions.isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.only(

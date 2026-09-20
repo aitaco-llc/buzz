@@ -41,6 +41,16 @@ abstract final class EventKind {
   static const jobResult = 43004;
   static const jobCancel = 43005;
   static const jobError = 43006;
+
+  /// Kind:44201 NIP-AR agent turn receipt: the plaintext, channel-scoped
+  /// record of the model one agent turn ran on and the tokens it consumed.
+  ///
+  /// An overlay, not a row: it annotates the messages it `e`-tags rather than
+  /// rendering anything of its own, which is why it joins
+  /// [channelAuxEventKinds] and never [channelMessageEventKinds] or
+  /// [channelTimelineContentKinds]. Counting it as a message would create
+  /// phantom unreads for an event no reader can see on its own.
+  static const agentTurnReceipt = 44201;
   static const forumPost = 45001;
   static const forumComment = 45003;
   static const huddleStarted = 48100;
@@ -67,6 +77,7 @@ abstract final class EventKind {
     streamMessageEdit, // 40003
     streamMessageDiff, // 40008
     systemMessage, // 40099
+    agentTurnReceipt, // 44201 — NIP-AR turn receipt overlay
     huddleStarted, // 48100 — visible huddle session row
     huddleParticipantJoined, // 48101 — huddle lifecycle metadata
     huddleParticipantLeft, // 48102 — huddle lifecycle metadata
@@ -74,11 +85,16 @@ abstract final class EventKind {
   ];
 
   /// Auxiliary timeline kinds that overlay or hide existing rows.
+  ///
+  /// A NIP-AR receipt belongs here for the same reason an edit does: it has no
+  /// row of its own and is only meaningful attached to a message the client
+  /// already holds.
   static const channelAuxEventKinds = [
     deletion,
     reaction,
     nip29DeleteEvent,
     streamMessageEdit,
+    agentTurnReceipt,
   ];
 
   /// Visible content kinds requested by the NIP-CW channel-window path.
