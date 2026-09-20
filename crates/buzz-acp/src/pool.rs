@@ -31,8 +31,8 @@ use uuid::Uuid;
 
 use crate::acp::{
     extract_model_config_options, extract_model_state, extract_thought_level_config_id,
-    model_in_catalog, resolve_model_switch_method, AcpClient, AcpError, EnvVar, McpServer,
-    ModelSwitchMethod, StopReason, SystemPromptTransport, BUZZ_PI_ACP_NAME,
+    model_in_catalog, resolve_model_switch_method, unadvertised_session_model, AcpClient, AcpError,
+    EnvVar, McpServer, ModelSwitchMethod, StopReason, SystemPromptTransport, BUZZ_PI_ACP_NAME,
 };
 use crate::config::{compose_scoped_session_title, DedupMode, PermissionMode};
 use crate::observer;
@@ -1598,6 +1598,27 @@ async fn create_session_and_apply_model(
                 Err(error) => return Err(error),
             }
         }
+    }
+
+    // The model this session actually opened on. `ANTHROPIC_MODEL` is the only
+    // per-process pin for a Claude adapter — without it every seat on a body
+    // inherits the shared `~/.claude/settings.json`, which the operator's own
+    // `claude` CLI rewrites — but the adapter takes it unvalidated, so a typo
+    // reaches inference as a 404 minutes into a turn. Name it here instead.
+    if let Some((current, advertised)) = unadvertised_session_model(&resp.raw) {
+        tracing::error!(
+            target: "pool::model",
+            model = %current,
+            advertised = ?advertised,
+            "this session opened on a model {} does not advertise — check ANTHROPIC_MODEL; \
+             turns will fail at the provider until it names one of {:?}",
+            agent.agent_name,
+            advertised,
+        );
+        agent.acp.observe(
+            "model_unadvertised",
+            serde_json::json!({"model": current, "advertised": advertised}),
+        );
     }
 
     // Populate model capabilities on first session creation.

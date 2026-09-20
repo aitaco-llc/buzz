@@ -2188,6 +2188,46 @@ pub enum ModelSwitchMethod {
 /// Returns the raw JSON array entries. Each entry has `configId` (spelled `id`
 /// by some adapters, e.g. claude-agent-acp), `displayName`,
 /// `options: [{ value, displayName }]`, etc.
+/// The model a fresh session actually opened on, when the adapter does not
+/// advertise it.
+///
+/// `ANTHROPIC_MODEL` is the only per-process way to pin a Claude adapter's
+/// model — it beats the machine-wide `~/.claude/settings.json` that every seat
+/// on a body otherwise shares — but it is passed through unvalidated. A typo
+/// becomes `currentValue` verbatim and fails only at the first inference, as a
+/// provider 404, minutes into a turn the owner is waiting on. The adapter's own
+/// option list is its answer to "what can I run", so a `currentValue` outside
+/// it is a misconfiguration the harness can name at startup instead.
+///
+/// Returns `(current, advertised)` when they disagree. `None` when they agree,
+/// when the adapter advertises no models (Codex, `rebrand-acp`), or when it
+/// reports no current model — absence of an answer is not a mismatch.
+pub fn unadvertised_session_model(
+    session_new_result: &serde_json::Value,
+) -> Option<(String, Vec<String>)> {
+    for config_opt in extract_model_config_options(session_new_result) {
+        let advertised: Vec<String> = config_opt
+            .get("options")
+            .and_then(|v| v.as_array())
+            .map(|opts| {
+                opts.iter()
+                    .filter_map(|o| o.get("value").and_then(|v| v.as_str()))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let current = match config_opt.get("currentValue").and_then(|v| v.as_str()) {
+            Some(current) => current,
+            None => continue,
+        };
+        if advertised.is_empty() || advertised.iter().any(|v| v == current) {
+            return None;
+        }
+        return Some((current.to_string(), advertised));
+    }
+    None
+}
+
 pub fn extract_model_config_options(result: &serde_json::Value) -> Vec<serde_json::Value> {
     result["configOptions"]
         .as_array()
@@ -3170,6 +3210,36 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A model the adapter does not advertise is named at startup, not left to
+    /// fail as a provider 404 minutes into the first turn.
+    #[test]
+    fn an_unadvertised_session_model_is_reported_with_what_is_advertised() {
+        let session = |current: &str| {
+            serde_json::json!({"configOptions": [{
+                "category": "model", "id": "model", "currentValue": current,
+                "options": [{"value": "opus[1m]"}, {"value": "sonnet"}, {"value": "haiku"}],
+            }]})
+        };
+        // `ANTHROPIC_MODEL=totally-not-a-model` reaches `currentValue` verbatim.
+        let (current, advertised) =
+            unadvertised_session_model(&session("totally-not-a-model")).expect("a mismatch");
+        assert_eq!(current, "totally-not-a-model");
+        assert_eq!(advertised, ["opus[1m]", "sonnet", "haiku"]);
+
+        // An alias the adapter resolved for itself is not a mismatch:
+        // `ANTHROPIC_MODEL=claude-opus-5` opens the session on `opus[1m]`.
+        assert!(unadvertised_session_model(&session("opus[1m]")).is_none());
+
+        // An adapter that advertises no models, or names no current one, is
+        // not misconfigured — it just has nothing to check against.
+        assert!(unadvertised_session_model(&serde_json::json!({"configOptions": []})).is_none());
+        assert!(
+            unadvertised_session_model(&serde_json::json!({"configOptions": [{
+                "category": "model", "id": "model", "options": [{"value": "sonnet"}]}]}))
+            .is_none()
+        );
     }
 
     #[tokio::test]
