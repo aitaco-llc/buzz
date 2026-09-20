@@ -1964,10 +1964,15 @@ async fn apply_startup_effort(
         return Ok(None);
     };
     let Some(config_id) = extract_thought_level_config_id(session_new_result) else {
-        tracing::info!(
+        tracing::warn!(
             target: "pool::effort",
-            "startup effort {value} configured but model advertises no thought_level option — leaving agent default"
+            effort = %value,
+            "BUZZ_ACP_EFFORT_LEVEL is set but this model advertises no thought_level option, \
+             so it has no effect — the session runs the model's default reasoning"
         );
+        agent
+            .acp
+            .observe("effort_unsupported", serde_json::json!({"effort": value}));
         return Ok(None);
     };
 
