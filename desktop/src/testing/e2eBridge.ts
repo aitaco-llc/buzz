@@ -14880,6 +14880,36 @@ export function maybeInstallE2eTauriMocks() {
       case "archive_events":
         // Returns the ArchiveBatchResult shape the UI expects.
         return { persisted: 0, dropped: 0 };
+      case "get_agent_usage_series": {
+        // `AgentUsagePanel` takes its enabled/disabled copy from this command's
+        // `collectionEnabled`, not from `list_save_subscriptions`, so derive it
+        // from the same mutable rows the toggle writes — otherwise flipping the
+        // toggle in a spec would leave the panel and the switch disagreeing.
+        const collectionEnabled = mockSaveSubscriptions.some((s) => {
+          if (s.scope_type !== "owner_p") return false;
+          try {
+            const kinds = JSON.parse(s.kinds) as unknown;
+            return Array.isArray(kinds) && kinds.includes(44200);
+          } catch {
+            return false;
+          }
+        });
+        return {
+          collectionEnabled,
+          buckets: [],
+          agents: [],
+          coverage: {
+            firstArchivedAt: null,
+            lastArchivedAt: null,
+            firstReportedAt: null,
+            lastReportedAt: null,
+            reportCount: 0,
+            invalidReportCount: 0,
+            hasUnknownUsage: false,
+          },
+          hasArchivedEvidence: null,
+        };
+      }
       // Archive sync runs natively; the bridge has no relay-backed backend to
       // drive, so these are accepted no-ops. Without them every AppShell mount
       // logs an unknown-command warning once the gate opens.

@@ -28,6 +28,7 @@ import { SettingsSectionHeader } from "@/features/settings/ui/SettingsSectionHea
 import { setExplicitAgentMetricArchiveChoice } from "../agentMetricArchivePreference";
 import { setExplicitObserverArchiveChoice } from "../observerArchivePreference";
 
+import { AgentUsagePanel } from "./AgentUsagePanel";
 import {
   buildSubscriptionRequest,
   isGroupFullyChecked,
@@ -542,6 +543,11 @@ export function LocalArchiveSettingsCard() {
           onToggle={(checked) => void handleMetricToggle(checked)}
           toggling={metricToggling}
         />
+
+        {/* What the toggle above has actually collected. It sits directly
+            under its own switch so the "archiving is off" state and the
+            control that fixes it are never in different views. */}
+        <AgentUsagePanel />
 
         {/* Channel subscriptions */}
         <div data-testid="local-archive-subscriptions">
