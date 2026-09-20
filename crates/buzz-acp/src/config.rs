@@ -890,6 +890,22 @@ pub(crate) fn default_agent_env(command: &str) -> &'static [(&'static str, &'sta
     }
 }
 
+/// Adapters that reach Anthropic, where an unnamed model is not a default but
+/// a coin flip.
+///
+/// `claude-agent-acp` takes its model from `ANTHROPIC_MODEL` when set and
+/// otherwise from `~/.claude/settings.json` — a file shared by every seat on a
+/// body, which the operator's own `claude` CLI rewrites. A seat that names no
+/// model does not get a documented default; it gets whoever last ran `/model`.
+/// Measured 2026-09-20: two machines' seats were running Opus 5 only because
+/// two unrelated settings files happened to agree.
+pub(crate) fn model_must_be_named(command: &str) -> bool {
+    matches!(
+        normalize_agent_command_identity(command).as_str(),
+        "claude-agent-acp" | "claude-code-acp" | "claude-code" | "claudecode"
+    )
+}
+
 /// Environment variables an agent process must never receive, inherited or
 /// supplied.
 ///
@@ -1235,6 +1251,23 @@ impl Config {
         // instructions arrive independently so they can be layered at runtime.
         let mut persona_env_vars = Vec::new();
         let model = args.model;
+
+        // A seat on Anthropic must say which model it runs. `ANTHROPIC_MODEL`
+        // is the per-process pin the desktop already uses (it clears
+        // BUZZ_ACP_MODEL and sets that instead), so either names the model;
+        // neither means the seat would inherit a shared file.
+        if model_must_be_named(&agent_command)
+            && model.as_deref().is_none_or(|m| m.trim().is_empty())
+            && !std::env::var("ANTHROPIC_MODEL").is_ok_and(|m| !m.trim().is_empty())
+        {
+            return Err(ConfigError::ConfigFile(format!(
+                "{agent_command} needs its model named: set ANTHROPIC_MODEL (per-process, and \
+                 what the desktop uses) or BUZZ_ACP_MODEL. Unset, this seat runs whatever \
+                 ~/.claude/settings.json says, which every seat on this machine shares and the \
+                 `claude` CLI rewrites. `buzz-acp models --agent-command {agent_command} --json` \
+                 lists the ids this adapter accepts."
+            )));
+        }
 
         // Inject CODEX_CONFIG so the @agentclientprotocol/codex-acp adapter (1.x)
         // opens the Seatbelt network sandbox for buzz-cli (an MCP subprocess). No-op
@@ -1893,6 +1926,29 @@ mod tests {
         assert_eq!(normalize_agent_command_identity("   "), "");
         assert_eq!(normalize_agent_command_identity("/"), "");
         assert_eq!(normalize_agent_command_identity("///"), "");
+    }
+
+    #[test]
+    fn only_the_anthropic_adapters_must_name_their_model() {
+        for command in [
+            "claude-agent-acp",
+            "/home/seat/.local/bin/claude-code-acp",
+            "CLAUDE-CODE.EXE",
+        ] {
+            assert!(model_must_be_named(command), "{command}");
+        }
+        // Codex authenticates and picks its own model; goose and buzz-agent
+        // carry provider+model env of their own; rebrand-acp takes --model.
+        for command in [
+            "codex-acp",
+            "codex",
+            "goose",
+            "buzz-agent",
+            "rebrand-acp",
+            "",
+        ] {
+            assert!(!model_must_be_named(command), "{command}");
+        }
     }
 
     #[test]
