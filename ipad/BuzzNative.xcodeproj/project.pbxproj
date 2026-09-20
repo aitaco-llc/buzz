@@ -48,6 +48,7 @@
 		A3FC9787F570253846DBB3D3 /* RichTextTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41D095E2E4958B35AB0D203B /* RichTextTests.swift */; };
 		A7172E7FBF49916A464466F5 /* NativePreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 259FBAB543F0521A1B74E9B0 /* NativePreferences.swift */; };
 		A7E6D85B597A7EE33751CDC5 /* ActivityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFD8026A4137966A77EDBA6F /* ActivityView.swift */; };
+		AD63AAA756C3A726D794BAEF /* TurnReceiptFooter.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFCBAACA01839D082CD04AB0 /* TurnReceiptFooter.swift */; };
 		B018688BE02EA8B314720906 /* AvatarImageProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = D41E54A3BFBEAAD4AEA5B54E /* AvatarImageProcessor.swift */; };
 		B0C610033818295FA95C235F /* BuzzCore in Frameworks */ = {isa = PBXBuildFile; productRef = 27C80AD78B25664A23E19E9E /* BuzzCore */; };
 		B11F05B1628B0E39AB4303C2 /* StatusTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 524F3F66FFD2B2645F49AB4F /* StatusTests.swift */; };
@@ -185,6 +186,7 @@
 		FA8D694BF7BAF32B1E3DC827 /* ThreadFollowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadFollowTests.swift; sourceTree = "<group>"; };
 		FD3886160E371CCFE07ACC50 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		FF8D2F7C78351407E40AC429 /* SearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchView.swift; sourceTree = "<group>"; };
+		FFCBAACA01839D082CD04AB0 /* TurnReceiptFooter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnReceiptFooter.swift; sourceTree = "<group>"; };
 		FFD8026A4137966A77EDBA6F /* ActivityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -315,6 +317,7 @@
 				4B2DE6F7376925E70A15AE10 /* ReactionRow.swift */,
 				3DF3574FAC4E85679EBFAC7A /* RichText.swift */,
 				FF8D2F7C78351407E40AC429 /* SearchView.swift */,
+				FFCBAACA01839D082CD04AB0 /* TurnReceiptFooter.swift */,
 				A2C9769CACC9D6E13B7F4679 /* UserProfileView.swift */,
 				3F97650199CB39D3B74BE91A /* VoiceNoteRecorder.swift */,
 				74361D9AE369CFA08A56DF7C /* WorkspaceView.swift */,
@@ -621,6 +624,7 @@
 				DF2DE4B174434F29E7E5C0F9 /* ReactionRow.swift in Sources */,
 				275C6988F366C51DD868D9B2 /* RichText.swift in Sources */,
 				DE880209F96FF845A027585E /* SearchView.swift in Sources */,
+				AD63AAA756C3A726D794BAEF /* TurnReceiptFooter.swift in Sources */,
 				22EAA2751CEA77285084DAB8 /* UserProfileView.swift in Sources */,
 				2608DC75D4EF1664D31628D4 /* VoiceNoteRecorder.swift in Sources */,
 				FD79107E794C20B61B46F921 /* WorkspaceView.swift in Sources */,

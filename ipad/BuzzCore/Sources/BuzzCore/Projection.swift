@@ -44,8 +44,14 @@ public enum Projection {
   }
   /// Kinds representing visible conversations, including older relay message formats.
   public static let messageKinds = [9, 40001, 40002, 45001, 45003]
-  /// Conversation updates needed to fold edits, reactions and deletions.
-  public static let timelineKinds = messageKinds + [5, 7, 9005, 40003, 24810, 48100, 48103]
+  /// NIP-AR per-turn receipts. An overlay on the messages one agent turn
+  /// published, never a row of its own.
+  public static let turnReceiptKind = 44201
+  /// Conversation updates needed to fold edits, reactions, deletions and receipts.
+  public static let timelineKinds =
+    messageKinds + [
+      5, 7, 9005, 40003, 24810, 48100, 48103, turnReceiptKind,
+    ]
 
   /// Counts visible replies by their thread root. Older clients sometimes omit
   /// the explicit `root` marker, so a direct `reply` parent is used as the

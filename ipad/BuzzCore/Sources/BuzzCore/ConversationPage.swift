@@ -141,22 +141,25 @@ public struct ConversationPage: Sendable {
 
   /// The bridge returns direct overlays and a second hop of deletions of those overlays.
   /// A thread includes its root in the target set even on an empty reply page.
+  /// A NIP-AR receipt names every message of one turn, which can straddle this
+  /// page: one naming nothing here has nothing to annotate, so it is dropped
+  /// rather than failing the page it arrived with.
   private static func auxiliaries(_ events: [Event], targeting targetIDs: Set<String>) throws
     -> [Event]
   {
-    let aux = events.filter { [5, 7, 9005, 40003].contains($0.kind) }
-    let firstHop = Set(
-      aux.filter { item in
-        item.tags.contains { $0.count >= 2 && $0[0] == "e" && targetIDs.contains($0[1]) }
-      }.map(\.id))
-    for item in aux where !firstHop.contains(item.id) {
-      guard [5, 9005].contains(item.kind),
-        item.tags.contains(where: {
-          $0.count >= 2 && $0[0] == "e" && firstHop.contains($0[1])
-        })
-      else { throw BuzzError.invalidResponse }
+    func references(_ item: Event, _ ids: Set<String>) -> Bool {
+      item.tags.contains { $0.count >= 2 && $0[0] == "e" && ids.contains($0[1]) }
     }
-    return aux
+    let aux = events.filter { [5, 7, 9005, 40003].contains($0.kind) }
+    let receipts = events.filter { $0.kind == Projection.turnReceiptKind }
+    let firstHop = Set(
+      aux.filter { references($0, targetIDs) }.map(\.id) + receipts.map(\.id))
+    for item in aux where !firstHop.contains(item.id) {
+      guard [5, 9005].contains(item.kind), references(item, firstHop) else {
+        throw BuzzError.invalidResponse
+      }
+    }
+    return aux + receipts.filter { references($0, targetIDs) }
   }
 
   private static func validate(
