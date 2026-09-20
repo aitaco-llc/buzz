@@ -528,6 +528,12 @@ impl AcpClient {
             cmd.env("CODEX_CONFIG", merged);
         }
 
+        // Last, so it beats both the inherited environment and `extra_env`: a
+        // persona entry must not be able to hand a keyless worker the key.
+        for key in crate::config::removed_agent_env(command) {
+            cmd.env_remove(key);
+        }
+
         // Spawn the agent in its own process group so SIGKILL doesn't propagate
         // to the harness's own process group on Unix.
         // tokio::process::Command::process_group is a stable tokio API (no extra imports needed).
@@ -3142,6 +3148,28 @@ mod tests {
             "<unset>",
             "non-Hermes spawns must not receive Hermes defaults"
         );
+    }
+
+    /// The keyless worker never sees the seat's signing key, even when a
+    /// persona's env supplies one; every other adapter is launched as before.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawn_withholds_the_signing_key_from_the_keyless_worker() {
+        for var in ["BUZZ_PRIVATE_KEY", "BUZZ_AUTH_TAG"] {
+            let supplied = [(var.to_string(), "supplied".to_string())];
+            assert_eq!(
+                spawn_named_and_read_child_env("rebrand-acp", var, &supplied).await,
+                "<unset>",
+                "rebrand-acp must not receive {var}"
+            );
+            if std::env::var_os(var).is_none() {
+                assert_eq!(
+                    spawn_named_and_read_child_env("other-agent", var, &supplied).await,
+                    "supplied",
+                    "other adapters keep receiving {var}"
+                );
+            }
+        }
     }
 
     #[tokio::test]

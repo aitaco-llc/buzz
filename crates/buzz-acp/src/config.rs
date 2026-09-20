@@ -890,6 +890,22 @@ pub(crate) fn default_agent_env(command: &str) -> &'static [(&'static str, &'sta
     }
 }
 
+/// Environment variables an agent process must never receive, inherited or
+/// supplied.
+///
+/// Mirrors [`default_agent_env`], keyed on the same normalized identity.
+///
+/// `rebrand-acp` is a seat's *model*, not a first-party tool: it holds no
+/// signing credential by design and exits at startup if it finds one in its
+/// environment. Every other adapter inherits the harness's environment
+/// unchanged, as before.
+pub(crate) fn removed_agent_env(command: &str) -> &'static [&'static str] {
+    match normalize_agent_command_identity(command).as_str() {
+        "rebrand-acp" => &["BUZZ_PRIVATE_KEY", "BUZZ_AUTH_TAG"],
+        _ => &[],
+    }
+}
+
 /// Build the `CODEX_CONFIG` environment variable that enables full outbound
 /// network access in Codex's macOS Seatbelt sandbox.
 ///
@@ -1868,6 +1884,31 @@ mod tests {
         assert_eq!(normalize_agent_command_identity("   "), "");
         assert_eq!(normalize_agent_command_identity("/"), "");
         assert_eq!(normalize_agent_command_identity("///"), "");
+    }
+
+    #[test]
+    fn removed_agent_env_is_for_the_keyless_worker_only() {
+        for command in [
+            "rebrand-acp",
+            "/home/seat/.local/bin/rebrand-acp",
+            "REBRAND_ACP.EXE",
+        ] {
+            assert_eq!(
+                removed_agent_env(command),
+                &["BUZZ_PRIVATE_KEY", "BUZZ_AUTH_TAG"],
+                "{command}"
+            );
+        }
+        for command in [
+            "goose",
+            "codex-acp",
+            "claude-agent-acp",
+            "buzz-agent",
+            "rebrand",
+            "",
+        ] {
+            assert!(removed_agent_env(command).is_empty(), "{command}");
+        }
     }
 
     #[test]
