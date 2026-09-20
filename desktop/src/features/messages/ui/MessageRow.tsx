@@ -1,11 +1,6 @@
 import * as React from "react";
 import { AlertTriangle } from "lucide-react";
-import {
-  depthGuideActionsEqual,
-  numberArrayEqual,
-  reactionsEqual,
-  tagsEqual,
-} from "@/features/messages/lib/messageRowEquality";
+import { messageRowPropsEqual } from "@/features/messages/ui/messageRowPropsEqual";
 import {
   assertCanSendMessageToChannel,
   canSendMessageToChannel,
@@ -14,6 +9,7 @@ import type { TimelineMessage } from "@/features/messages/types";
 import { useKnownAgentPubkeys } from "@/features/agents/useKnownAgentPubkeys";
 import { HuddleAttachment } from "@/features/huddle/components/HuddleAttachment";
 import { MessageReactions } from "@/features/messages/ui/MessageReactions";
+import { MessageTurnReceipt } from "@/features/messages/ui/MessageTurnReceipt";
 import { MessageAuthorWithIndicators } from "@/features/messages/ui/MessageAuthorWithIndicators";
 import { useReactionHandler } from "@/features/messages/ui/useReactionHandler";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
@@ -688,6 +684,7 @@ export const MessageRow = React.memo(
         <SentFromThreadLine channelId={channelId} tags={message.tags} />
         {renderBody()}
         {continuationMetadataNode}
+        <MessageTurnReceipt receipt={message.turnReceipt} />
         <MessageReactions
           messageId={message.id}
           reactions={reactions}
@@ -936,70 +933,9 @@ export const MessageRow = React.memo(
         </article>
       </div>
     );
-    // Callbacks (onReply, onToggleReaction) intentionally excluded: inline arrows
-    // from parent create new refs every render — including them defeats memo.
   },
-  (prev, next) =>
-    prev.message.id === next.message.id &&
-    prev.message.pubkey === next.message.pubkey &&
-    prev.message.body === next.message.body &&
-    prev.message.author === next.message.author &&
-    prev.message.isAgent === next.message.isAgent &&
-    prev.message.ownerPubkey === next.message.ownerPubkey &&
-    prev.message.ownerLabel === next.message.ownerLabel &&
-    prev.message.avatarUrl === next.message.avatarUrl &&
-    prev.message.accent === next.message.accent &&
-    // The header timestamp and hover gutter both derive from createdAt (the
-    // old `time` prop was the same value pre-formatted; this row reads neither).
-    prev.message.createdAt === next.message.createdAt &&
-    prev.message.depth === next.message.depth &&
-    prev.message.kind === next.message.kind &&
-    prev.message.pending === next.message.pending &&
-    prev.message.edited === next.message.edited &&
-    // Value comparisons, not identity: these arrays are rebuilt with fresh
-    // identities on every ingest/refetch even when unchanged — identity
-    // checks made every row re-render on every streamed event in an open
-    // thread (see messageRowEquality.ts).
-    reactionsEqual(prev.message.reactions, next.message.reactions) &&
-    tagsEqual(prev.message.tags, next.message.tags) &&
-    prev.message.role === next.message.role &&
-    prev.message.personaDisplayName === next.message.personaDisplayName &&
-    prev.currentPubkey === next.currentPubkey &&
-    depthGuideActionsEqual(
-      prev.collapseDepthGuideActions,
-      next.collapseDepthGuideActions,
-    ) &&
-    prev.collapseDescendantsLabel === next.collapseDescendantsLabel &&
-    prev.connectDescendants === next.connectDescendants &&
-    numberArrayEqual(prev.depthGuideDepths, next.depthGuideDepths) &&
-    prev.highlightDescendantRail === next.highlightDescendantRail &&
-    prev.highlighted === next.highlighted &&
-    prev.highlightReplyConnector === next.highlightReplyConnector &&
-    numberArrayEqual(
-      prev.highlightThreadLineDepths,
-      next.highlightThreadLineDepths,
-    ) &&
-    prev.hoverBackground === next.hoverBackground &&
-    prev.huddleMemberPubkeys === next.huddleMemberPubkeys &&
-    prev.huddleMemberPubkeysPending === next.huddleMemberPubkeysPending &&
-    prev.hideAgentAccessBadge === next.hideAgentAccessBadge &&
-    prev.isContinuation === next.isContinuation &&
-    prev.isFollowingThread === next.isFollowingThread &&
-    prev.isUnread === next.isUnread &&
-    prev.layoutVariant === next.layoutVariant &&
-    prev.onCollapseDepthGuide === next.onCollapseDepthGuide &&
-    prev.onCollapseDepthGuideHoverChange ===
-      next.onCollapseDepthGuideHoverChange &&
-    prev.onCollapseDescendants === next.onCollapseDescendants &&
-    prev.onCollapseDescendantsHoverChange ===
-      next.onCollapseDescendantsHoverChange &&
-    prev.onEntranceComplete === next.onEntranceComplete &&
-    prev.playEntrance === next.playEntrance &&
-    prev.onSendToChannel === next.onSendToChannel &&
-    prev.profiles === next.profiles &&
-    prev.searchQuery === next.searchQuery &&
-    prev.videoReviewCommentRootId === next.videoReviewCommentRootId &&
-    prev.videoReviewContext === next.videoReviewContext,
+  // The comparator lives in `messageRowPropsEqual.ts` so it can be tested
+  // against the exact predicate React.memo runs — a forgotten `message.*`
+  // field here shows up only as a footer that silently never updates.
+  messageRowPropsEqual,
 );
-
-MessageRow.displayName = "MessageRow";

@@ -51,6 +51,7 @@ import {
 } from "@/shared/api/customEmoji";
 import {
   KIND_AGENT_OBSERVER_FRAME,
+  KIND_AGENT_TURN_RECEIPT,
   KIND_CHANNEL_THREAD_SUMMARY,
   KIND_CHANNEL_WINDOW_BOUNDS,
   KIND_DM_VISIBILITY,
@@ -1305,6 +1306,30 @@ declare global {
       /** 64-hex id required for the event to be a valid reaction target. */
       id?: string;
     }) => RelayEvent;
+    /**
+     * Publish a NIP-AR (kind:44201) turn receipt for one agent turn.
+     *
+     * `messageIds` are the ids that turn published, **in publication order**;
+     * the client anchors the footer to the last one it holds. `pubkey` must be
+     * the author of those messages or the client drops the receipt, which is
+     * exactly the forgery case a spec wants to be able to reproduce. Every
+     * count is optional: omitting one publishes `null`, which must render as
+     * "not reported", never as `0`.
+     */
+    __BUZZ_E2E_EMIT_MOCK_TURN_RECEIPT__?: (input: {
+      channelName: string;
+      messageIds: string[];
+      pubkey: string;
+      model: string;
+      harness?: string;
+      inputTokens?: number | null;
+      outputTokens?: number | null;
+      totalTokens?: number | null;
+      cacheReadTokens?: number | null;
+      cacheWriteTokens?: number | null;
+      costUsd?: number | null;
+      createdAt?: number;
+    }) => RelayEvent;
     /** Prepend `count` synthetic older messages to a channel's mock store so
      *  an older-history fetch has something to paginate. Mirrors how the real
      *  relay backfills history. Returns the created events. */
@@ -1622,11 +1647,15 @@ const DEFAULT_RELAY_WS_URL = "ws://localhost:3000";
 const KIND_REACTION = 7; // NIP-25 reaction
 const KIND_DELETION = 5; // NIP-09 deletion
 const KIND_NIP29_DELETION = 9005;
+// Mirror of the relay's `WINDOW_AUX_KINDS` (crates/buzz-relay/src/api/bridge.rs):
+// the overlay kinds a channel window returns alongside its rows. NIP-AR turn
+// receipts (44201) are an overlay on the messages they `e`-tag, never a row.
 const CHANNEL_WINDOW_AUX_KINDS = new Set([
   KIND_REACTION,
   KIND_DELETION,
   KIND_NIP29_DELETION,
   KIND_STREAM_MESSAGE_EDIT,
+  KIND_AGENT_TURN_RECEIPT,
 ]);
 const CHANNEL_WINDOW_AUX_DELETION_KINDS = new Set([
   KIND_DELETION,
@@ -5835,8 +5864,8 @@ async function handleGetChannelReconnectRepair(
   config: E2eConfig | undefined,
 ): Promise<RelayEvent[]> {
   const kinds = new Set([
-    5, 7, 9, 9005, 40001, 40002, 40003, 40008, 40099, 45001, 45003, 48100,
-    48101, 48102, 48103,
+    5, 7, 9, 9005, 40001, 40002, 40003, 40008, 40099, 44201, 45001, 45003,
+    48100, 48101, 48102, 48103,
   ]);
   const filter: Record<string, unknown> = {
     "#h": [args.channelId],
@@ -11612,6 +11641,56 @@ export function maybeInstallE2eTauriMocks() {
     );
     recordMockUserStatus(event);
     emitMockGlobalEvent(event);
+    return event;
+  };
+  window.__BUZZ_E2E_EMIT_MOCK_TURN_RECEIPT__ = ({
+    channelName,
+    messageIds,
+    pubkey,
+    model,
+    harness = "claude-agent-acp",
+    inputTokens = null,
+    outputTokens = null,
+    totalTokens = null,
+    cacheReadTokens = null,
+    cacheWriteTokens = null,
+    costUsd = null,
+    createdAt,
+  }) => {
+    const channel = mockChannels.find(
+      (candidate) => candidate.name === channelName,
+    );
+    if (!channel) {
+      throw new Error(`Mock channel ${channelName} not found.`);
+    }
+
+    // NIP-AR envelope: exactly one `h`, one unmarked `e` per published
+    // message in publication order, exactly one `model` tag equal to the
+    // body's `model`.
+    const tags: string[][] = [["h", channel.id]];
+    for (const messageId of messageIds) tags.push(["e", messageId]);
+    tags.push(["model", model]);
+
+    const event = createMockEvent(
+      KIND_AGENT_TURN_RECEIPT,
+      JSON.stringify({
+        model,
+        harness,
+        turn: {
+          inputTokens,
+          outputTokens,
+          totalTokens,
+          costUsd,
+          cacheReadTokens,
+          cacheWriteTokens,
+        },
+      }),
+      tags,
+      pubkey,
+      createdAt,
+    );
+    recordMockMessage(channel.id, event);
+    emitMockLiveEvent(channel.id, event);
     return event;
   };
   window.__BUZZ_E2E_PREPEND_MOCK_HISTORY__ = prependMockHistory;
