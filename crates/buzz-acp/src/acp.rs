@@ -217,6 +217,17 @@ pub struct AcpClient {
     standard_usage: StandardUsageTracker,
     /// Known adapter identity for prompt-response usage mapping.
     standard_adapter: Option<StandardAdapterKind>,
+    /// What [`take_turn_usage`](Self::take_turn_usage) last handed out, kept so
+    /// the NIP-AR receipt can be built after the turn has ended.
+    ///
+    /// The NIP-AM metric consumes the usage inside the prompt task; the receipt
+    /// is only publishable once the relay has been asked which messages the turn
+    /// actually sent, which happens in the main loop after the agent has come
+    /// back. This field is that bridge and nothing else: it is cleared at the
+    /// start of every `session/prompt` and overwritten (with `None` included) by
+    /// every take, so it can never carry a previous turn's counts into a turn
+    /// that reported none of its own.
+    last_turn_usage: Option<TurnUsage>,
 }
 
 /// Recursively merge `overlay` into `base`, with `overlay` winning on scalar/shape
@@ -581,6 +592,7 @@ impl AcpClient {
             goose_usage: UsageTracker::default(),
             standard_usage: StandardUsageTracker::default(),
             standard_adapter,
+            last_turn_usage: None,
         })
     }
 
@@ -813,6 +825,10 @@ impl AcpClient {
         // misattributed to this turn.
         self.goose_usage.begin_turn(session_id);
         self.standard_usage.begin_turn(session_id);
+        // Drop the previous turn's receipt counts here, not at take time: a turn
+        // that dies before any usage arrives must report nothing rather than
+        // inherit what the last one spent.
+        self.last_turn_usage = None;
 
         self.last_prompt_id = Some(self.next_id);
         let id = self.next_id;
@@ -910,7 +926,33 @@ impl AcpClient {
     pub fn take_turn_usage(&mut self) -> Option<TurnUsage> {
         let goose_usage = self.goose_usage.take();
         let standard_usage = self.standard_usage.take();
-        goose_usage.or(standard_usage)
+        let taken = goose_usage.or(standard_usage);
+        // Keep a copy for the NIP-AR receipt, which is built after the turn has
+        // ended. Assigning unconditionally — `None` included — means a second
+        // take in the same turn cannot leave the first take's counts behind.
+        self.last_turn_usage = taken.clone();
+        taken
+    }
+
+    /// The usage the most recent [`take_turn_usage`](Self::take_turn_usage) of
+    /// this turn produced, for the NIP-AR receipt.
+    ///
+    /// `None` when this turn reported no usage at all — the receipt then names
+    /// the model and no counts, which is the half of the answer the provider
+    /// never supplies. Never carries a previous turn's counts: the field is
+    /// cleared when a `session/prompt` is sent.
+    pub fn last_turn_usage(&self) -> Option<&TurnUsage> {
+        self.last_turn_usage.as_ref()
+    }
+
+    /// Seed the receipt's usage record without driving a real turn.
+    ///
+    /// Tests only. The production path fills this field from
+    /// [`take_turn_usage`](Self::take_turn_usage); this exists so receipt tests
+    /// in `pool` can fix a turn's counts without a wire fixture.
+    #[cfg(test)]
+    pub(crate) fn set_last_turn_usage_for_test(&mut self, usage: Option<TurnUsage>) {
+        self.last_turn_usage = usage;
     }
 
     /// Notify the usage tracker that buzz-acp just spawned a new session.
@@ -4675,6 +4717,72 @@ mod tests {
         assert!(
             client.take_turn_usage().is_none(),
             "standard usage was drained"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_receipt_can_still_read_the_usage_the_metric_consumed() {
+        // NIP-AR is published after the turn has ended, long after the NIP-AM
+        // metric drained the trackers. The take must leave a readable copy.
+        let mut client = spawn_inert_client().await;
+        client.goose_usage.begin_turn("s1");
+        client.handle_goose_usage_update(&goose_usage_update_msg("s1", 1000, 200, Some(0.01)));
+
+        assert!(
+            client.last_turn_usage().is_none(),
+            "nothing is recorded until the metric takes it"
+        );
+        let taken = client.take_turn_usage().expect("usage present");
+        let recorded = client.last_turn_usage().expect("receipt copy retained");
+        assert_eq!(recorded.session_id, taken.session_id);
+        assert_eq!(
+            recorded.cumulative_input_tokens,
+            taken.cumulative_input_tokens
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_take_in_one_turn_does_not_leave_the_first_takes_counts_behind() {
+        // The initial-message path takes usage, then the real prompt takes
+        // again. A drained second take must clear the record, not preserve a
+        // count the receipt would then attribute to the wrong prompt.
+        let mut client = spawn_inert_client().await;
+        client.goose_usage.begin_turn("s1");
+        client.handle_goose_usage_update(&goose_usage_update_msg("s1", 1000, 200, None));
+        client.take_turn_usage().expect("first take");
+        assert!(client.last_turn_usage().is_some());
+
+        assert!(client.take_turn_usage().is_none(), "trackers are drained");
+        assert!(
+            client.last_turn_usage().is_none(),
+            "a take that found nothing must not leave stale counts"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_new_prompt_clears_the_previous_turns_receipt_usage() {
+        // A turn that dies before reporting any usage must report none, not
+        // inherit what the previous turn spent.
+        let mut client = spawn_inert_client().await;
+        client.goose_usage.begin_turn("s1");
+        client.handle_goose_usage_update(&goose_usage_update_msg("s1", 1000, 200, None));
+        client.take_turn_usage().expect("first turn usage");
+        assert!(client.last_turn_usage().is_some(), "first turn recorded");
+
+        // `cat` echoes the request instead of answering it, so the prompt ends
+        // on its idle timeout — the shape of a turn that reported nothing.
+        let result = client
+            .session_prompt_with_idle_timeout(
+                "s1",
+                "next turn",
+                std::time::Duration::from_millis(120),
+                std::time::Duration::from_millis(400),
+            )
+            .await;
+        assert!(result.is_err(), "inert agent never answers the prompt");
+        assert!(
+            client.last_turn_usage().is_none(),
+            "the next turn must not inherit the previous turn's counts"
         );
     }
 

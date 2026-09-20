@@ -4935,13 +4935,26 @@ fn handle_prompt_result(
         .retain(|_, meta| meta.agent_index != agent_index);
     debug_assert_eq!(before, pool.task_map().len() + 1);
     pool.note_turn_end();
-    // ✅ only for a turn that ran to its own end — see
-    // `pool::earns_answered_reaction`. A turn that posted "on it" and then
-    // failed, refused, hit a cap or was cancelled has not answered anything.
+    // One relay query settles both of the turn's public outputs. ✅ only for a
+    // turn that ran to its own end — see `pool::earns_answered_reaction`; a turn
+    // that posted "on it" and then failed, refused, hit a cap or was cancelled
+    // has not answered anything. The NIP-AR receipt is owed by every turn that
+    // published, whatever its outcome: those turns burned tokens too, and a
+    // failed turn's cost is exactly the one a room wants to see.
     if let Some(rest) = rest_client {
-        if pool::earns_answered_reaction(&result.outcome) {
-            pool::spawn_answered_reactions(rest, answer);
-        }
+        let receipt = pool::turn_receipt_payload(
+            &result.agent,
+            &crate::config::normalize_agent_command_identity(&config.agent_command),
+        );
+        pool::spawn_turn_completion(
+            rest,
+            pool::TurnCompletion {
+                ledger: answer,
+                channel_id: result.source.channel_id(),
+                earns_answered: pool::earns_answered_reaction(&result.outcome),
+                receipt,
+            },
+        );
     }
     if let PromptSource::Channel(scope) = &result.source {
         // The task may have invalidated this session before returning. Never
