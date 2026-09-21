@@ -136,6 +136,22 @@ impl AcpError {
         };
         data.as_ref()?.get("errorKind")?.as_str()
     }
+
+    /// The adapter's own words, when the failure is one the adapter reported.
+    ///
+    /// Distinct from `Display`, which wraps those words in ours: `Agent
+    /// reported error (code -32603): …`. Anything quoted back to a person
+    /// wants this and not the wrapper, and a voice ask makes the difference
+    /// audible — the wrapper is read aloud as "agent reported error code minus
+    /// three two six zero three", which is our plumbing spoken in the seat's
+    /// voice. `None` for every other variant: those messages are entirely our
+    /// own text, so there is nothing of the provider's to quote.
+    pub fn agent_message(&self) -> Option<&str> {
+        match self {
+            Self::AgentError { message, .. } => Some(message.as_str()),
+            _ => None,
+        }
+    }
 }
 
 /// Build an [`AcpError::AgentError`] from a JSON-RPC error object,

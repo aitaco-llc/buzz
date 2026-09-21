@@ -2193,6 +2193,28 @@ fn inactivity_expired(
     !bound.is_zero() && !turn_in_flight && now.duration_since(last_activity) >= bound
 }
 
+/// Whether the seat may exit itself for having nothing to do.
+///
+/// The inactivity bound with one exemption: a seat held on a provider usage
+/// limit is not an idle seat. Its queue holds real triggers that run by
+/// themselves when the limit lifts, and it deliberately reports no flushable
+/// work — that is what stops the dispatch loop spinning against a limit it
+/// cannot pass — which makes it look idle to every other measure here.
+/// Exiting would take the held work with it, and a weekly limit is long enough
+/// for that to be the normal case rather than a corner.
+///
+/// Unreachable while `BUZZ_ACP_EXIT_AFTER_INACTIVITY` is 0, as it is
+/// fleet-wide today. It is written down here for whoever turns it back on.
+fn inactivity_exit_due(
+    last_activity: tokio::time::Instant,
+    now: tokio::time::Instant,
+    bound: Duration,
+    turn_in_flight: bool,
+    held_on_limit: bool,
+) -> bool {
+    !held_on_limit && inactivity_expired(last_activity, now, bound, turn_in_flight)
+}
+
 /// Whether a woken lazy pool may be torn back down to the empty-slot state.
 ///
 /// True only when the pool is ready, the idle bound has elapsed with no
@@ -2259,6 +2281,30 @@ mod inactivity_tests {
             dispatched,
             checked,
             Duration::from_secs(60),
+            false
+        ));
+    }
+
+    /// A held seat looks idle by every measure the reaper has — no turn in
+    /// flight, no flushable work, no activity since the refusal — and exiting
+    /// would discard the triggers waiting for the limit to lift.
+    #[test]
+    fn a_seat_held_on_a_usage_limit_does_not_reap_itself() {
+        let started = tokio::time::Instant::now();
+        let after_bound = started + Duration::from_secs(61);
+        let bound = Duration::from_secs(60);
+
+        assert!(
+            !inactivity_exit_due(started, after_bound, bound, false, true),
+            "a held seat must not exit: the hold is the only thing keeping its queue alive"
+        );
+        // The exemption is the hold and nothing else — an idle seat with no
+        // hold still reaps on the same bound it always did.
+        assert!(inactivity_exit_due(
+            started,
+            after_bound,
+            bound,
+            false,
             false
         ));
     }
@@ -3781,11 +3827,12 @@ async fn tokio_main() -> Result<()> {
                     }
                 } => {
                     let _ = result_rx;
-                    if inactivity_expired(
+                    if inactivity_exit_due(
                         last_activity,
                         tokio::time::Instant::now(),
                         inactivity_bound,
                         queue.has_in_flight() || heartbeat_in_flight,
+                        queue.limit_hold().is_some(),
                     ) {
                         tracing::info!(
                             inactivity_seconds = config.exit_after_inactivity_secs,
@@ -5004,7 +5051,14 @@ struct LimitRefusal {
     /// Which window: `five_hour`, `seven_day`, …
     window: Option<String>,
     /// The provider's own words, kept verbatim for the notice.
-    prose: String,
+    ///
+    /// The adapter's `message` and nothing of ours: `AcpError`'s `Display`
+    /// frames it as `Agent reported error (code -32603): …`, and a voice ask
+    /// reads that frame aloud. `None` when the refusal was classified from the
+    /// `_claude/rateLimit` report alone — the error is then some other variant
+    /// whose text is entirely ours, and quoting ourselves as "it reported" is
+    /// the same defect in smaller print.
+    prose: Option<String>,
 }
 
 fn limit_refusal(
@@ -5031,7 +5085,7 @@ fn limit_refusal(
     Some(LimitRefusal {
         resets_at,
         window,
-        prose: format!("{error}"),
+        prose: error.agent_message().map(str::to_owned),
     })
 }
 
@@ -5046,6 +5100,9 @@ fn limit_refusal(
 /// instant is given in UTC beside them. The local rendering in the provider's
 /// prose ("1:10am (America/Denver)") is left exactly as it arrived: it is the
 /// same instant, and re-deriving it here would be a second chance to be wrong.
+/// Quoted verbatim, prefix and all, for the same reason: trimming the
+/// adapter's leading "Internal error:" would be a wording match on the one
+/// field this design deliberately never matches on.
 fn limit_notice(refusal: &LimitRefusal) -> String {
     let window = match refusal.window.as_deref() {
         Some("five_hour") => "the five-hour limit",
@@ -5070,7 +5127,9 @@ fn limit_notice_with(refusal: &LimitRefusal, window: &str) -> String {
             utc_stamp(secs)
         ));
     }
-    line.push_str(&format!(" It reported: \"{}\".", refusal.prose));
+    if let Some(prose) = &refusal.prose {
+        line.push_str(&format!(" It reported: \"{prose}\"."));
+    }
     line
 }
 
@@ -5679,6 +5738,14 @@ fn recover_panicked_agent(
         return;
     };
     let i = meta.agent_index;
+
+    // A panic never reaches `handle_prompt_result`, so the two calls that
+    // resolve a usage-limit hold — clear on an answer, re-arm on a refusal —
+    // never run for this turn. Release any outstanding probe explicitly: the
+    // requeue below does it too, but only when there is a recoverable batch
+    // for a live channel, and a probe left marked outstanding blocks both
+    // dispatch and the in-flight expiry sweep that would otherwise recover.
+    queue.release_limit_probe();
 
     // Requeue BEFORE mark_complete (same rationale as handle_prompt_result).
     if let Some(batch) = meta.recoverable_batch {
@@ -11696,6 +11763,53 @@ mod error_outcome_emission_tests {
         assert!(
             !notice.contains("  "),
             "double space in a spoken line: {notice}"
+        );
+    }
+
+    /// The line is spoken aloud on a voice ask, so our own error framing must
+    /// not reach it: `AcpError`'s `Display` renders "Agent reported error
+    /// (code -32603): …", and Gemini reads that as "agent reported error code
+    /// minus three two six zero three" in the seat's voice.
+    #[test]
+    fn the_spoken_line_quotes_the_adapter_and_nothing_of_ours() {
+        let refusal = limit_refusal(&limit_error(Some("rate_limit")), Some(&real_report()))
+            .expect("a refusal");
+        let notice = limit_notice(&refusal);
+        assert!(
+            notice.contains("You've hit your session limit"),
+            "the adapter's own words must survive: {notice}"
+        );
+        assert!(
+            !notice.contains("Agent reported error"),
+            "our wrapper must not be spoken: {notice}"
+        );
+        assert!(!notice.contains("-32603"), "got: {notice}");
+        // Verbatim, prefix and all — trimming the adapter's leading "Internal
+        // error:" would be a wording match on the one field this design
+        // deliberately never matches on.
+        assert_eq!(
+            refusal.prose.as_deref(),
+            Some("Internal error: You've hit your session limit · resets 1:10am (America/Denver)")
+        );
+    }
+
+    /// Classified from the report alone, on an error variant whose text is
+    /// entirely ours: there is nothing of the provider's to quote, so the
+    /// notice must quote nobody rather than quote us back to the reader.
+    #[test]
+    fn with_no_adapter_message_the_notice_quotes_nobody() {
+        let outcome = PromptOutcome::Error(acp::AcpError::Timeout(Duration::from_secs(1500)));
+        let refusal = limit_refusal(&outcome, Some(&real_report())).expect("a refusal");
+        assert_eq!(refusal.prose, None);
+        let notice = limit_notice(&refusal);
+        assert!(!notice.contains("It reported"), "got: {notice}");
+        assert!(!notice.contains("did not respond"), "got: {notice}");
+        // Everything the reader actually needs is still there.
+        assert!(notice.contains("Nothing was lost"), "got: {notice}");
+        assert!(notice.contains("2026-09-21 07:10 UTC"), "got: {notice}");
+        assert!(
+            !notice.ends_with(' '),
+            "no trailing space where the quote would have gone: {notice:?}"
         );
     }
 

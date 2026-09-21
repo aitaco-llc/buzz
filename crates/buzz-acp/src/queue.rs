@@ -267,10 +267,23 @@ pub struct LimitHold {
     /// which is exactly what a weekly limit sitting under a five-hour one
     /// looks like.
     pub until: Instant,
-    /// A probe turn has been released and has not yet returned. Nothing else
-    /// dispatches until it does, so one refusal re-arms the hold instead of
-    /// every held scope burning a turn against the same limit.
-    probing: bool,
+    /// A probe turn has been released and has not yet returned, with the
+    /// instant past which the seat stops waiting for it. Nothing else
+    /// dispatches until then, so one refusal re-arms the hold instead of every
+    /// held scope burning a turn against the same limit.
+    ///
+    /// It carries a deadline because it is the only gate that can wedge the
+    /// seat: `blocks` sits in front of the in-flight expiry sweep, so while a
+    /// probe is outstanding the sweep that would otherwise release a hung turn
+    /// cannot run. The deadline is the queue's own in-flight backstop, so a
+    /// probe that goes quiet is given exactly as long as any other dispatched
+    /// batch and not a second more — when it lapses, the very next
+    /// `flush_next_inner` sweeps the wedged scope and sends a fresh probe.
+    ///
+    /// Cleared by every path that hands a batch back undispatched — see
+    /// [`release_limit_probe`](EventQueue::release_limit_probe) — because a
+    /// probe that was never dispatched proves nothing about the provider.
+    probing: Option<Instant>,
     /// Consecutive refusals, for the capped backoff when no `resetsAt` came.
     consecutive: u32,
     /// The notice a held trigger gets, rendered once when the hold is armed.
@@ -286,7 +299,7 @@ pub struct LimitHold {
 impl LimitHold {
     /// Whether the seat may dispatch right now.
     fn blocks(&self, now: Instant) -> bool {
-        self.probing || self.until > now
+        self.probing.is_some_and(|deadline| now < deadline) || self.until > now
     }
 }
 
@@ -435,9 +448,15 @@ impl EventQueue {
         // Past a hold's deadline the first batch out is the probe, and nothing
         // else may go until it answers. Marked here rather than at each of the
         // inner function's returns so the two cannot drift apart.
+        //
+        // The deadline is the same in-flight backstop the batch itself just
+        // got, read after the flush so it cannot precede it: when it lapses,
+        // `blocks` opens, the expiry sweep releases the wedged scope, and the
+        // next batch out is a fresh probe.
+        let probe_deadline = Instant::now() + self.in_flight_deadline;
         if batch.is_some() {
             if let Some(hold) = self.limit_hold.as_mut() {
-                hold.probing = true;
+                hold.probing = Some(probe_deadline);
             }
         }
         batch
@@ -654,11 +673,32 @@ impl EventQueue {
         );
         self.limit_hold = Some(LimitHold {
             until,
-            probing: false,
+            probing: None,
             consecutive,
             notice,
         });
         self.requeue_preserve_timestamps(batch);
+    }
+
+    /// The outstanding probe is over: whatever it was going to tell us about
+    /// the provider, it is not going to tell us now.
+    ///
+    /// Called from every path that hands a batch back without dispatching it
+    /// (pool exhausted, busy-owner hold, panic recovery) as well as from the
+    /// ordinary requeues, because `probing` is the one piece of state here
+    /// that can wedge the seat: it blocks dispatch AND it sits in front of the
+    /// in-flight expiry sweep, so nothing else would ever clear it.
+    ///
+    /// Deliberately not scope-matched. Releasing too eagerly costs at most one
+    /// extra turn, which is refused, spends no retry budget and re-arms the
+    /// hold; releasing too late costs the seat until someone restarts it. A
+    /// hold is a fact about the account, not about a batch, so any turn that
+    /// comes back is evidence and any batch that comes back undispatched is
+    /// one fewer turn in flight. Bias to release.
+    pub fn release_limit_probe(&mut self) {
+        if let Some(hold) = self.limit_hold.as_mut() {
+            hold.probing = None;
+        }
     }
 
     /// Release the seat: the provider answered, so the limit is over.
@@ -700,6 +740,7 @@ impl EventQueue {
     }
 
     pub fn requeue(&mut self, batch: FlushBatch) -> Option<FlushBatch> {
+        self.release_limit_probe();
         let channel_id = batch.channel_id;
         let scope = batch.scope.clone();
         let attempt = {
@@ -792,6 +833,7 @@ impl EventQueue {
     /// Does NOT set `retry_after`. Does NOT remove from `in_flight_scopes` —
     /// caller must call `mark_complete` separately.
     pub fn requeue_preserve_timestamps(&mut self, batch: FlushBatch) {
+        self.release_limit_probe();
         let channel_id = batch.channel_id;
         let scope = batch.scope.clone();
 
@@ -846,6 +888,7 @@ impl EventQueue {
     /// the generic queue — they are stored separately and merged by
     /// `flush_next()`. No retry throttle, no backoff.
     pub fn requeue_as_cancelled(&mut self, batch: FlushBatch, reason: CancelReason) {
+        self.release_limit_probe();
         let scope = batch.scope.clone();
         let entry = self.cancelled_batches.entry(scope.clone()).or_default();
         // Preserve any already-cancelled events from a prior cancel (double-cancel).
@@ -6979,6 +7022,92 @@ mod tests {
         q.hold_for_limit(batch, None, "limit".into(), now);
         let second = q.limit_hold().expect("still held").until;
         assert!(second > first, "consecutive refusals must back off further");
+    }
+
+    /// The pool-exhausted and busy-owner paths in `dispatch_pending` flush a
+    /// batch and put it straight back without ever handing it to an agent. No
+    /// prompt task runs, so `handle_prompt_result` — the only other place a
+    /// hold is resolved — never sees it, and the probe mark would otherwise
+    /// stand forever.
+    #[test]
+    fn an_undispatched_probe_releases_the_seat_instead_of_wedging_it() {
+        let (mut q, batch, ch) = held_setup();
+        let now = Instant::now();
+        q.hold_for_limit(
+            batch,
+            Some(now - Duration::from_secs(1)),
+            "limit".into(),
+            now,
+        );
+
+        let probe = q.flush_next().expect("the probe may go");
+        assert!(
+            q.flush_next().is_none(),
+            "nothing else follows a probe that is in flight"
+        );
+
+        // Exactly what dispatch_pending does when no worker can be claimed.
+        q.requeue_preserve_timestamps(probe);
+        q.mark_complete(conv(ch));
+
+        assert!(
+            q.flush_next().is_some(),
+            "a probe that was never dispatched proves nothing about the provider — \
+             the seat must try again rather than wedge until a restart"
+        );
+    }
+
+    /// A probe that is dispatched and then goes quiet — no result, no panic,
+    /// nothing to requeue. The `blocks` gate sits in front of the in-flight
+    /// expiry sweep, so without its own deadline nothing would ever recover.
+    #[test]
+    fn a_probe_that_never_answers_stops_blocking_at_the_in_flight_backstop() {
+        let (mut q, batch, _ch) = held_setup();
+        let now = Instant::now();
+        q.hold_for_limit(
+            batch,
+            Some(now - Duration::from_secs(1)),
+            "limit".into(),
+            now,
+        );
+        let _probe = q.flush_next().expect("the probe may go");
+
+        let deadline = q
+            .limit_hold()
+            .expect("held")
+            .probing
+            .expect("the probe is marked outstanding");
+        assert!(
+            deadline >= now + q.in_flight_deadline - Duration::from_secs(1),
+            "a probe gets the queue's own in-flight backstop and no less"
+        );
+
+        // Wind the probe's clock forward rather than sleeping two hours.
+        q.limit_hold.as_mut().expect("held").probing = Some(now - Duration::from_secs(1));
+        assert!(
+            !q.limit_hold().expect("held").blocks(Instant::now()),
+            "past the backstop a silent probe must stop blocking the seat"
+        );
+    }
+
+    /// Releasing the probe is not releasing the limit: the hold's own deadline
+    /// still governs, so this can never turn a hold into a retry storm.
+    #[test]
+    fn releasing_the_probe_leaves_the_limit_itself_in_force() {
+        let (mut q, batch, _ch) = held_setup();
+        let now = Instant::now();
+        q.hold_for_limit(
+            batch,
+            Some(now + Duration::from_secs(300)),
+            "limit".into(),
+            now,
+        );
+        q.release_limit_probe();
+        assert!(q.limit_hold().is_some(), "the limit is still in force");
+        assert!(
+            q.flush_next().is_none(),
+            "and the seat still waits for its deadline"
+        );
     }
 
     #[test]
