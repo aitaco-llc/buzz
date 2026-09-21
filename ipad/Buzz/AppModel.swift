@@ -221,6 +221,7 @@ final class Workspace {
   var sending = false
   var reactionBusy = Set<String>()
   var reactions: [String: [ReactionGroup]] = [:]
+  var turnReceipts: [String: TurnReceipt] = [:]
   var customEmoji: [CustomEmoji] = []
   var readState: [String: Int] = [:]
   var userStatus: Event?
@@ -280,7 +281,8 @@ final class Workspace {
       return (
         ReactionProjection.index(events: visible, authority: authority),
         CustomEmoji.palette(events: cached),
-        ReadStateProjection.contexts(events: visible, identity: self.identity)
+        ReadStateProjection.contexts(events: visible, identity: self.identity),
+        TurnReceiptProjection.index(events: visible, authority: authority)
       )
     }.value
     guard reloadGeneration == token else { return }
@@ -289,6 +291,7 @@ final class Workspace {
     reactions = projected.0
     customEmoji = projected.1
     readState = projected.2
+    turnReceipts = projected.3
     userStatus = cached.filter {
       $0.kind == 30315 && $0.pubkey == identity.pubkey && $0.tag("d") == "general"
     }.max(by: { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) })

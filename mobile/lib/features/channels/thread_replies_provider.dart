@@ -49,8 +49,19 @@ final threadRepliesProvider = FutureProvider.autoDispose
           _threadRepliesFilter(args, cursor),
         ]);
         replies.addAll(events);
-        if (events.length < 200) return replies;
-        final last = events.last;
+        // The relay's aux closure rides this page without counting toward its
+        // limit, and it is appended after the rows. So exhaustion and the next
+        // cursor are read off the content rows alone: counting overlays would
+        // fetch a page that does not exist, and taking the cursor from the
+        // last event would key it to a reaction or a receipt.
+        final rows = events
+            .where(
+              (event) =>
+                  EventKind.channelTimelineContentKinds.contains(event.kind),
+            )
+            .toList();
+        if (rows.length < 200) return replies;
+        final last = rows.last;
         cursor = _ThreadCursor(createdAt: last.createdAt, eventId: last.id);
       }
       throw Exception('Thread ${args.rootId} exceeded the page safety limit.');
@@ -69,6 +80,12 @@ NostrFilter _threadRepliesFilter(
     limit: 200,
     extensions: {
       'depth_limit': 64,
+      // A NIP-AR receipt (kind:44201) annotating a thread reply reaches this
+      // client nowhere else: the channel window's aux closure targets the
+      // top-level rows it delivered, and a reply is not one of them. Without
+      // this the footer for an agent turn taken inside a thread never renders,
+      // however long the thread stays open.
+      'include_aux': true,
       if (cursor != null) 'thread_cursor': cursor.createdAt,
       if (cursor != null) 'thread_cursor_id': cursor.eventId,
     },
@@ -140,9 +157,9 @@ final threadRepliesWithLocalProvider = Provider.autoDispose
 /// Union two event lists by id, newest-wins, in timeline order.
 ///
 /// The thread view needs this to fold the channel's live socket events into its
-/// own one-shot query result: the query asks for content kinds only, so
-/// reactions, edits, and deletions that land while a thread is open never reach
-/// it on their own.
+/// own one-shot query result: the query carries the aux closure as it stood
+/// when it ran, so a reaction, edit, deletion, or receipt that lands while the
+/// thread is open never reaches it on its own.
 List<NostrEvent> mergeThreadEvents(
   Iterable<NostrEvent> first,
   Iterable<NostrEvent> second,

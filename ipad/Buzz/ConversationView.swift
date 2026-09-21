@@ -410,6 +410,9 @@ struct ConversationView: View {
           .font(.caption).buttonStyle(.plain).foregroundStyle(Aitaco.accent)
           .accessibilityIdentifier("thread-\(event.id)")
         }
+        if let receipt = workspace.turnReceipts[event.id] {
+          TurnReceiptFooter(receipt: receipt)
+        }
         ReactionRow(workspace: workspace, message: event) {
           reactionTarget = EditingMessage(event: event)
         }
