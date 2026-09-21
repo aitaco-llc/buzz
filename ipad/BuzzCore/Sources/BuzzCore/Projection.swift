@@ -59,8 +59,45 @@ public enum Projection {
     }
   }
 
+  /// Backing channels for Huddles: the private, one-hour stream a call's media
+  /// runs in. It belongs to the Huddle card, never to a channel list, so it is
+  /// derived from the creator-signed kind:48100 start rather than from the
+  /// channel's own metadata — the relay archives the backing channel minutes
+  /// after the call, but that archived state is not something a sidebar should
+  /// have to wait for.
+  ///
+  /// A start only counts when its signer owns the backing channel in the
+  /// relay-signed kind:39002 roster. Without that check, any member of a
+  /// channel could publish a start naming someone else's channel and erase it
+  /// from their sidebar.
+  public static func huddleBackingChannelIDs(events: [Event], relayPubkey: String) -> Set<String> {
+    var owners: [String: Set<String>] = [:]
+    for (channelID, roster) in latest(
+      events.filter { $0.kind == 39002 && $0.pubkey == relayPubkey }, key: { $0.tag("d") })
+    {
+      owners[channelID] = Set(
+        roster.tags.filter { $0.count >= 4 && $0[0] == "p" && $0[3] == "owner" }
+          .map { $0[1].lowercased() })
+    }
+    var backing: Set<String> = []
+    for event in events where event.kind == 48100 {
+      guard let data = event.content.data(using: .utf8),
+        let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let ephemeral = object["ephemeral_channel_id"] as? String, !ephemeral.isEmpty,
+        owners[ephemeral]?.contains(event.pubkey.lowercased()) == true
+      else { continue }
+      backing.insert(ephemeral)
+    }
+    return backing
+  }
+
   /// Most recent membership and metadata, using `d` tags for channel identity.
-  public static func channels(events: [Event], pubkey: String) -> [Channel] {
+  ///
+  /// `hiding` drops channels that exist but are not rows — Huddle backing
+  /// channels, which `huddleBackingChannelIDs` derives.
+  public static func channels(events: [Event], pubkey: String, hiding: Set<String> = [])
+    -> [Channel]
+  {
     let memberships = latest(events.filter { $0.kind == 39002 }, key: { $0.tag("d") })
     let joined = Set(
       memberships.values.filter {
@@ -72,7 +109,7 @@ public enum Projection {
           $0.count >= 2 && $0[0] == "p"
         }.map { $0[1] }
         return Channel(event: event, participants: members)
-      }.filter { joined.contains($0.id) }
+      }.filter { joined.contains($0.id) && !hiding.contains($0.id) }
       .sorted { ($0.name.localizedLowercase, $0.id) < ($1.name.localizedLowercase, $1.id) }
   }
 

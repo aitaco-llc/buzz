@@ -1824,6 +1824,52 @@ void main() {
   );
 
   test(
+    'Huddle backing channels stay hidden once the start event ages',
+    () async {
+      // The bug Lloyd hit: the backing channel was hidden only while its
+      // kind:48100 start sat inside a two-hour window, so a day-old dead Huddle
+      // came back as a `huddle-*` row in the channel list.
+      final aged =
+          DateTime.now().millisecondsSinceEpoch ~/ 1000 -
+          const Duration(days: 3).inSeconds;
+      final session = _FakeRelaySession(
+        memberships: [
+          _membership(_channelA, myPk),
+          _membership(_channelB, myPk, ownerPubkey: myPk),
+        ],
+        metadata: [
+          _meta(id: _channelA, name: 'general'),
+          _meta(
+            id: _channelB,
+            name: 'huddle-22222222',
+            ttlSeconds: 3600,
+            visibility: 'private',
+          ),
+        ],
+        huddleStarts: [
+          NostrEvent(
+            id: 'aged-huddle-start',
+            pubkey: myPk,
+            createdAt: aged,
+            kind: EventKind.huddleStarted,
+            tags: const [
+              ['h', _channelA],
+            ],
+            content: '{"ephemeral_channel_id":"$_channelB"}',
+            sig: 'sig',
+          ),
+        ],
+      );
+      final container = _buildContainer(session: session);
+      addTearDown(container.dispose);
+
+      final channels = await container.read(channelsProvider.future);
+
+      expect(channels.map((channel) => channel.id), [_channelA]);
+    },
+  );
+
+  test(
     'forged Huddle links do not hide unrelated one-hour private streams',
     () async {
       final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
@@ -2526,7 +2572,14 @@ class _FakeRelaySession extends RelaySessionNotifier {
         _huddleStartsStarted = null;
         await paused.future;
       }
-      return huddleStarts;
+      // Model the relay: a windowed query only returns starts inside its
+      // window. Without this the fake would hide a backing channel the real
+      // relay would never have returned.
+      final since = filter.since;
+      if (since == null) return huddleStarts;
+      return huddleStarts
+          .where((event) => event.createdAt >= since)
+          .toList(growable: false);
     }
     if (filter.kinds.contains(39000)) {
       final ids = filter.tags['#d']?.toSet();
