@@ -4,16 +4,22 @@
 Records every prompt it gets to $STUB_SEAT_LOG and answers each one by
 replying in the triggering thread with `buzz messages send`, using the key
 buzz-acp passes down. It replies ANSWER-$STUB_SEAT_NONCE.
+
+$STUB_SEAT_DELAY_SECS holds the answer back, so the lab can exercise what the
+caller hears while the seat is thinking: the progress line and the working
+sound. Zero, the default, answers as fast as the seat can.
 """
 import json
 import os
 import re
 import subprocess
 import sys
+import time
 import uuid
 
 LOG = os.environ["STUB_SEAT_LOG"]
 NONCE = os.environ["STUB_SEAT_NONCE"]
+DELAY = float(os.environ.get("STUB_SEAT_DELAY_SECS", "0"))
 
 
 def send(obj):
@@ -39,6 +45,7 @@ for line in sys.stdin:
                                   "channel": channel and channel.group(1),
                                   "voice_bridge_ask": "voice-bridge" in text}) + "\n")
         if event and channel:
+            time.sleep(DELAY)
             subprocess.run(["buzz", "--format", "compact", "messages", "send",
                             "--channel", channel.group(1), "--reply-to", event.group(1),
                             "--content", f"ANSWER-{NONCE}: the build is green"],

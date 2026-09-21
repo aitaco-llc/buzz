@@ -49,6 +49,17 @@ const STATS_EVERY: Duration = Duration::from_secs(5);
 /// A fault on the audio path repeats at 50 frames/s. Report it at most this
 /// often, with the count of what was swallowed.
 const FAULT_WINDOW: Duration = Duration::from_secs(5);
+/// One frame of room audio, as a step of the pacing deadline.
+///
+/// Nothing acts on the deadline yet. It exists so `pacer.debt_ms` can say how
+/// far behind real time the room track ran, which is the difference between a
+/// loop that could not emit and a queue that had nothing to emit — and those
+/// two produce the same five-second averages. See the note on
+/// `MissedTickBehavior` in [`run_call`].
+const FRAME_INTERVAL: Duration = Duration::from_millis(20);
+/// Below this an inbound frame is the room's noise floor rather than someone
+/// talking. Used only to anchor latency on the end of speech.
+const SPEECH_FLOOR_DBOV: i8 = -50;
 
 pub struct CallParams {
     pub relay_url: String,
@@ -63,6 +74,15 @@ pub struct CallParams {
     pub voice_label: String,
     pub log_path: PathBuf,
     pub ask_timeout: Duration,
+    /// How often, while the seat is working, its voice says so and for how
+    /// long. The elapsed number it speaks is counted here.
+    pub progress_every: Duration,
+    /// Which loop plays under the room track during a wait.
+    pub working_sound: crate::bed::WorkingSound,
+    /// Level of that loop, as a fraction of the file's own level.
+    pub working_sound_gain: f32,
+    /// How long after an ask the loop starts, so a fast answer never triggers it.
+    pub working_sound_delay: Duration,
     /// The watcher's resolved configuration, recorded on `call_start` so the
     /// call log explains itself.
     pub config: Value,
@@ -128,6 +148,29 @@ struct AudioStats {
     samples_out: u64,
     silence_injections: u64,
     silence_errors: u64,
+    /// Working-sound frames, counted apart from speech: they are audio the
+    /// room heard that Gemini never sent, and folding them into `samples_out`
+    /// would make the queue look emptier than it is.
+    bed_frames_out: u64,
+    /// Samples thrown away by a barge-in, which the human had not heard yet.
+    discarded_by_interrupt: u64,
+    /// How many times a barge-in did that.
+    interrupts: u64,
+    /// Queue depth in samples when the last frame of this window was emitted.
+    queued_at_emit: usize,
+    /// Pacing ticks that fired, and the worst gap between two of them. One
+    /// frame goes out per 20 ms of wall clock, so a tick that arrives late is
+    /// audio the room does not get.
+    ticks: u64,
+    worst_tick_gap_ms: u128,
+    /// Ticks that found a whole frame waiting. A window with few of these and
+    /// a low emit rate is a queue that was short, not a loop that was blocked;
+    /// five-second averages cannot tell those apart, and they call for
+    /// opposite fixes.
+    ticks_owed: u64,
+    /// Worst gap between a frame's real-time deadline and the tick that
+    /// emitted it. What a catch-up drain would have had to repay.
+    worst_debt_ms: u128,
 }
 
 impl AudioStats {
@@ -160,6 +203,19 @@ impl AudioStats {
                 "samples": self.samples_out,
                 "silence_injections": self.silence_injections,
                 "silence_errors": self.silence_errors,
+                "bed_frames": self.bed_frames_out,
+            },
+            "queue": {
+                "queued_samples_at_emit": self.queued_at_emit,
+                "queued_ms_at_emit": self.queued_at_emit as u64 * 1000 / gemini::OUTPUT_RATE as u64,
+                "discarded_by_interrupt": self.discarded_by_interrupt,
+                "interrupts": self.interrupts,
+            },
+            "pacer": {
+                "ticks": self.ticks,
+                "ticks_owed": self.ticks_owed,
+                "worst_tick_gap_ms": self.worst_tick_gap_ms,
+                "worst_debt_ms": self.worst_debt_ms,
             },
         })
     }
@@ -179,6 +235,26 @@ enum AskUpdate {
     },
     /// No reply within the ask timeout.
     TimedOut { request: String, waited_ms: u128 },
+    /// The seat is still working. Carries the elapsed time the voice is
+    /// allowed to speak, counted here so it is not one the model invented.
+    Waiting { elapsed_secs: u64 },
+}
+
+/// When an update may reach Gemini.
+///
+/// Cutting the voice off mid-word is the harshest thing the bridge can do, so
+/// only a tool response Gemini is blocked on goes in regardless.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Delivery {
+    /// Gemini is waiting on this; send it now whatever else is happening.
+    Now,
+    /// Send when the voice is quiet, and hold it until then.
+    WhenQuiet,
+    /// Send only if the voice is already quiet, and drop it otherwise. A
+    /// progress line carries a number that is true at the moment it is
+    /// counted; held until the voice stops, it would arrive stale, and a
+    /// stale number spoken as fact is the defect this exists to close.
+    IfQuiet,
 }
 
 struct AskRequest {
@@ -333,6 +409,7 @@ async fn run_call_inner(
         params.ephemeral,
         me.clone(),
         params.ask_timeout,
+        params.progress_every,
         ask_rx,
         update_tx,
         cancel.child_token(),
@@ -358,6 +435,14 @@ async fn run_call_inner(
     let mut speaking = false;
     let mut held: VecDeque<Value> = VecDeque::new();
     let mut tick = tokio::time::interval(Duration::from_millis(20));
+    // `Skip` drops every tick missed while an arm of the `select!` held the
+    // loop; tokio's default, `Burst`, fires once per missed tick and would
+    // emit the frames behind them. That is catch-up this loop had and gave
+    // away, and it is why a stall leaves `out_pcm` permanently behind: the
+    // samples stay, the chance to emit them does not. Left as it is until
+    // `pacer.ticks` says ticks are being missed at all — a queue that was
+    // simply short looks the same in a five-second average and needs the
+    // opposite fix.
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     let mut audio = AudioStats::default();
@@ -366,19 +451,54 @@ async fn run_call_inner(
     let mut gemini_send_fault = RateLimit::new(FAULT_WINDOW);
     let mut silence_fault = RateLimit::new(FAULT_WINDOW);
     let mut unknown_message = RateLimit::new(FAULT_WINDOW);
-    // How long the human waited to hear anything back. `awaiting` is refreshed
-    // on every frame the human sends, so it holds the end of their speech; the
+    // How long the human waited to hear anything back. Refreshed on every
+    // inbound frame that carries speech rather than on every inbound frame:
+    // his client streams continuously whether or not he is talking, so the
+    // original anchor was pinned to the present and 143 records on call
+    // `bab4c7e1` read 1-103 ms through a call that ran seconds behind. The
     // next Gemini audio frame answers it, and the next Opus frame out is when
-    // they could actually hear it.
+    // he could actually hear it.
     let mut awaiting: Option<Instant> = None;
     let mut pending_room: Option<(Instant, u128)> = None;
+    // The answer's own chain, which is the one the human feels: the bridge has
+    // it, the hold queue lets it go, Gemini starts speaking, the room hears it.
+    let mut answer_at: Option<Instant> = None;
+    let mut answer_handed_at: Option<Instant> = None;
+    let mut answer_audio: Option<Instant> = None;
+    // The working sound, and the ask it belongs to. `working_since` is the
+    // moment the ask reached the relay; the bed waits out `working_sound_delay`
+    // from there so a fast answer is never dressed up as a wait.
+    let mut bed = crate::bed::Bed::new(params.working_sound, params.working_sound_gain);
+    let mut working_since: Option<Instant> = None;
+    let mut bed_frame = vec![0i16; OUT_FRAME];
+    // Frames leave on a wall-clock deadline rather than one per tick, so a
+    // late tick costs latency instead of audio. Reset whenever the queue runs
+    // dry: an idle line must not accrue a debt and then flush it in a burst.
+    let mut next_frame_at = Instant::now();
+    let mut last_tick = Instant::now();
 
     let end_reason: String = loop {
         tokio::select! {
             _ = cancel.cancelled() => break "huddle ended".into(),
 
             _ = tick.tick() => {
+                let now = Instant::now();
+                audio.ticks += 1;
+                audio.worst_tick_gap_ms = audio.worst_tick_gap_ms.max(now.duration_since(last_tick).as_millis());
+                last_tick = now;
+
+                if out_pcm.len() < OUT_FRAME {
+                    // Nothing owed: start the next frame's clock from here
+                    // rather than carrying an idle line's debt into the next
+                    // utterance.
+                    next_frame_at = now;
+                }
+                let mut sent = 0usize;
                 if out_pcm.len() >= OUT_FRAME {
+                    audio.ticks_owed += 1;
+                    audio.worst_debt_ms = audio
+                        .worst_debt_ms
+                        .max(now.saturating_duration_since(next_frame_at).as_millis());
                     let frame: Vec<i16> = out_pcm.drain(..OUT_FRAME).collect();
                     let len = encoder.encode(&frame, &mut encoded)?;
                     if len > 0 {
@@ -397,15 +517,54 @@ async fn run_call_inner(
                         ts_48k = ts_48k.wrapping_add(wire::TS_PER_FRAME);
                         audio.opus_frames_out += 1;
                         audio.samples_out += OUT_FRAME as u64;
+                        audio.queued_at_emit = out_pcm.len();
                         if dtx {
                             audio.dtx_frames_out += 1;
                         }
                         if let Some((since, gemini_ms)) = pending_room.take() {
                             log.record("response_latency", json!({
-                                "from": "the human's last audio frame",
+                                "from": "the end of the human's speech",
                                 "gemini_first_audio_ms": gemini_ms,
                                 "room_first_audio_ms": since.elapsed().as_millis(),
                             }));
+                        }
+                        if let (Some(answer), None) = (answer_at, answer_audio) {
+                            answer_audio = Some(Instant::now());
+                            log.record("answer_audio", json!({
+                                "seen_to_room_ms": answer.elapsed().as_millis(),
+                                "handed_to_room_ms": answer_handed_at.map(|at| at.elapsed().as_millis()),
+                                "queued_samples": out_pcm.len(),
+                                "queued_ms": out_pcm.len() as u64 * 1000 / gemini::OUTPUT_RATE as u64,
+                            }));
+                        }
+                    }
+                    next_frame_at += FRAME_INTERVAL;
+                    sent += 1;
+                }
+                // The working sound, in the gap where the room hears nothing
+                // at all today. Speech always wins: this is the `else`.
+                if sent == 0 {
+                    let waiting = working_since
+                        .is_some_and(|since| since.elapsed() >= params.working_sound_delay);
+                    if waiting && !speaking {
+                        if let Some(bed) = bed.as_mut() {
+                            bed.frame(&mut bed_frame);
+                            let len = encoder.encode(&bed_frame, &mut encoded)?;
+                            if len > 0 {
+                                let header = FrameHeader {
+                                    seq,
+                                    ts_48k,
+                                    level_dbov: wire::level_dbov(&bed_frame),
+                                    flags: 0,
+                                };
+                                room.ws
+                                    .send(Message::Binary(wire::client_frame(header, &encoded[..len]).into()))
+                                    .await
+                                    .context("send the working sound to the room")?;
+                                seq = seq.wrapping_add(1);
+                                ts_48k = ts_48k.wrapping_add(wire::TS_PER_FRAME);
+                                audio.bed_frames_out += 1;
+                            }
                         }
                     }
                 }
@@ -456,7 +615,9 @@ async fn run_call_inner(
                             Ok(n) if n > 0 => {
                                 audio.peer(index, pubkey).pcm_samples += n as u64;
                                 last_input = Instant::now();
-                                awaiting = Some(last_input);
+                                if wire::level_dbov(&pcm_in[..n]) > SPEECH_FLOOR_DBOV {
+                                    awaiting = Some(last_input);
+                                }
                                 if let Err(error) = gemini
                                     .send(Message::Text(gemini::audio_input(&pcm_in[..n]).to_string().into()))
                                     .await
@@ -569,6 +730,18 @@ async fn run_call_inner(
                         }
                         ServerEvent::Interrupted => {
                             speaking = false;
+                            // Everything still queued is speech the human has
+                            // not heard. Dropping it is what a barge-in means,
+                            // but how much it drops is the measure of how far
+                            // behind the room track was running.
+                            if !out_pcm.is_empty() {
+                                audio.interrupts += 1;
+                                audio.discarded_by_interrupt += out_pcm.len() as u64;
+                                log.record("interrupted", json!({
+                                    "discarded_samples": out_pcm.len(),
+                                    "discarded_ms": out_pcm.len() as u64 * 1000 / gemini::OUTPUT_RATE as u64,
+                                }));
+                            }
                             out_pcm.clear();
                             let lines = transcript.interrupted();
                             emit(transcript, lines, &post_tx, log);
@@ -614,6 +787,14 @@ async fn run_call_inner(
                 }
                 if !speaking {
                     while let Some(message) = held.pop_front() {
+                        if let (Some(answer), None) = (answer_at, answer_handed_at) {
+                            answer_handed_at = Some(Instant::now());
+                            log.record("answer_handed", json!({
+                                "held_ms": answer.elapsed().as_millis(),
+                                "queued_samples": out_pcm.len(),
+                                "queued_ms": out_pcm.len() as u64 * 1000 / gemini::OUTPUT_RATE as u64,
+                            }));
+                        }
                         gemini.send(Message::Text(message.to_string().into())).await.ok();
                     }
                 }
@@ -627,47 +808,86 @@ async fn run_call_inner(
 
             update = update_rx.recv() => {
                 let Some(update) = update else { continue };
-                let (message, is_answer) = match update {
+                let (message, delivery) = match update {
                     AskUpdate::Asked { call_id, event_id } => {
                         outcome.asks += 1;
                         log.record("ask_posted", json!({ "call_id": call_id, "event_id": event_id.to_hex() }));
+                        // The wait starts here, not at the tool call: this is
+                        // the moment the seat could first have seen it.
+                        working_since = Some(Instant::now());
+                        if let Some(bed) = bed.as_mut() {
+                            bed.rewind();
+                        }
                         (gemini::tool_response(&call_id, gemini::ASK_ROCK, json!({
                             "status": "asked",
-                            "note": format!("rock has the request. Tell {} briefly that you are checking with rock. The answer will arrive later as a message that starts with \"rock answered\".", params.human_label),
-                        })), false)
+                            "note": format!("rock has the request. Tell {} briefly that you are checking with rock, then wait. {} can hear a working sound while rock works, so silence is fine. The answer will arrive later as a message that starts with \"rock answered\".", params.human_label, params.human_label),
+                        })), Delivery::Now)
                     }
                     AskUpdate::Failed { call_id, error } => {
                         outcome.ask_failures += 1;
                         outcome.errors += 1;
                         log.record("ask_failed", json!({ "call_id": call_id, "error": error }));
+                        working_since = None;
                         (gemini::tool_response(&call_id, gemini::ASK_ROCK, json!({
                             "status": "failed",
                             "note": "The request did not reach rock. Say so plainly.",
-                        })), false)
+                        })), Delivery::Now)
                     }
                     AskUpdate::Answer { request, text, waited_ms } => {
                         outcome.answers += 1;
                         log.record("rock_answer", json!({ "request": request, "text": text, "waited_ms": waited_ms }));
+                        working_since = None;
+                        answer_at = Some(Instant::now());
+                        answer_handed_at = None;
+                        answer_audio = None;
                         (gemini::user_turn(&format!(
                             "rock answered {}'s request \"{request}\": {text}\n\nTell {} this now, briefly and faithfully. Add nothing rock did not say.",
                             params.human_label, params.human_label
-                        )), true)
+                        )), Delivery::WhenQuiet)
                     }
                     AskUpdate::TimedOut { request, waited_ms } => {
                         outcome.timeouts += 1;
                         log.record("ask_timed_out", json!({ "request": request, "waited_ms": waited_ms }));
+                        working_since = None;
                         (gemini::user_turn(&format!(
                             "rock answered {}'s request \"{request}\": no answer yet after {} minutes. Tell him the request is waiting in his DM with rock.",
                             params.human_label,
                             params.ask_timeout.as_secs() / 60
-                        )), true)
+                        )), Delivery::WhenQuiet)
+                    }
+                    AskUpdate::Waiting { elapsed_secs } => {
+                        log.record("waiting_tick", json!({
+                            "elapsed_secs": elapsed_secs,
+                            "spoken": !speaking,
+                        }));
+                        (gemini::user_turn(&format!(
+                            "rock is still working. It has been {elapsed_secs} seconds. Tell {} that rock is still \
+                             working and that it has been {elapsed_secs} seconds. Say only those two things. Do not \
+                             say what rock is doing, do not guess how much longer, and do not answer his request \
+                             yourself.",
+                            params.human_label
+                        )), Delivery::IfQuiet)
                     }
                 };
-                if is_answer && speaking {
-                    held.push_back(message);
-                } else if let Err(error) = gemini.send(Message::Text(message.to_string().into())).await {
-                    outcome.errors += 1;
-                    warn!(%error, "could not deliver an ask update to Gemini");
+                match delivery {
+                    Delivery::WhenQuiet if speaking => {
+                        held.push_back(message);
+                    }
+                    Delivery::IfQuiet if speaking => {}
+                    _ => {
+                        if answer_at.is_some() && answer_handed_at.is_none() && delivery == Delivery::WhenQuiet {
+                            answer_handed_at = Some(Instant::now());
+                            log.record("answer_handed", json!({
+                                "held_ms": 0,
+                                "queued_samples": out_pcm.len(),
+                                "queued_ms": out_pcm.len() as u64 * 1000 / gemini::OUTPUT_RATE as u64,
+                            }));
+                        }
+                        if let Err(error) = gemini.send(Message::Text(message.to_string().into())).await {
+                            outcome.errors += 1;
+                            warn!(%error, "could not deliver an ask update to Gemini");
+                        }
+                    }
                 }
             }
         }
@@ -910,14 +1130,19 @@ async fn run_asks(
     ephemeral: Uuid,
     me: String,
     ask_timeout: Duration,
+    progress_every: Duration,
     mut ask_rx: mpsc::UnboundedReceiver<AskRequest>,
     update_tx: mpsc::UnboundedSender<AskUpdate>,
     cancel: CancellationToken,
 ) {
     let mut root: Option<EventId> = None;
     let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<Event>();
-    let mut pending: VecDeque<(String, Instant)> = VecDeque::new();
+    // request, when it was published, and when its last progress line went out
+    let mut pending: VecDeque<(String, Instant, Instant)> = VecDeque::new();
     let mut check = tokio::time::interval(Duration::from_secs(5));
+    // One second so a progress line lands within a second of its due time
+    // whatever `progress_every` is; the tick itself costs nothing.
+    let mut progress = tokio::time::interval(Duration::from_secs(1));
     loop {
         tokio::select! {
             _ = cancel.cancelled() => return,
@@ -948,7 +1173,8 @@ async fn run_asks(
                                 cancel.clone(),
                             ));
                         }
-                        pending.push_back((ask.request, Instant::now()));
+                        let now = Instant::now();
+                        pending.push_back((ask.request, now, now));
                         update_tx.send(AskUpdate::Asked { call_id: ask.call_id, event_id: event.id }).ok();
                     }
                     Err(error) => {
@@ -958,9 +1184,9 @@ async fn run_asks(
             }
             reply = reply_rx.recv() => {
                 let Some(reply) = reply else { continue };
-                let (request, asked_at) = pending
+                let (request, asked_at, _) = pending
                     .pop_front()
-                    .unwrap_or_else(|| ("earlier request".into(), Instant::now()));
+                    .unwrap_or_else(|| ("earlier request".into(), Instant::now(), Instant::now()));
                 update_tx.send(AskUpdate::Answer {
                     request,
                     text: reply.content.clone(),
@@ -968,11 +1194,23 @@ async fn run_asks(
                 }).ok();
             }
             _ = check.tick() => {
-                while pending.front().is_some_and(|(_, at)| at.elapsed() >= ask_timeout) {
-                    if let Some((request, at)) = pending.pop_front() {
+                while pending.front().is_some_and(|(_, at, _)| at.elapsed() >= ask_timeout) {
+                    if let Some((request, at, _)) = pending.pop_front() {
                         update_tx.send(AskUpdate::TimedOut {
                             request,
                             waited_ms: at.elapsed().as_millis(),
+                        }).ok();
+                    }
+                }
+            }
+            _ = progress.tick() => {
+                // The oldest outstanding ask only. Two lines about two waits
+                // is noise, and the human asked one question at a time.
+                if let Some((_, asked_at, last)) = pending.front_mut() {
+                    if last.elapsed() >= progress_every {
+                        *last = Instant::now();
+                        update_tx.send(AskUpdate::Waiting {
+                            elapsed_secs: asked_at.elapsed().as_secs(),
                         }).ok();
                     }
                 }

@@ -8,6 +8,7 @@
 //! spoken on the call in plaintext, so they expire (`--retention-days`,
 //! 30 by default); `bridge.jsonl`, which holds no speech, is kept.
 
+pub mod bed;
 pub mod call;
 pub mod config;
 pub mod gemini;

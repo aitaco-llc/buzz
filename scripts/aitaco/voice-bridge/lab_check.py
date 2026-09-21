@@ -191,10 +191,47 @@ if a.fault == "none":
     })
     result_mode = "real" if real else "fake"
 
+    # ── the wait: only when the run was set up to have one ───────────────────
+    delay = float(text("answer_delay_s") or 0)
+    progress_s = float(text("progress_s") or 10)
+    if delay >= progress_s + 2:
+        ticks = [e["data"] for e in call_log if e["event"] == "waiting_tick"]
+        spoken = [t for t in ticks if t.get("spoken")]
+        said = [g["text"] for g in gemini
+                if g["event"] == "client_text" and g["text"].startswith("rock is still working")]
+        closed = next((g for g in gemini if g["event"] == "closed" and g["session"] == 1), {})
+        bed_frames = (audio.get("out") or {}).get("bed_frames", 0)
+        # The room track ran for the length of the wait at 50 frames/s; allow
+        # the delay before it starts and the answer arriving early.
+        expect_bed = (delay - 2) * 50 * 0.5
+        checks.update({
+            # The number spoken is the bridge's, not the model's: it lands
+            # inside the wait, rises, and rises by the configured interval.
+            "the_wait_is_counted_by_the_bridge":
+                bool(ticks)
+                and all(0 < t["elapsed_secs"] <= delay + 2 for t in ticks)
+                and [t["elapsed_secs"] for t in ticks] == sorted(t["elapsed_secs"] for t in ticks)
+                and all(progress_s - 1 <= b["elapsed_secs"] - a["elapsed_secs"] <= progress_s + 1
+                        for a, b in zip(ticks, ticks[1:])),
+            "a_progress_line_reached_the_voice": bool(spoken) and len(said) >= 1,
+            "the_voice_was_given_only_the_elapsed_seconds":
+                bool(said) and all(f"been {t['elapsed_secs']} seconds" in " ".join(said)
+                                   for t in spoken[:len(said)]),
+            "the_working_sound_played_into_the_room": bed_frames >= expect_bed,
+            # rock's one hard constraint. Over the span where the caller was
+            # not talking, the room heard a keyboard and Gemini's input has to
+            # have been silence and nothing else — its voice-activity
+            # detection reads that silence as the end of a turn.
+            "the_working_sound_never_reached_gemini":
+                closed.get("chunks_while_quiet", 0) > 100
+                and closed.get("peak_while_quiet", 1) == 0,
+        })
+
 result = {"pass": all(checks.values()), "mode": result_mode, "checks": checks, "run_dir": str(a.run_dir),
           "binaries": text("binaries"), "repo_commit": text("repo_commit"),
           "caller": caller, "transcript_lines": lines, "call_log_lines": lines_logged,
           "fault": a.fault, "audio_stats": audio, "bridge_events": bridge_events,
+          "waiting_ticks": [e["data"] for e in call_log if e["event"] == "waiting_tick"],
           "end_reason": ending.get("reason") or ending.get("error")}
 with a.results.open("a") as out:
     out.write(json.dumps(result) + "\n")

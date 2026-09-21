@@ -86,6 +86,30 @@ pub struct Args {
     #[arg(long, env = "VOICE_BRIDGE_ASK_TIMEOUT_SECS", default_value_t = 900)]
     pub ask_timeout_secs: u64,
 
+    /// While the seat is working, how often its voice says so and how long it
+    /// has been. The number it speaks is counted here, not by the model.
+    /// A knob rather than a constant because the right cadence over a working
+    /// sound is probably not the right cadence over silence.
+    #[arg(long, env = "VOICE_BRIDGE_PROGRESS_SECS", default_value_t = 10)]
+    pub progress_secs: u64,
+
+    /// The loop played under the room track while the seat is working.
+    #[arg(long, env = "VOICE_BRIDGE_WORKING_SOUND", default_value_t = crate::bed::WorkingSound::Typing)]
+    pub working_sound: crate::bed::WorkingSound,
+
+    /// Level of the working sound, as a fraction of the file's own level.
+    #[arg(long, env = "VOICE_BRIDGE_WORKING_SOUND_GAIN", default_value_t = 1.0)]
+    pub working_sound_gain: f32,
+
+    /// How long after an ask the working sound starts, so an answer that comes
+    /// back quickly never triggers it.
+    #[arg(
+        long,
+        env = "VOICE_BRIDGE_WORKING_SOUND_DELAY_MS",
+        default_value_t = 2000
+    )]
+    pub working_sound_delay_ms: u64,
+
     /// How often the watcher proves its huddle subscription is still live, by
     /// running a REQ to EOSE on the same socket.
     #[arg(long, env = "VOICE_BRIDGE_HEARTBEAT_SECS", default_value_t = 60)]
@@ -150,6 +174,10 @@ impl Args {
             "context_files": self.context_files_resolved(),
             "log_dir": self.log_dir().display().to_string(),
             "ask_timeout_secs": self.ask_timeout_secs,
+            "progress_secs": self.progress_secs,
+            "working_sound": self.working_sound.to_string(),
+            "working_sound_gain": self.working_sound_gain,
+            "working_sound_delay_ms": self.working_sound_delay_ms,
             "heartbeat_secs": self.heartbeat_secs,
             "retention_days": self.retention_days,
             "trace_frames": self.trace_frames,
@@ -249,10 +277,19 @@ What you answer yourself: greetings, small talk, clarifying questions, and facts
 
 What you hand to rock: anything that needs a lookup, a decision, an action, a delegation, or anything you are not \
 sure of. Call ask_rock with {human}'s request in his own words and every detail he gave, then tell him briefly that \
-you are checking with rock. Keep talking with him while rock works. When a message arrives that starts with \
-\"rock answered\", tell {human} the answer in your own words, briefly.
+you are checking with rock. When a message arrives that starts with \"rock answered\", tell {human} the answer in \
+your own words, briefly.
 
-Never invent status, numbers, dates or commitments. Never say something was done unless rock's answer says so.";
+While rock is working you are waiting, not reporting, and there is a working sound on the line so {human} can hear \
+that something is happening. Say nothing unless you have something true to say. When a message arrives that starts \
+with \"rock is still working\", tell {human} that rock is still working and how long it has been, using the number \
+in that message and no other. Nothing else belongs in a wait: not what rock is doing, not how it is going, not how \
+much longer, not an answer of your own to the question you handed over. If {human} asks what is taking so long, the \
+true answer is that you do not know and rock has it.
+
+Never invent status, numbers, dates or commitments. Never say something was done unless rock's answer says so. \
+Never answer for rock. If you catch yourself about to describe rock's work, stop and say only that it is still \
+working.";
 
 #[cfg(test)]
 mod tests {
