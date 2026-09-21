@@ -9,6 +9,7 @@ p = argparse.ArgumentParser()
 p.add_argument('--run-dir', type=Path, required=True)
 p.add_argument('--seat', required=True)
 p.add_argument('--results', type=Path, required=True)
+p.add_argument('--loop', default='rebrand-of-agent', help='rebrand-acp when the acp/ host ran')
 a = p.parse_args()
 def text(name):
     path = a.run_dir / name
@@ -29,7 +30,7 @@ checks = {
     'threaded': any(len(t) >= 4 and t[0] == 'e' and t[1] == trigger and t[3] == 'reply'
                     for t in reply.get('tags', [])),
     'source_read_from_thread': bool(source) and source in native.get('run', {}).get('thread_source_ids', []),
-    'actual_rebrand_loop': native.get('run', {}).get('loop') == 'rebrand-of-agent',
+    'actual_rebrand_loop': native.get('run', {}).get('loop') == a.loop,
     'both_read_tools': {'search_messages','read_thread'} <= set(native.get('run', {}).get('reads', [])),
     'accepted': native.get('publication', {}).get('accepted') is True,
     'turn_completed': turn.get('outcome') == 'ok',
@@ -38,7 +39,9 @@ result = {'pass': all(checks.values()), 'checks': checks, 'run_dir': str(a.run_d
           'model': text('model_id'), 'model_sha256': text('model_sha256'),
           'backend_version': text('backend_version'), 'backend_sha256': text('backend_sha256'),
           'max_seq_len': text('max_seq_len'),
-          'native_binary': text('native_binary'), 'run': native.get('run'), 'reply': reply.get('content')}
+          'native_binary': text('native_binary'), 'rebrand_acp_version': text('rebrand_acp_version'),
+          'rebrand_acp_sha256': text('rebrand_acp_sha256'), 'rebrand_acp_args': text('rebrand_acp_args'),
+          'run': native.get('run') or data('native.json.run.json') or None, 'reply': reply.get('content')}
 with a.results.open('a') as out:
     out.write(json.dumps(result) + '\n')
 print(json.dumps(result, indent=2))

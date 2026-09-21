@@ -33,7 +33,7 @@ members = [
     "crates/buzz-datastore-tracing",
     "examples/countdown-bot",
 ]
-exclude = ["desktop/src-tauri"]
+exclude = ["desktop/src-tauri", "crates/buzz-voice-bridge"]
 resolver = "2"
 
 [workspace.package]

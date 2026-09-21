@@ -255,11 +255,11 @@ function RepositoryUnavailableIndicator({
   if (!reason) return null;
   const status = {
     authentication: {
-      description: "Buzz could not authenticate with this repository.",
+      description: "aitaco could not authenticate with this repository.",
       label: "Access failed",
     },
     missing: {
-      description: "No git repository was found on the Buzz relay.",
+      description: "No git repository was found on the aitaco relay.",
       label: "Uninitialized",
     },
     access: {
@@ -273,7 +273,7 @@ function RepositoryUnavailableIndicator({
       label: "No access channel",
     },
     network: {
-      description: "The Buzz git service could not be reached.",
+      description: "The aitaco git service could not be reached.",
       label: "Unreachable",
     },
     ref: {
@@ -281,7 +281,7 @@ function RepositoryUnavailableIndicator({
       label: "Branch missing",
     },
     unknown: {
-      description: "Buzz could not load this repository.",
+      description: "aitaco could not load this repository.",
       label: "Unavailable",
     },
   } satisfies Record<

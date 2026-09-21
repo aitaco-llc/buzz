@@ -217,6 +217,17 @@ pub struct AcpClient {
     standard_usage: StandardUsageTracker,
     /// Known adapter identity for prompt-response usage mapping.
     standard_adapter: Option<StandardAdapterKind>,
+    /// What [`take_turn_usage`](Self::take_turn_usage) last handed out, kept so
+    /// the NIP-AR receipt can be built after the turn has ended.
+    ///
+    /// The NIP-AM metric consumes the usage inside the prompt task; the receipt
+    /// is only publishable once the relay has been asked which messages the turn
+    /// actually sent, which happens in the main loop after the agent has come
+    /// back. This field is that bridge and nothing else: it is cleared at the
+    /// start of every `session/prompt` and overwritten (with `None` included) by
+    /// every take, so it can never carry a previous turn's counts into a turn
+    /// that reported none of its own.
+    last_turn_usage: Option<TurnUsage>,
 }
 
 /// Recursively merge `overlay` into `base`, with `overlay` winning on scalar/shape
@@ -528,6 +539,12 @@ impl AcpClient {
             cmd.env("CODEX_CONFIG", merged);
         }
 
+        // Last, so it beats both the inherited environment and `extra_env`: a
+        // persona entry must not be able to hand a keyless worker the key.
+        for key in crate::config::removed_agent_env(command) {
+            cmd.env_remove(key);
+        }
+
         // Spawn the agent in its own process group so SIGKILL doesn't propagate
         // to the harness's own process group on Unix.
         // tokio::process::Command::process_group is a stable tokio API (no extra imports needed).
@@ -575,6 +592,7 @@ impl AcpClient {
             goose_usage: UsageTracker::default(),
             standard_usage: StandardUsageTracker::default(),
             standard_adapter,
+            last_turn_usage: None,
         })
     }
 
@@ -807,6 +825,10 @@ impl AcpClient {
         // misattributed to this turn.
         self.goose_usage.begin_turn(session_id);
         self.standard_usage.begin_turn(session_id);
+        // Drop the previous turn's receipt counts here, not at take time: a turn
+        // that dies before any usage arrives must report nothing rather than
+        // inherit what the last one spent.
+        self.last_turn_usage = None;
 
         self.last_prompt_id = Some(self.next_id);
         let id = self.next_id;
@@ -904,7 +926,33 @@ impl AcpClient {
     pub fn take_turn_usage(&mut self) -> Option<TurnUsage> {
         let goose_usage = self.goose_usage.take();
         let standard_usage = self.standard_usage.take();
-        goose_usage.or(standard_usage)
+        let taken = goose_usage.or(standard_usage);
+        // Keep a copy for the NIP-AR receipt, which is built after the turn has
+        // ended. Assigning unconditionally — `None` included — means a second
+        // take in the same turn cannot leave the first take's counts behind.
+        self.last_turn_usage = taken.clone();
+        taken
+    }
+
+    /// The usage the most recent [`take_turn_usage`](Self::take_turn_usage) of
+    /// this turn produced, for the NIP-AR receipt.
+    ///
+    /// `None` when this turn reported no usage at all — the receipt then names
+    /// the model and no counts, which is the half of the answer the provider
+    /// never supplies. Never carries a previous turn's counts: the field is
+    /// cleared when a `session/prompt` is sent.
+    pub fn last_turn_usage(&self) -> Option<&TurnUsage> {
+        self.last_turn_usage.as_ref()
+    }
+
+    /// Seed the receipt's usage record without driving a real turn.
+    ///
+    /// Tests only. The production path fills this field from
+    /// [`take_turn_usage`](Self::take_turn_usage); this exists so receipt tests
+    /// in `pool` can fix a turn's counts without a wire fixture.
+    #[cfg(test)]
+    pub(crate) fn set_last_turn_usage_for_test(&mut self, usage: Option<TurnUsage>) {
+        self.last_turn_usage = usage;
     }
 
     /// Notify the usage tracker that buzz-acp just spawned a new session.
@@ -2182,6 +2230,46 @@ pub enum ModelSwitchMethod {
 /// Returns the raw JSON array entries. Each entry has `configId` (spelled `id`
 /// by some adapters, e.g. claude-agent-acp), `displayName`,
 /// `options: [{ value, displayName }]`, etc.
+/// The model a fresh session actually opened on, when the adapter does not
+/// advertise it.
+///
+/// `ANTHROPIC_MODEL` is the only per-process way to pin a Claude adapter's
+/// model — it beats the machine-wide `~/.claude/settings.json` that every seat
+/// on a body otherwise shares — but it is passed through unvalidated. A typo
+/// becomes `currentValue` verbatim and fails only at the first inference, as a
+/// provider 404, minutes into a turn the owner is waiting on. The adapter's own
+/// option list is its answer to "what can I run", so a `currentValue` outside
+/// it is a misconfiguration the harness can name at startup instead.
+///
+/// Returns `(current, advertised)` when they disagree. `None` when they agree,
+/// when the adapter advertises no models (Codex, `rebrand-acp`), or when it
+/// reports no current model — absence of an answer is not a mismatch.
+pub fn unadvertised_session_model(
+    session_new_result: &serde_json::Value,
+) -> Option<(String, Vec<String>)> {
+    for config_opt in extract_model_config_options(session_new_result) {
+        let advertised: Vec<String> = config_opt
+            .get("options")
+            .and_then(|v| v.as_array())
+            .map(|opts| {
+                opts.iter()
+                    .filter_map(|o| o.get("value").and_then(|v| v.as_str()))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let current = match config_opt.get("currentValue").and_then(|v| v.as_str()) {
+            Some(current) => current,
+            None => continue,
+        };
+        if advertised.is_empty() || advertised.iter().any(|v| v == current) {
+            return None;
+        }
+        return Some((current.to_string(), advertised));
+    }
+    None
+}
+
 pub fn extract_model_config_options(result: &serde_json::Value) -> Vec<serde_json::Value> {
     result["configOptions"]
         .as_array()
@@ -3141,6 +3229,58 @@ mod tests {
             spawn_named_and_read_child_env("other-agent", VAR, &[]).await,
             "<unset>",
             "non-Hermes spawns must not receive Hermes defaults"
+        );
+    }
+
+    /// The keyless worker never sees the seat's signing key, even when a
+    /// persona's env supplies one; every other adapter is launched as before.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawn_withholds_the_signing_key_from_the_keyless_worker() {
+        for var in ["BUZZ_PRIVATE_KEY", "BUZZ_AUTH_TAG"] {
+            let supplied = [(var.to_string(), "supplied".to_string())];
+            assert_eq!(
+                spawn_named_and_read_child_env("rebrand-acp", var, &supplied).await,
+                "<unset>",
+                "rebrand-acp must not receive {var}"
+            );
+            if std::env::var_os(var).is_none() {
+                assert_eq!(
+                    spawn_named_and_read_child_env("other-agent", var, &supplied).await,
+                    "supplied",
+                    "other adapters keep receiving {var}"
+                );
+            }
+        }
+    }
+
+    /// A model the adapter does not advertise is named at startup, not left to
+    /// fail as a provider 404 minutes into the first turn.
+    #[test]
+    fn an_unadvertised_session_model_is_reported_with_what_is_advertised() {
+        let session = |current: &str| {
+            serde_json::json!({"configOptions": [{
+                "category": "model", "id": "model", "currentValue": current,
+                "options": [{"value": "opus[1m]"}, {"value": "sonnet"}, {"value": "haiku"}],
+            }]})
+        };
+        // `ANTHROPIC_MODEL=totally-not-a-model` reaches `currentValue` verbatim.
+        let (current, advertised) =
+            unadvertised_session_model(&session("totally-not-a-model")).expect("a mismatch");
+        assert_eq!(current, "totally-not-a-model");
+        assert_eq!(advertised, ["opus[1m]", "sonnet", "haiku"]);
+
+        // An alias the adapter resolved for itself is not a mismatch:
+        // `ANTHROPIC_MODEL=claude-opus-5` opens the session on `opus[1m]`.
+        assert!(unadvertised_session_model(&session("opus[1m]")).is_none());
+
+        // An adapter that advertises no models, or names no current one, is
+        // not misconfigured — it just has nothing to check against.
+        assert!(unadvertised_session_model(&serde_json::json!({"configOptions": []})).is_none());
+        assert!(
+            unadvertised_session_model(&serde_json::json!({"configOptions": [{
+                "category": "model", "id": "model", "options": [{"value": "sonnet"}]}]}))
+            .is_none()
         );
     }
 
@@ -4577,6 +4717,72 @@ mod tests {
         assert!(
             client.take_turn_usage().is_none(),
             "standard usage was drained"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_receipt_can_still_read_the_usage_the_metric_consumed() {
+        // NIP-AR is published after the turn has ended, long after the NIP-AM
+        // metric drained the trackers. The take must leave a readable copy.
+        let mut client = spawn_inert_client().await;
+        client.goose_usage.begin_turn("s1");
+        client.handle_goose_usage_update(&goose_usage_update_msg("s1", 1000, 200, Some(0.01)));
+
+        assert!(
+            client.last_turn_usage().is_none(),
+            "nothing is recorded until the metric takes it"
+        );
+        let taken = client.take_turn_usage().expect("usage present");
+        let recorded = client.last_turn_usage().expect("receipt copy retained");
+        assert_eq!(recorded.session_id, taken.session_id);
+        assert_eq!(
+            recorded.cumulative_input_tokens,
+            taken.cumulative_input_tokens
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_take_in_one_turn_does_not_leave_the_first_takes_counts_behind() {
+        // The initial-message path takes usage, then the real prompt takes
+        // again. A drained second take must clear the record, not preserve a
+        // count the receipt would then attribute to the wrong prompt.
+        let mut client = spawn_inert_client().await;
+        client.goose_usage.begin_turn("s1");
+        client.handle_goose_usage_update(&goose_usage_update_msg("s1", 1000, 200, None));
+        client.take_turn_usage().expect("first take");
+        assert!(client.last_turn_usage().is_some());
+
+        assert!(client.take_turn_usage().is_none(), "trackers are drained");
+        assert!(
+            client.last_turn_usage().is_none(),
+            "a take that found nothing must not leave stale counts"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_new_prompt_clears_the_previous_turns_receipt_usage() {
+        // A turn that dies before reporting any usage must report none, not
+        // inherit what the previous turn spent.
+        let mut client = spawn_inert_client().await;
+        client.goose_usage.begin_turn("s1");
+        client.handle_goose_usage_update(&goose_usage_update_msg("s1", 1000, 200, None));
+        client.take_turn_usage().expect("first turn usage");
+        assert!(client.last_turn_usage().is_some(), "first turn recorded");
+
+        // `cat` echoes the request instead of answering it, so the prompt ends
+        // on its idle timeout — the shape of a turn that reported nothing.
+        let result = client
+            .session_prompt_with_idle_timeout(
+                "s1",
+                "next turn",
+                std::time::Duration::from_millis(120),
+                std::time::Duration::from_millis(400),
+            )
+            .await;
+        assert!(result.is_err(), "inert agent never answers the prompt");
+        assert!(
+            client.last_turn_usage().is_none(),
+            "the next turn must not inherit the previous turn's counts"
         );
     }
 

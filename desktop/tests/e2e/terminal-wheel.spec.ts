@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { installMockBridge } from "../helpers/bridge";
 
-const TERM = 'section[aria-label="Buzz Term"]';
+const TERM = 'section[aria-label="aitaco Term"]';
 const NAMED = 0x0100_0000;
 const FG = NAMED | 256;
 const BG = NAMED | 257;
@@ -169,7 +169,7 @@ async function reveal(page: Page) {
     .toBeGreaterThanOrEqual(180);
 }
 
-test("project terminal button opens Buzz Term for the repository", async ({
+test("project terminal button opens aitaco Term for the repository", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
@@ -197,7 +197,7 @@ test("project terminal button opens Buzz Term for the repository", async ({
   await expect(page.locator(TERM)).toBeVisible();
 });
 
-test("scrollback: wheel over Buzz Term reaches terminal_scroll", async ({
+test("scrollback: wheel over aitaco Term reaches terminal_scroll", async ({
   page,
 }) => {
   await reveal(page);

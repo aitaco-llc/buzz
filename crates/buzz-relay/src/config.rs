@@ -367,6 +367,43 @@ pub struct Config {
     /// Whether the configured web bundle serves Git browser routes in addition
     /// to the public invite landing page. Defaults to false.
     pub serve_git_web_gui: bool,
+    /// iOS apps (`<team id>.<bundle id>`) that open this relay's invite links
+    /// as universal links. Empty means no `apple-app-site-association` is served.
+    pub apple_app_ids: Vec<String>,
+}
+
+/// Parse `BUZZ_APPLE_APP_IDS`: a comma-separated list of `<team id>.<bundle id>`.
+///
+/// A malformed entry is a startup error. Apple fetches the association file
+/// once and caches it, so an app ID that can never match would fail silently
+/// on every phone instead of once in the relay's log.
+fn parse_apple_app_ids(raw: Option<&str>) -> Result<Vec<String>, ConfigError> {
+    let Some(raw) = raw else {
+        return Ok(Vec::new());
+    };
+    raw.split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            let valid = entry.split_once('.').is_some_and(|(team, bundle)| {
+                team.len() == 10
+                    && team
+                        .bytes()
+                        .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+                    && bundle.split('.').all(|part| {
+                        !part.is_empty()
+                            && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                    })
+            });
+            if valid {
+                Ok(entry.to_string())
+            } else {
+                Err(ConfigError::InvalidValue(format!(
+                    "BUZZ_APPLE_APP_IDS entry {entry:?} must be <10-character team id>.<bundle id>"
+                )))
+            }
+        })
+        .collect()
 }
 
 fn parse_bind_addr(raw: &str) -> Result<SocketAddr, ConfigError> {
@@ -1198,6 +1235,9 @@ impl Config {
             tracing::info!("BUZZ_WEB_DIR={} — serving web UI from relay", dir.display());
         }
 
+        let apple_app_ids =
+            parse_apple_app_ids(std::env::var("BUZZ_APPLE_APP_IDS").ok().as_deref())?;
+
         // Reject explicitly-configured secrets that are too short.
         // The auto-generated fallback is always 64 hex chars (32 bytes), so this
         // only fires when someone sets BUZZ_GIT_HOOK_HMAC_SECRET to a weak value.
@@ -1265,6 +1305,7 @@ impl Config {
             admin,
             web_dir,
             serve_git_web_gui,
+            apple_app_ids,
         })
     }
 }
@@ -1295,6 +1336,40 @@ mod tests {
             set.iter()
                 .find(|(key, _)| *key == name)
                 .map(|(_, value)| (*value).to_string())
+        }
+    }
+
+    #[test]
+    fn apple_app_ids_parse_and_reject_ids_that_can_never_match() {
+        assert!(parse_apple_app_ids(None).expect("unset").is_empty());
+        assert!(parse_apple_app_ids(Some(" , ")).expect("blank").is_empty());
+        assert_eq!(
+            parse_apple_app_ids(Some(
+                "5F7YLJS4YR.co.aitaco.buzz, ABCDE12345.com.example-app"
+            ))
+            .expect("two ids"),
+            vec![
+                "5F7YLJS4YR.co.aitaco.buzz".to_string(),
+                "ABCDE12345.com.example-app".to_string(),
+            ]
+        );
+        for bad in [
+            "co.aitaco.buzz",
+            "5f7yljs4yr.co.aitaco.buzz",
+            "5F7YLJS4Y.co.aitaco.buzz",
+            "5F7YLJS4YR.",
+            "5F7YLJS4YR",
+            "5F7YLJS4YR.co.aitaco.buzz/",
+            "5F7YLJS4YR.co..buzz",
+            "5F7YLJS4YR.co.aitaco.",
+        ] {
+            assert!(
+                matches!(
+                    parse_apple_app_ids(Some(bad)),
+                    Err(ConfigError::InvalidValue(ref message)) if message.contains("BUZZ_APPLE_APP_IDS")
+                ),
+                "{bad:?} must be refused"
+            );
         }
     }
 
@@ -1378,6 +1453,10 @@ mod tests {
         assert!(
             !config.serve_git_web_gui,
             "serve_git_web_gui should default to false"
+        );
+        assert!(
+            config.apple_app_ids.is_empty(),
+            "apple_app_ids should default empty so no app claims a relay's links"
         );
         assert_eq!(
             config.media.s3_addressing_style,

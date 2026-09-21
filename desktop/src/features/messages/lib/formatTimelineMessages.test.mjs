@@ -773,3 +773,171 @@ test("verified agent owner may publish a suppression edit", () => {
     true,
   );
 });
+
+// ---------------------------------------------------------------------------
+// NIP-AR turn receipts (kind:44201). An overlay, never a row: the counts are
+// the *turn's*, so one receipt naming three messages must annotate exactly one
+// of them, and a receipt published by anyone other than the author of the
+// message it names is forgery and must not render at all.
+// ---------------------------------------------------------------------------
+
+const RECEIPT_MSG_1 =
+  "1111111111111111111111111111111111111111111111111111111111111111";
+const RECEIPT_MSG_2 =
+  "2222222222222222222222222222222222222222222222222222222222222222";
+const RECEIPT_MSG_3 =
+  "3333333333333333333333333333333333333333333333333333333333333333";
+
+function agentMessage(id, createdAt, pubkey = PUBKEY_A) {
+  return streamMessage({ id, pubkey, created_at: createdAt, content: id });
+}
+
+function turnReceipt(targetIds, overrides = {}) {
+  const {
+    model = "claude-opus-4-5",
+    harness = "claude-agent-acp",
+    turn = { inputTokens: 191261, outputTokens: 683, cacheReadTokens: 122407 },
+    ...rest
+  } = overrides;
+  return {
+    id: "9999999999999999999999999999999999999999999999999999999999999999",
+    pubkey: PUBKEY_A,
+    kind: 44201,
+    created_at: 1_700_000_500,
+    content: JSON.stringify({ model, harness, turn }),
+    tags: [
+      ["h", CHANNEL_ID],
+      ...targetIds.map((id) => ["e", id]),
+      ["model", model],
+    ],
+    sig: "sig",
+    ...rest,
+  };
+}
+
+test("a three-message turn renders its receipt once, under the last message", () => {
+  const messages = formatTimelineMessages(
+    [
+      agentMessage(RECEIPT_MSG_1, 1_700_000_001),
+      agentMessage(RECEIPT_MSG_2, 1_700_000_002),
+      agentMessage(RECEIPT_MSG_3, 1_700_000_003),
+      turnReceipt([RECEIPT_MSG_1, RECEIPT_MSG_2, RECEIPT_MSG_3]),
+    ],
+    null,
+    undefined,
+    null,
+  );
+
+  const annotated = messages.filter((message) => message.turnReceipt);
+  assert.equal(annotated.length, 1, "one turn reports its spend once");
+  assert.equal(annotated[0].id, RECEIPT_MSG_3);
+  assert.equal(annotated[0].turnReceipt.model, "claude-opus-4-5");
+  assert.equal(annotated[0].turnReceipt.inputTokens, 191261);
+});
+
+test("a receipt from a different pubkey than the message author is ignored", () => {
+  const messages = formatTimelineMessages(
+    [
+      agentMessage(RECEIPT_MSG_1, 1_700_000_001),
+      turnReceipt([RECEIPT_MSG_1], { pubkey: PUBKEY_B }),
+    ],
+    null,
+    undefined,
+    null,
+  );
+
+  assert.equal(messages.length, 1);
+  assert.equal(
+    messages[0].turnReceipt,
+    undefined,
+    "anyone may publish a receipt naming anyone's message; only the author's counts",
+  );
+});
+
+test("a receipt anchors to the last e-tagged message the client actually holds", () => {
+  const messages = formatTimelineMessages(
+    [
+      agentMessage(RECEIPT_MSG_1, 1_700_000_001),
+      turnReceipt([RECEIPT_MSG_1, RECEIPT_MSG_2, RECEIPT_MSG_3]),
+    ],
+    null,
+    undefined,
+    null,
+  );
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].turnReceipt?.model, "claude-opus-4-5");
+});
+
+test("a receipt naming only messages this client lacks renders nowhere", () => {
+  const messages = formatTimelineMessages(
+    [
+      agentMessage(RECEIPT_MSG_1, 1_700_000_001),
+      turnReceipt([RECEIPT_MSG_2, RECEIPT_MSG_3]),
+    ],
+    null,
+    undefined,
+    null,
+  );
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].turnReceipt, undefined);
+});
+
+test("a receipt never becomes a timeline row of its own", () => {
+  const messages = formatTimelineMessages(
+    [agentMessage(RECEIPT_MSG_1, 1_700_000_001), turnReceipt([RECEIPT_MSG_1])],
+    null,
+    undefined,
+    null,
+  );
+
+  assert.equal(messages.length, 1);
+  assert.equal(
+    countTopLevelTimelineRows([
+      agentMessage(RECEIPT_MSG_1, 1_700_000_001),
+      turnReceipt([RECEIPT_MSG_1]),
+    ]),
+    1,
+    "a receipt must not dilute the row budget or create a phantom unread",
+  );
+});
+
+test("a count the harness never reported stays null rather than becoming 0", () => {
+  const messages = formatTimelineMessages(
+    [
+      agentMessage(RECEIPT_MSG_1, 1_700_000_001),
+      turnReceipt([RECEIPT_MSG_1], {
+        turn: { inputTokens: 191261, outputTokens: null },
+      }),
+    ],
+    null,
+    undefined,
+    null,
+  );
+
+  const { turnReceipt: receipt } = messages[0];
+  assert.equal(receipt.inputTokens, 191261);
+  assert.equal(receipt.outputTokens, null);
+  assert.equal(receipt.cacheReadTokens, null);
+  assert.equal(receipt.cacheWriteTokens, null);
+});
+
+test("a deleted receipt stops annotating its message", () => {
+  const receipt = turnReceipt([RECEIPT_MSG_1]);
+  const messages = formatTimelineMessages(
+    [
+      agentMessage(RECEIPT_MSG_1, 1_700_000_001),
+      receipt,
+      deletionEvent(5, receipt.id, {
+        id: "7777777777777777777777777777777777777777777777777777777777777777",
+        pubkey: PUBKEY_A,
+      }),
+    ],
+    null,
+    undefined,
+    null,
+  );
+
+  assert.equal(messages[0].turnReceipt, undefined);
+});

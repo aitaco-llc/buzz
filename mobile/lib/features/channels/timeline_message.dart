@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../../shared/relay/relay.dart';
 import '../../shared/custom_emoji/custom_emoji.dart';
+import 'agent_turn_receipt.dart';
 import 'channel_window.dart';
 
 enum SystemEventType {
@@ -193,6 +194,14 @@ class TimelineMessage {
   /// Root event ID of the thread (null for top-level messages).
   final String? rootId;
 
+  /// The NIP-AR turn receipt this message is the render anchor for, or null.
+  ///
+  /// At most one message per turn carries it — see [attachTurnReceipts]. A
+  /// message that was part of a turn but is not its anchor holds null, which is
+  /// the whole point: the counts are the turn's, and repeating them under every
+  /// message of that turn would read as several times the real spend.
+  final AgentTurnReceipt? turnReceipt;
+
   const TimelineMessage({
     required this.id,
     required this.pubkey,
@@ -206,12 +215,30 @@ class TimelineMessage {
     this.reactions = const [],
     this.parentId,
     this.rootId,
+    this.turnReceipt,
   });
 
   /// Attachment messages stay visually distinct from surrounding messages,
   /// even when several are sent by the same author in quick succession.
   bool get hasAttachments =>
       tags.any((tag) => tag.isNotEmpty && tag.first == 'imeta');
+
+  /// This message with [receipt] as its turn-receipt anchor.
+  TimelineMessage withTurnReceipt(AgentTurnReceipt receipt) => TimelineMessage(
+    id: id,
+    pubkey: pubkey,
+    createdAt: createdAt,
+    content: content,
+    tags: tags,
+    isSystem: isSystem,
+    edited: edited,
+    systemEvent: systemEvent,
+    mentionPubkeys: mentionPubkeys,
+    reactions: reactions,
+    parentId: parentId,
+    rootId: rootId,
+    turnReceipt: receipt,
+  );
 }
 
 @immutable
@@ -514,7 +541,92 @@ List<TimelineMessage> formatTimeline(
     }
   }
 
-  return result;
+  // 5. Overlay NIP-AR turn receipts onto the rows they annotate. This runs
+  // last because the rule is stated in terms of the messages this client
+  // actually holds, and step 4 is what decides that.
+  return attachTurnReceipts(events, result, deletedIds: deletedIds);
+}
+
+/// Attach each NIP-AR (`kind:44201`) receipt in [events] to exactly one of
+/// [messages], returning [messages] with those anchors filled in.
+///
+/// Two rules from `docs/nips/NIP-AR.md` §Consumer Behavior decide this, and
+/// both are defects if skipped:
+///
+/// **Render once.** The counts belong to the turn, not to any one message a
+/// turn happened to split into. A receipt names every message its turn
+/// published, in publication order, so the anchor is the **last** named message
+/// this client holds — one footer per turn. Rendering under each named message
+/// would show one turn's spend N times, which reads as N times the money.
+///
+/// **Trust.** Anyone may sign a receipt `e`-tagging anyone else's message; the
+/// signature proves only who published the receipt. A receipt whose `pubkey`
+/// differs from the author of the message it would annotate is discarded
+/// outright rather than walked back to an earlier named message: a receipt that
+/// mixes authors is not describing one agent's turn, and guessing which part of
+/// it to believe would be inventing provenance.
+///
+/// A receipt naming nothing this client holds renders nowhere — there is
+/// nothing to annotate, and the messages it names may be ones this reader
+/// cannot see. When two receipts resolve to the same anchor (a republish, or a
+/// forgery racing a genuine receipt that was already rejected above), the newer
+/// `created_at` wins, ties broken by event id so the choice is stable across
+/// rebuilds rather than depending on arrival order.
+List<TimelineMessage> attachTurnReceipts(
+  List<NostrEvent> events,
+  List<TimelineMessage> messages, {
+  Set<String> deletedIds = const {},
+}) {
+  // Most channels never see a receipt, and this runs on every timeline
+  // rebuild, so nothing is allocated until one is actually present.
+  final receipts = <AgentTurnReceipt>[];
+  for (final event in events) {
+    if (event.kind != EventKind.agentTurnReceipt) continue;
+    if (deletedIds.contains(event.id)) continue;
+    final receipt = AgentTurnReceipt.fromEvent(event);
+    if (receipt != null) receipts.add(receipt);
+  }
+  if (receipts.isEmpty) return messages;
+
+  // Event ids are lowercase hex by NIP-01, but tags are attacker-controlled
+  // text; normalise both sides so a mixed-case `e` tag cannot dodge the trust
+  // check by simply failing to match.
+  final authorByMessageId = <String, String>{
+    for (final message in messages)
+      message.id.toLowerCase(): message.pubkey.toLowerCase(),
+  };
+
+  final receiptByMessageId = <String, AgentTurnReceipt>{};
+  for (final receipt in receipts) {
+    String? anchor;
+    for (final messageId in receipt.messageIds) {
+      if (authorByMessageId.containsKey(messageId)) anchor = messageId;
+    }
+    if (anchor == null) continue;
+    if (authorByMessageId[anchor] != receipt.pubkey.toLowerCase()) continue;
+
+    final existing = receiptByMessageId[anchor];
+    if (existing == null || _receiptSupersedes(receipt, existing)) {
+      receiptByMessageId[anchor] = receipt;
+    }
+  }
+
+  if (receiptByMessageId.isEmpty) return messages;
+
+  return [
+    for (final message in messages)
+      if (receiptByMessageId[message.id.toLowerCase()] case final receipt?)
+        message.withTurnReceipt(receipt)
+      else
+        message,
+  ];
+}
+
+bool _receiptSupersedes(AgentTurnReceipt candidate, AgentTurnReceipt existing) {
+  if (candidate.createdAt != existing.createdAt) {
+    return candidate.createdAt > existing.createdAt;
+  }
+  return candidate.eventId.compareTo(existing.eventId) > 0;
 }
 
 /// Build main-timeline entries: only root messages (parentId == null),

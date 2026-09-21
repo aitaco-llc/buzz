@@ -758,7 +758,7 @@ test("app font size and conversation density apply independently", async ({
   await expect(comfortable).toHaveAttribute("aria-pressed", "true");
   await expect(defaultSize).toHaveAttribute("aria-pressed", "true");
   await expect(densityDescription).toHaveText(
-    "Spacing in conversations and Markdown content across Buzz",
+    "Spacing in conversations and Markdown content across aitaco",
   );
   await expect(fontSizeDescription).toHaveText(
     "Applies across conversations and interface text",

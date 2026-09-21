@@ -559,6 +559,26 @@ mod inbound_author_gate {
             })
         }
 
+        /// Admit a self-authored event that carries the operator's self-wake
+        /// tag. The normal author gate never admits this agent's own key, so
+        /// this is the only way such an event becomes work. It re-checks both
+        /// facts itself rather than trusting the caller.
+        pub(crate) fn authorize_self_wake_event(
+            &self,
+            buzz_event: relay::BuzzEvent,
+            tag: &crate::config::SelfWakeTag,
+        ) -> Option<AuthorizedListenerEvent> {
+            if buzz_event.event.pubkey.to_hex() != self.agent_pubkey_hex
+                || !tag.matches(&buzz_event.event)
+            {
+                return None;
+            }
+            Some(AuthorizedListenerEvent {
+                buzz_event,
+                effective_author: self.agent_pubkey_hex.clone(),
+            })
+        }
+
         #[cfg(test)]
         pub(crate) async fn evaluate_for_test(
             &self,
@@ -696,6 +716,32 @@ impl NormalListenerIngress {
             event_for_steer,
             prompt_tag_for_steer,
         }
+    }
+}
+
+/// What the listener does with an event, by author, before the author gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelfEventDisposition {
+    /// Not signed by this agent, or `ignore_self` is off: the author gate decides.
+    Other,
+    /// Signed by this agent and `ignore_self` is on: drop it.
+    Drop,
+    /// Signed by this agent and carries the configured self-wake tag: admit it.
+    Wake,
+}
+
+fn self_event_disposition(
+    ignore_self: bool,
+    self_wake_tag: Option<&config::SelfWakeTag>,
+    event: &nostr::Event,
+    agent_pubkey_hex: &str,
+) -> SelfEventDisposition {
+    if !ignore_self || event.pubkey.to_hex() != agent_pubkey_hex {
+        return SelfEventDisposition::Other;
+    }
+    match self_wake_tag {
+        Some(tag) if tag.matches(event) => SelfEventDisposition::Wake,
+        _ => SelfEventDisposition::Drop,
     }
 }
 
@@ -3409,7 +3455,13 @@ async fn tokio_main() -> Result<()> {
                                 continue;
                             }
 
-                            if config.ignore_self && buzz_event.event.pubkey.to_hex() == pubkey_hex {
+                            let self_disposition = self_event_disposition(
+                                config.ignore_self,
+                                config.self_wake_tag.as_ref(),
+                                &buzz_event.event,
+                                &pubkey_hex,
+                            );
+                            if self_disposition == SelfEventDisposition::Drop {
                                 tracing::debug!(channel_id = %buzz_event.channel_id, "dropping self-authored event");
                                 continue;
                             }
@@ -3563,17 +3615,30 @@ async fn tokio_main() -> Result<()> {
                             let logged_event = turn_log
                                 .as_ref()
                                 .map(|_| (buzz_event.event.clone(), buzz_event.channel_id));
-                            let Some(authorized_event) = authorize_normal_listener_event(
-                                &mut author_gate_ctx,
-                                buzz_event,
-                                &config.respond_to,
-                                &config.respond_to_allowlist,
-                                &owner_cache,
-                                &ctx.channel_info,
-                                &ctx.rest_client,
-                            )
-                            .await
-                            else {
+                            let authorized = match (self_disposition, config.self_wake_tag.as_ref()) {
+                                (SelfEventDisposition::Wake, Some(tag)) => {
+                                    tracing::info!(
+                                        channel_id = %buzz_event.channel_id,
+                                        event_id = %buzz_event.event.id.to_hex(),
+                                        self_wake_tag = %tag,
+                                        "admitting self-authored event that carries the self-wake tag"
+                                    );
+                                    author_gate_ctx.authorize_self_wake_event(buzz_event, tag)
+                                }
+                                _ => {
+                                    authorize_normal_listener_event(
+                                        &mut author_gate_ctx,
+                                        buzz_event,
+                                        &config.respond_to,
+                                        &config.respond_to_allowlist,
+                                        &owner_cache,
+                                        &ctx.channel_info,
+                                        &ctx.rest_client,
+                                    )
+                                    .await
+                                }
+                            };
+                            let Some(authorized_event) = authorized else {
                                 if let (Some(log), Some((event, channel_id))) =
                                     (&turn_log, &logged_event)
                                 {
@@ -4870,10 +4935,26 @@ fn handle_prompt_result(
         .retain(|_, meta| meta.agent_index != agent_index);
     debug_assert_eq!(before, pool.task_map().len() + 1);
     pool.note_turn_end();
-    // ✅ only for a turn that succeeded: a turn that posted "on it" and then
-    // failed has not answered anything.
-    if let (Some(rest), PromptOutcome::Ok(_)) = (rest_client, &result.outcome) {
-        pool::spawn_answered_reactions(rest, answer);
+    // One relay query settles both of the turn's public outputs. ✅ only for a
+    // turn that ran to its own end — see `pool::earns_answered_reaction`; a turn
+    // that posted "on it" and then failed, refused, hit a cap or was cancelled
+    // has not answered anything. The NIP-AR receipt is owed by every turn that
+    // published, whatever its outcome: those turns burned tokens too, and a
+    // failed turn's cost is exactly the one a room wants to see.
+    if let Some(rest) = rest_client {
+        let receipt = pool::turn_receipt_payload(
+            &result.agent,
+            &crate::config::normalize_agent_command_identity(&config.agent_command),
+        );
+        pool::spawn_turn_completion(
+            rest,
+            pool::TurnCompletion {
+                ledger: answer,
+                channel_id: result.source.channel_id(),
+                earns_answered: pool::earns_answered_reaction(&result.outcome),
+                receipt,
+            },
+        );
     }
     if let PromptSource::Channel(scope) = &result.source {
         // The task may have invalidated this session before returning. Never
@@ -8308,6 +8389,101 @@ mod author_gate_tests {
             "an unresolvable channel type must be treated as a DM"
         );
     }
+
+    fn self_wake_event(keys: &nostr::Keys, tags: &[[&str; 2]]) -> nostr::Event {
+        nostr::EventBuilder::new(nostr::Kind::Custom(KIND_STREAM_MESSAGE as u16), "ask")
+            .tags(tags.iter().map(|t| nostr::Tag::parse(*t).expect("tag")))
+            .sign_with_keys(keys)
+            .expect("signed event")
+    }
+
+    fn voice_ask_tag() -> crate::config::SelfWakeTag {
+        crate::config::parse_self_wake_tag("voice-bridge=ask").expect("tag")
+    }
+
+    /// Only the configured tag on the agent's own event wakes it. A transcript
+    /// or summary line signed with the same key stays dropped, and so does every
+    /// self-authored event when no tag is configured.
+    #[test]
+    fn test_self_event_disposition() {
+        let agent_keys = nostr::Keys::generate();
+        let agent = agent_keys.public_key().to_hex();
+        let other_keys = nostr::Keys::generate();
+        let tag = voice_ask_tag();
+        let ask = self_wake_event(&agent_keys, &[["voice-bridge", "ask"]]);
+        let transcript = self_wake_event(&agent_keys, &[["voice-bridge", "transcript"]]);
+        let plain = self_wake_event(&agent_keys, &[]);
+        let foreign_ask = self_wake_event(&other_keys, &[["voice-bridge", "ask"]]);
+
+        assert_eq!(
+            self_event_disposition(true, Some(&tag), &ask, &agent),
+            SelfEventDisposition::Wake
+        );
+        assert_eq!(
+            self_event_disposition(true, Some(&tag), &transcript, &agent),
+            SelfEventDisposition::Drop
+        );
+        assert_eq!(
+            self_event_disposition(true, Some(&tag), &plain, &agent),
+            SelfEventDisposition::Drop
+        );
+        assert_eq!(
+            self_event_disposition(true, None, &ask, &agent),
+            SelfEventDisposition::Drop,
+            "the opt-in is off by default"
+        );
+        assert_eq!(
+            self_event_disposition(true, Some(&tag), &foreign_ask, &agent),
+            SelfEventDisposition::Other,
+            "another key's event goes to the normal author gate, tag or not"
+        );
+        assert_eq!(
+            self_event_disposition(false, Some(&tag), &plain, &agent),
+            SelfEventDisposition::Other,
+            "with ignore_self off, the author gate decides as before"
+        );
+    }
+
+    /// The gate mints an authorized self-wake event only for this agent's own
+    /// key and the configured tag, whatever the caller passes it.
+    #[tokio::test]
+    async fn test_gate_self_wake_requires_own_key_and_tag() {
+        let agent_keys = nostr::Keys::generate();
+        let agent = agent_keys.public_key().to_hex();
+        let relay_hex = nostr::Keys::generate().public_key().to_hex();
+        let (gate, _rest, _server) = connected_gate(&relay_hex, &agent).await;
+        let tag = voice_ask_tag();
+        let wrap = |event: nostr::Event| relay::BuzzEvent {
+            connection_generation: 0,
+            channel_id: Uuid::new_v4(),
+            event,
+        };
+
+        let admitted = gate
+            .authorize_self_wake_event(
+                wrap(self_wake_event(&agent_keys, &[["voice-bridge", "ask"]])),
+                &tag,
+            )
+            .expect("own key with the tag is admitted");
+        let (_, effective_author) = admitted.into_parts();
+        assert_eq!(effective_author, agent);
+
+        assert!(gate
+            .authorize_self_wake_event(
+                wrap(self_wake_event(&agent_keys, &[["voice-bridge", "summary"]])),
+                &tag
+            )
+            .is_none());
+        assert!(gate
+            .authorize_self_wake_event(
+                wrap(self_wake_event(
+                    &nostr::Keys::generate(),
+                    &[["voice-bridge", "ask"]]
+                )),
+                &tag
+            )
+            .is_none());
+    }
 }
 
 #[cfg(test)]
@@ -9379,6 +9555,7 @@ mod build_mcp_servers_tests {
             session_policy: scope::SessionPolicy::Channel,
             multiple_event_handling: config::MultipleEventHandling::Queue,
             ignore_self: true,
+            self_wake_tag: None,
             kinds_override: None,
             channels_override: None,
             no_mention_filter: false,
@@ -9606,6 +9783,7 @@ mod error_outcome_emission_tests {
             session_policy: scope::SessionPolicy::Channel,
             multiple_event_handling: config::MultipleEventHandling::Queue,
             ignore_self: true,
+            self_wake_tag: None,
             kinds_override: None,
             channels_override: None,
             no_mention_filter: false,

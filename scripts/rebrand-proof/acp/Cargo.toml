@@ -1,0 +1,25 @@
+# The rebrand-acp proof host. Its own workspace, outside Buzz's: it links no
+# Rebrand crate, only talks to the rebrand-acp binary over ACP.
+[package]
+name = "buzz-rebrand-acp-proof"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "buzz-rebrand-acp-proof"
+path = "host.rs"
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+base64 = "0.22"
+nostr = "0.44"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4"] }

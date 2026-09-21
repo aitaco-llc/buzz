@@ -1216,6 +1216,7 @@ name = "buzz-pair-relay"
 version = "0.1.0"
 dependencies = [
  "futures-util",
+ "getrandom 0.4.3",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -1237,6 +1238,7 @@ dependencies = [
  "futures-util",
  "hex",
  "nostr 0.44.7",
+ "rustls",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",

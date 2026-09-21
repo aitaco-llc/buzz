@@ -30,7 +30,7 @@ class ProtocolTests(unittest.TestCase):
                     queries.append(f)
                     event_id = SOURCE if '#e' in f else TRIGGER if f.get('ids') == [TRIGGER] else ROOT
                     channel = 'forbidden' if mode == 'wrong-channel' and 'search' in f else CHANNEL
-                    result = [{'id': event_id, 'content': 'Recovery code SOLVED-fixture.', 'tags': [['h', channel]]}]
+                    result = [{'id': event_id, 'content': 'Recovery code SOLVED-fixture7.', 'tags': [['h', channel]]}]
                 elif self.path == '/events':
                     publications.append(value)
                     result = {'accepted': True, 'event_id': value['id']}
@@ -45,7 +45,7 @@ class ProtocolTests(unittest.TestCase):
                     elif i == 2:
                         name, args = 'read_thread', {'event_id': ROOT}
                     else:
-                        name, args = 'finish_answer', {'answer': 'SOLVED-fixture', 'source_ids': ['d' * 64 if mode == 'invented-citation' else SOURCE]}
+                        name, args = 'finish_answer', {'answer': 'SOLVED-123456' if mode == 'invented-code' else 'SOLVED-fixture7', 'source_ids': ['d' * 64 if mode == 'invented-citation' else SOURCE]}
                     chunk = {'choices':[{'index':0,'delta':{'tool_calls':[{'index':0,'id':f'call{i}','type':'function','function':{'name':name,'arguments':json.dumps(args)}}]},'finish_reason': 'error' if mode == 'model-error' else 'tool_calls'}]}
                     if i >= 3:
                         content = '' if mode == 'empty-answer' or (mode == 'recover-stall' and i == 3) else json.dumps(args)
@@ -136,6 +136,7 @@ class ProtocolTests(unittest.TestCase):
     def test_repeated_empty_answer_is_failure(self): self.run_case('empty-answer')
     def test_cancellation(self): self.run_case('cancel')
     def test_forged_citation(self): self.run_case('invented-citation')
+    def test_invented_code_with_real_citation(self): self.run_case('invented-code')
     def test_wrong_channel(self): self.run_case('wrong-channel')
     def test_model_error(self): self.run_case('model-error')
 

@@ -96,6 +96,12 @@ enum CliError {
 
 #[tokio::main]
 async fn main() {
+    // Install ring as the process-level rustls CryptoProvider. tokio-tungstenite
+    // reaches ClientConfig::builder() for every wss:// relay, and rustls panics
+    // there when no provider is installed — which is every real deployment,
+    // since only a local test relay is served over plain ws://.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let cli = Cli::parse();
     if let Err(e) = run(cli.command).await {
         eprintln!("error: {e}");
@@ -458,22 +464,49 @@ where
     write.send(Message::Text(msg.to_string().into())).await?;
 
     // Wait for OK response (up to 5 seconds).
-    let _ = timeout(Duration::from_secs(5), async {
+    let ok = timeout(Duration::from_secs(5), async {
         loop {
             let msg = read
                 .next()
                 .await
                 .ok_or_else(|| CliError::Other("relay closed during auth".into()))??;
             if let Message::Text(text) = msg {
-                if text.contains("\"OK\"") || text.contains("[\"OK\"") {
-                    return Ok::<(), CliError>(());
+                if let Some(result) = parse_ok_result(text.as_str()) {
+                    return Ok::<Option<(bool, String)>, CliError>(Some(result));
                 }
             }
         }
     })
     .await;
 
+    // Report the verdict: this CLI exists to prove interop, and whether the
+    // relay accepted the AUTH is exactly what a pairing run needs to show.
+    // Pairing continues either way, as it did before — a relay that refuses
+    // AUTH still carries live pairing events.
+    match ok {
+        Ok(Ok(Some((true, _)))) => println!("Relay accepted AUTH."),
+        Ok(Ok(Some((false, message)))) => println!("Relay refused AUTH: {message}"),
+        _ => println!("Relay sent no OK for AUTH."),
+    }
+
     Ok(())
+}
+
+/// Parse an `["OK", "<id>", <accepted>, "<message>"]` relay message into its
+/// verdict and message.
+fn parse_ok_result(text: &str) -> Option<(bool, String)> {
+    let arr: serde_json::Value = serde_json::from_str(text).ok()?;
+    let arr = arr.as_array()?;
+    if arr.len() >= 3 && arr[0].as_str()? == "OK" {
+        let accepted = arr[2].as_bool()?;
+        let message = arr
+            .get(3)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        return Some((accepted, message));
+    }
+    None
 }
 
 /// Parse an `["AUTH", "<challenge>"]` relay message.
@@ -620,4 +653,45 @@ fn hex_to_32(s: &str) -> Result<[u8; 32], CliError> {
     bytes
         .try_into()
         .map_err(|_| CliError::Other(format!("expected 32 bytes, got wrong length for '{s}'")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ok_results_are_read_and_other_frames_ignored() {
+        assert_eq!(
+            parse_ok_result(r#"["OK","abc",true,""]"#),
+            Some((true, String::new()))
+        );
+        assert_eq!(
+            parse_ok_result(r#"["OK","abc",false,"auth-required: wrong challenge"]"#),
+            Some((false, "auth-required: wrong challenge".to_string()))
+        );
+        // A relay may omit the message entirely.
+        assert_eq!(
+            parse_ok_result(r#"["OK","abc",true]"#),
+            Some((true, String::new()))
+        );
+        for other in [
+            r#"["AUTH","challenge"]"#,
+            r#"["NOTICE","hello"]"#,
+            r#"["OK","abc"]"#,
+            r#"["OK","abc","true",""]"#,
+            "not json",
+        ] {
+            assert_eq!(parse_ok_result(other), None, "{other}");
+        }
+    }
+
+    #[test]
+    fn auth_challenges_are_read_from_auth_frames_only() {
+        assert_eq!(
+            parse_auth_challenge(r#"["AUTH","c0ffee"]"#),
+            Some("c0ffee".to_string())
+        );
+        assert_eq!(parse_auth_challenge(r#"["OK","abc",true,""]"#), None);
+        assert_eq!(parse_auth_challenge("not json"), None);
+    }
 }

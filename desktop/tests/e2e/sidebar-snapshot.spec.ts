@@ -503,15 +503,29 @@ test("hash mismatch replaces the snapshot with the full live list", async ({
   page,
 }) => {
   await seedSnapshot(page, { hash: "stale-hash" });
+  // The live read is held off for SNAPSHOT_FRAME_DELAY_MS, as in the cold-boot
+  // test above, so the stale snapshot frame is deterministic. With the 600 ms
+  // delay this test used to allow, a machine that needed longer than the 500 ms
+  // budget to boot never saw the frame at all: the live list had already
+  // replaced it. That is a property of the machine, not of the sidebar.
   await installMockBridge(page, {
-    channelsReadDelayMs: READ_DELAY_MS,
+    channelsReadDelayMs: SNAPSHOT_FRAME_DELAY_MS,
     honorChannelsKnownHash: true,
   });
+  const navigationStartedAt = performance.now();
   await page.goto("/");
 
+  // One constant governs the whole window: the live list cannot produce a
+  // `snapshot-` row, so waiting the full hold costs nothing and tolerates a
+  // slow boot.
   await expect(page.locator('[data-channel-id^="snapshot-"]')).toHaveCount(
     FULL_SNAPSHOT.length,
-    { timeout: 500 },
+    { timeout: SNAPSHOT_FRAME_DELAY_MS },
+  );
+  // The frame must still be the boot frame: painted from the snapshot, before
+  // the live response could have arrived.
+  expect(performance.now() - navigationStartedAt).toBeLessThan(
+    SNAPSHOT_FRAME_DELAY_MS,
   );
   await expect
     .poll(() => getChannelsPayloads(page))

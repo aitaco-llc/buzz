@@ -1,6 +1,7 @@
 import type {
   TimelineMessage,
   TimelineReaction,
+  TimelineTurnReceipt,
 } from "@/features/messages/types";
 
 /**
@@ -67,6 +68,32 @@ export function reactionsEqual(
     }
   }
   return true;
+}
+
+/**
+ * NIP-AR turn receipts, by value. Like reactions and tags, this object is
+ * rebuilt with a fresh identity on every `formatTimelineMessages` run, so an
+ * identity check would re-render every row on every streamed event — and
+ * omitting the comparison entirely would do the opposite and worse: a receipt
+ * arriving after its messages (which is the order NIP-AR mandates) would never
+ * reach the screen, because the row is already memoized on the pre-receipt
+ * props.
+ */
+export function turnReceiptEqual(
+  a: TimelineTurnReceipt | undefined,
+  b: TimelineTurnReceipt | undefined,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.id === b.id &&
+    a.model === b.model &&
+    a.harness === b.harness &&
+    a.inputTokens === b.inputTokens &&
+    a.outputTokens === b.outputTokens &&
+    a.cacheReadTokens === b.cacheReadTokens &&
+    a.cacheWriteTokens === b.cacheWriteTokens
+  );
 }
 
 export function numberArrayEqual(

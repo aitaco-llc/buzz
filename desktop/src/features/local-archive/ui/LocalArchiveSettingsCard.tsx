@@ -28,6 +28,7 @@ import { SettingsSectionHeader } from "@/features/settings/ui/SettingsSectionHea
 import { setExplicitAgentMetricArchiveChoice } from "../agentMetricArchivePreference";
 import { setExplicitObserverArchiveChoice } from "../observerArchivePreference";
 
+import { AgentUsagePanel } from "./AgentUsagePanel";
 import {
   buildSubscriptionRequest,
   isGroupFullyChecked,
@@ -525,7 +526,7 @@ export function LocalArchiveSettingsCard() {
     <section className="min-w-0" data-testid="settings-local-archive">
       <SettingsSectionHeader
         title="Local archive"
-        description="Save copies of relay messages to a local SQLite database in your Buzz nest. Events are re-verified against the relay at archive time."
+        description="Save copies of relay messages to a local SQLite database in your aitaco nest. Events are re-verified against the relay at archive time."
       />
 
       <div className="space-y-6">
@@ -542,6 +543,11 @@ export function LocalArchiveSettingsCard() {
           onToggle={(checked) => void handleMetricToggle(checked)}
           toggling={metricToggling}
         />
+
+        {/* What the toggle above has actually collected. It sits directly
+            under its own switch so the "archiving is off" state and the
+            control that fixes it are never in different views. */}
+        <AgentUsagePanel />
 
         {/* Channel subscriptions */}
         <div data-testid="local-archive-subscriptions">
