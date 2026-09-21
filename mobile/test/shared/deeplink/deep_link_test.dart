@@ -153,6 +153,33 @@ void _inviteTests() {
       );
     });
 
+    test('parses the co.aitaco.buzz join handoff the invite page uses', () {
+      final link = parseInviteDeepLink(
+        Uri.parse(
+          'co.aitaco.buzz://join?relay=wss%3A%2F%2Fbuzz.aitaco.co&code=abc123&policy_receipt=r',
+        ),
+      );
+      expect(
+        link,
+        const InviteDeepLink(
+          relayUrl: 'wss://buzz.aitaco.co',
+          code: 'abc123',
+          policyReceipt: 'r',
+        ),
+      );
+      expect(
+        parseBuzzDeepLink(Uri.parse('co.aitaco.buzz://channel/x')),
+        isNull,
+      );
+    });
+
+    test('parses our universal invite link', () {
+      expect(
+        parseInviteDeepLink(Uri.parse('https://buzz.aitaco.co/invite/abc123')),
+        const InviteDeepLink(relayUrl: 'wss://buzz.aitaco.co', code: 'abc123'),
+      );
+    });
+
     test('normalizes trailing slash in buzz join handoff', () {
       final link = parseInviteDeepLink(
         Uri.parse(

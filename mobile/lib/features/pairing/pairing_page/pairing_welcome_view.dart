@@ -64,7 +64,7 @@ class _PairingWelcomeView extends StatelessWidget {
                 ),
                 const SizedBox(height: Grid.xxs),
                 Text(
-                  'Scan the QR code from your desktop app\nor paste a pairing code to connect.',
+                  'Scan the code from aitaco Desktop or from\nAdd a device on your phone, or paste it.',
                   textAlign: TextAlign.center,
                   style: context.textTheme.bodyMedium?.copyWith(
                     color: _onboardingMutedInk,

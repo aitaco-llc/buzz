@@ -255,12 +255,17 @@ Future<List<NostrEvent>> _fetchHuddleStarts(
 ) async {
   if (parentChannelIds.isEmpty) return const [];
   try {
-    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    // Deliberately unwindowed. A backing channel is a list row until the relay
+    // archives it, and nothing bounds that to a clock: a call can run past any
+    // window, a relay can be slow to archive, and a fresh install has no local
+    // memory of a Huddle it never saw start. A `since` here made the hiding
+    // decay into `huddle-*` rows in the sidebar. The query stays bounded by
+    // the `#h` scope — the channels this identity is a member of — and by the
+    // limit, which returns the newest starts, so any live Huddle is included.
     return await session.fetchHistory(
       NostrFilter(
         kinds: const [EventKind.huddleStarted],
         tags: {'#h': parentChannelIds},
-        since: now - const Duration(hours: 2).inSeconds,
         limit: 500,
       ),
     );

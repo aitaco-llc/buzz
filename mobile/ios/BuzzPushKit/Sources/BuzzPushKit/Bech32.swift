@@ -1,10 +1,9 @@
 import Foundation
 
-/// Minimal bech32 (BIP-173) codec backing NIP-19 npub sender labels.
+/// Minimal bech32 (BIP-173) codec backing NIP-19 keys and npub sender labels.
 ///
-/// Only what push notification presentation needs is implemented: encoding
-/// 32-byte public keys as npub and validating npub inputs well enough to
-/// canonicalize them. Segwit addresses and bech32m are out of scope; NIP-19
+/// Notification presentation uses the npub helpers; native identity import uses
+/// this codec through `NostrKeyEncoding`. Segwit addresses and bech32m are out of scope; NIP-19
 /// uses the original bech32 checksum.
 enum Bech32 {
   /// Bech32 data charset from BIP-173, indexed by 5-bit value.
@@ -14,7 +13,7 @@ enum Bech32 {
     uniqueKeysWithValues: charset.enumerated().map { ($1, UInt8($0)) })
   /// Generator polynomial coefficients from BIP-173.
   private static let generator: [UInt32] = [
-    0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3,
+    0x3b6a_57b2, 0x2650_8e6d, 0x1ea1_19fa, 0x3d42_33dd, 0x2a14_62b3,
   ]
   /// Checksum length in 5-bit values, from BIP-173.
   private static let checksumLength = 6
@@ -146,7 +145,7 @@ enum Bech32 {
 
   /// Regroups a byte string between bit widths, as in BIP-173's `convertbits`.
   /// With padding disabled, a nonzero remainder is rejected instead of padded.
-  private static func convertBits(
+  static func convertBits(
     _ bytes: [UInt8], fromBits: Int, toBits: Int, padding: Bool
   ) -> [UInt8]? {
     var accumulator: UInt32 = 0
