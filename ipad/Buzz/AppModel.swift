@@ -284,8 +284,16 @@ final class Workspace {
     userStatus = cached.filter {
       $0.kind == 30315 && $0.pubkey == identity.pubkey && $0.tag("d") == "general"
     }.max(by: { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) })
+    // A Huddle's backing channel is the call's plumbing, not a channel row.
+    // Derived from the creator-signed starts rather than the backing channel's
+    // archived flag, which the relay can be slow to update.
+    let huddleBacking =
+      authority.map {
+        Projection.huddleBackingChannelIDs(events: cached, relayPubkey: $0)
+      } ?? []
     channels = Projection.channels(
-      events: cached.filter { $0.pubkey == authority }, pubkey: identity.pubkey)
+      events: cached.filter { $0.pubkey == authority }, pubkey: identity.pubkey,
+      hiding: huddleBacking)
     directory = authority.map { Projection.directory(events: cached, relayPubkey: $0) } ?? []
   }
 
@@ -359,6 +367,7 @@ final class Workspace {
     defer { refreshing = false }
     do {
       try await ChannelDiscovery.refresh(store: store, relay: relay, pubkey: identity.pubkey)
+      await fetchHuddleStarts()
       await reload()
       error = nil
       await retry()
@@ -368,6 +377,35 @@ final class Workspace {
       self.error = error.localizedDescription
       await reload()
       await NativePushBridge.refresh(workspace: self)
+    }
+  }
+
+  /// Pulls the creator-signed Huddle starts for joined channels.
+  ///
+  /// A start lives in its parent channel's timeline, which channel discovery
+  /// does not fetch, so without this query the first sidebar of a launch has
+  /// no way to tell a backing channel from a real one and lists `huddle-*`
+  /// rows. Best effort: a failure leaves the previous cache in place.
+  private func fetchHuddleStarts() async {
+    let mine = await store.cachedEvents().filter {
+      $0.kind == 39002
+        && $0.tags.contains { $0.count >= 2 && $0[0] == "p" && $0[1] == identity.pubkey }
+    }
+    let channelIDs = Set(mine.compactMap { $0.tag("d") }).sorted()
+    guard !channelIDs.isEmpty else { return }
+    do {
+      for offset in stride(from: 0, to: channelIDs.count, by: 100) {
+        try Task.checkCancellation()
+        let batch = Array(channelIDs[offset..<min(channelIDs.count, offset + 100)])
+        let starts = try await relay.query([
+          EventFilter(kinds: [48100], tags: ["h": batch], limit: 500)
+        ])
+        try await store.ingest(starts)
+      }
+    } catch is CancellationError {
+      return
+    } catch {
+      return
     }
   }
 
