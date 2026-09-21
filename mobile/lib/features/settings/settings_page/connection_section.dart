@@ -19,6 +19,16 @@ class _ConnectionSection extends ConsumerWidget {
         if (nsec != null && nsec.isNotEmpty && community != null) ...[
           _IdentityRow(nsec: nsec),
           AppListRow(
+            key: const ValueKey('settings-add-device'),
+            icon: LucideIcons.smartphone,
+            title: 'Add a device',
+            subtitle: 'Sign in Desktop, an iPad or another app as you',
+            trailing: const _RowChevron(),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const AddDevicePage()),
+            ),
+          ),
+          AppListRow(
             icon: LucideIcons.scanQrCode,
             title: 'Send identity to desktop',
             subtitle: 'Scan a recovery code shown by aitaco Desktop',

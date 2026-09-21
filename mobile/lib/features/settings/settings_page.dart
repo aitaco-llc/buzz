@@ -15,6 +15,7 @@ import '../../shared/community/community_membership_provider.dart';
 import '../../shared/push/push_bridge.dart';
 import '../../shared/relay/relay.dart';
 import '../../shared/utils/string_utils.dart';
+import '../pairing/add_device_page.dart';
 import '../pairing/pairing_provider.dart';
 import '../../shared/theme/theme.dart';
 import '../../shared/widgets/app_list.dart';
