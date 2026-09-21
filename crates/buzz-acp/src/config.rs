@@ -906,6 +906,24 @@ pub(crate) fn model_must_be_named(command: &str) -> bool {
     )
 }
 
+/// Effort levels Claude Code accepts, lowest first.
+pub(crate) const CLAUDE_EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+
+/// How an Anthropic seat's reasoning effort reaches the adapter.
+///
+/// `claude-agent-acp` 0.79.0 advertises only a `model` config option, so
+/// `apply_startup_effort`'s `session/set_config_option` path cannot set effort
+/// there — the ACP feature request for it is still open. The adapter does
+/// inherit its environment, and Claude Code reads `CLAUDE_CODE_EFFORT_LEVEL`
+/// from it. Measured 2026-09-20 on one reasoning-heavy prompt, sonnet:
+/// `low` spent 1,952 output tokens in 17.6s, `max` spent 29,268 in 240s.
+///
+/// So `BUZZ_ACP_EFFORT_LEVEL` — which was silently discarded on this adapter —
+/// is translated into that variable, and the per-seat knob means what it says.
+pub(crate) fn effort_env_var(command: &str) -> Option<&'static str> {
+    model_must_be_named(command).then_some("CLAUDE_CODE_EFFORT_LEVEL")
+}
+
 /// Environment variables an agent process must never receive, inherited or
 /// supplied.
 ///
@@ -1250,7 +1268,24 @@ impl Config {
         // Spawned desktop agents now carry a complete instance snapshot. Team
         // instructions arrive independently so they can be layered at runtime.
         let mut persona_env_vars = Vec::new();
+        if let Some(var) = effort_env_var(&agent_command) {
+            let effort = args.effort_level.as_deref().map(str::trim).unwrap_or("");
+            if !effort.is_empty() {
+                if !CLAUDE_EFFORT_LEVELS.contains(&effort) {
+                    return Err(ConfigError::ConfigFile(format!(
+                        "BUZZ_ACP_EFFORT_LEVEL={effort:?} is not one of {CLAUDE_EFFORT_LEVELS:?}"
+                    )));
+                }
+                // Operator-wins, like every other entry: `AcpClient::spawn`
+                // skips a key already set in the parent environment.
+                persona_env_vars.push((var.to_string(), effort.to_string()));
+            }
+        }
         let model = args.model;
+
+        // An effort level the harness cannot deliver is worse than none: the
+        // operator believes the seat is configured. Refuse an unknown value
+        // rather than pass it to an adapter that ignores what it cannot parse.
 
         // A seat on Anthropic must say which model it runs. `ANTHROPIC_MODEL`
         // is the per-process pin the desktop already uses (it clears
@@ -1926,6 +1961,35 @@ mod tests {
         assert_eq!(normalize_agent_command_identity("   "), "");
         assert_eq!(normalize_agent_command_identity("/"), "");
         assert_eq!(normalize_agent_command_identity("///"), "");
+    }
+
+    #[test]
+    fn an_anthropic_seats_effort_reaches_the_variable_claude_code_reads() {
+        // claude-agent-acp advertises no thought_level option, so the ACP
+        // config path cannot carry effort; the adapter inherits its
+        // environment instead. Measured on sonnet: low spent 1,952 output
+        // tokens, max spent 29,268.
+        assert_eq!(
+            effort_env_var("claude-agent-acp"),
+            Some("CLAUDE_CODE_EFFORT_LEVEL")
+        );
+        assert_eq!(
+            effort_env_var("/opt/bin/claude-code-acp"),
+            Some("CLAUDE_CODE_EFFORT_LEVEL")
+        );
+        // goose and buzz-agent carry their own thinking env; codex picks its
+        // own; rebrand-acp takes flags.
+        for command in ["goose", "buzz-agent", "codex-acp", "rebrand-acp", ""] {
+            assert_eq!(effort_env_var(command), None, "{command}");
+        }
+    }
+
+    #[test]
+    fn the_effort_levels_are_the_ones_claude_code_accepts() {
+        assert_eq!(
+            CLAUDE_EFFORT_LEVELS,
+            ["low", "medium", "high", "xhigh", "max"]
+        );
     }
 
     #[test]
