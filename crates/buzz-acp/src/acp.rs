@@ -614,6 +614,12 @@ impl AcpClient {
                     Some(StandardAdapterKind::Claude)
                 }
                 "codex" | "codex-acp" => Some(StandardAdapterKind::Codex),
+                // `rebrand-acp` returns standard `usage` on its `session/prompt`
+                // result (`of-acp/src/server.rs`, `outcome::usage`). Without a
+                // kind here that object is parsed by nobody and every token
+                // count in the turn's NIP-AR receipt is absent — the model and
+                // the harness are named, and what the turn cost is not.
+                "rebrand-acp" => Some(StandardAdapterKind::Rebrand),
                 _ => None,
             };
         let mut child = cmd.spawn()?;
@@ -4580,6 +4586,31 @@ mod tests {
         serde_json::json!({"stopReason": "end_turn", "usage": usage})
     }
 
+    /// The `usage` object `rebrand-acp` really sends, in its field order and
+    /// its accounting: `inputTokens` is the whole prompt, `cachedReadTokens`
+    /// a subset of it, `thoughtTokens` disjoint from `outputTokens`, and
+    /// `totalTokens` each counted once (aitaco-llc/rebrand
+    /// `of-acp/src/outcome.rs` `usage`, `of/src/event.rs` `Usage::total`).
+    /// There is no `cachedWriteTokens` and no cost.
+    fn rebrand_prompt_response_usage(
+        input: u64,
+        output: u64,
+        thought: u64,
+        cached_read: Option<u64>,
+        total: u64,
+    ) -> serde_json::Value {
+        let mut usage = serde_json::json!({
+            "inputTokens": input,
+            "outputTokens": output,
+            "thoughtTokens": thought,
+            "totalTokens": total,
+        });
+        if let Some(cached_read) = cached_read {
+            usage["cachedReadTokens"] = serde_json::json!(cached_read);
+        }
+        serde_json::json!({"stopReason": "end_turn", "usage": usage})
+    }
+
     fn standard_cost_update(session_id: &str, cost: f64) -> serde_json::Value {
         serde_json::json!({
             "jsonrpc": "2.0",
@@ -4653,6 +4684,99 @@ mod tests {
         );
         assert_eq!(usage.cumulative_input_tokens, None);
         assert_eq!(usage.cumulative_output_tokens, None);
+    }
+
+    /// `rebrand-acp`'s `inputTokens` is the whole prompt, cached prefix
+    /// included. Adding `cachedReadTokens` back the way Claude's needs it
+    /// would bill the prefix twice — and an agentic loop resends its prefix on
+    /// every iteration, so the error compounds across a turn.
+    #[tokio::test]
+    async fn rebrand_prompt_input_already_includes_its_cached_prefix() {
+        let mut client = spawn_inert_client().await;
+        client.standard_adapter = Some(StandardAdapterKind::Rebrand);
+        client.standard_usage.begin_turn("rebrand-session");
+        client
+            .parse_prompt_response(
+                "rebrand-session",
+                &rebrand_prompt_response_usage(5_000, 100, 0, Some(4_096), 5_100),
+            )
+            .unwrap();
+
+        let usage = client.take_turn_usage().expect("prompt usage");
+        assert_eq!(
+            usage.turn_input_tokens,
+            Some(5_000),
+            "the cached prefix is a subset of the prompt, not an addition"
+        );
+        assert_eq!(usage.turn_cache_read_tokens, Some(4_096));
+        assert_eq!(usage.turn_cache_write_tokens, None);
+        assert_eq!(usage.turn_total_tokens, Some(5_100));
+    }
+
+    /// Thinking is disjoint from output in `of`'s accounting and billed at the
+    /// output rate. Reporting output alone under-states what a thinking model
+    /// cost, and leaves `input + output` short of the reported total.
+    #[tokio::test]
+    async fn rebrand_prompt_bills_thinking_as_output() {
+        let mut client = spawn_inert_client().await;
+        client.standard_adapter = Some(StandardAdapterKind::Rebrand);
+        client.standard_usage.begin_turn("thinking-session");
+        client
+            .parse_prompt_response(
+                "thinking-session",
+                &rebrand_prompt_response_usage(5_000, 200, 800, None, 6_000),
+            )
+            .unwrap();
+
+        let usage = client.take_turn_usage().expect("prompt usage");
+        assert_eq!(usage.turn_output_tokens, Some(1_000), "200 answer + 800 thought");
+        assert_eq!(usage.turn_total_tokens, Some(6_000));
+        assert_eq!(
+            usage.turn_input_tokens.unwrap() + usage.turn_output_tokens.unwrap(),
+            usage.turn_total_tokens.unwrap(),
+            "a receipt whose parts do not reach its total is unreadable"
+        );
+    }
+
+    /// The identity gate, over the wire: a seat whose `BUZZ_ACP_AGENT_COMMAND`
+    /// is `rebrand-acp` must parse the `usage` that adapter really sends
+    /// (aitaco-llc/rebrand `of-acp/src/outcome.rs`, `usage`). Without the
+    /// adapter kind the object is parsed by nobody and the turn's NIP-AR
+    /// receipt carries no counts at all.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rebrand_named_adapter_wire_lifecycle_records_prompt_usage() {
+        let script = r#"
+            read -r REQ
+            ID=$(printf '%s' "$REQ" | sed -E 's/.*"id":([0-9]+).*/\1/')
+            echo '{"jsonrpc":"2.0","id":'"$ID"',"result":{"stopReason":"end_turn","usage":{"inputTokens":5000,"outputTokens":200,"thoughtTokens":800,"cachedReadTokens":4096,"totalTokens":6000}}}'
+            sleep 1
+        "#;
+        let (mut client, dir) = spawn_named_script("rebrand-acp", script).await;
+        assert_eq!(client.standard_adapter, Some(StandardAdapterKind::Rebrand));
+        client.notify_session_spawned("rebrand-wire");
+
+        let stop = client
+            .session_prompt_with_idle_timeout(
+                "rebrand-wire",
+                "hello",
+                std::time::Duration::from_secs(2),
+                std::time::Duration::from_secs(5),
+            )
+            .await
+            .expect("prompt");
+        assert_eq!(stop, StopReason::EndTurn);
+
+        let usage = client.take_turn_usage().expect("prompt usage");
+        assert_eq!(usage.turn_input_tokens, Some(5_000));
+        assert_eq!(usage.turn_output_tokens, Some(1_000));
+        assert_eq!(usage.turn_total_tokens, Some(6_000));
+        assert_eq!(usage.turn_cache_read_tokens, Some(4_096));
+        assert_eq!(
+            usage.turn_cost_usd, None,
+            "rebrand-acp reports no cost; a reader prices the tokens itself"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
