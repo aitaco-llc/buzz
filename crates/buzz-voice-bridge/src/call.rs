@@ -479,9 +479,15 @@ async fn run_call_inner(
     let mut bed = crate::bed::Bed::new(params.working_sound, params.working_sound_gain);
     let mut working_since: Option<Instant> = None;
     let mut bed_frame = vec![0i16; OUT_FRAME];
-    // Frames leave on a wall-clock deadline rather than one per tick, so a
-    // late tick costs latency instead of audio. Reset whenever the queue runs
-    // dry: an idle line must not accrue a debt and then flush it in a burst.
+    // One frame per tick, and no more — nothing here leaves on a wall-clock
+    // deadline yet. `next_frame_at` is the deadline a drain would emit
+    // against; today the only thing that reads it is `worst_debt_ms`, which
+    // says how far behind real time the frame we are about to send already is.
+    // Reset whenever the queue runs dry, so an idle line does not book a debt
+    // it never owed and then report it as a stall. Combined with the `Skip`
+    // above, that means every tick the loop misses is 20 ms of audio it can
+    // never make up: the samples stay in `out_pcm`, the chance to emit them
+    // does not.
     let mut next_frame_at = Instant::now();
     let mut last_tick = Instant::now();
 
