@@ -322,7 +322,15 @@ pub async fn run_call(params: CallParams, cancel: CancellationToken) -> Result<(
         }
     };
 
-    post_outcome(&params, &mut log, &transcript, &outcome, &end_reason, duration).await;
+    post_outcome(
+        &params,
+        &mut log,
+        &transcript,
+        &outcome,
+        &end_reason,
+        duration,
+    )
+    .await;
     result.map(|_| ())
 }
 
@@ -1338,7 +1346,10 @@ mod tests {
         let part = &elided["serverContent"]["modelTurn"]["parts"][0]["inlineData"];
         assert_eq!(part["mimeType"], "audio/pcm;rate=24000");
         assert_eq!(part["data"]["elided_chars"], 4);
-        assert_eq!(elided["serverContent"]["modelTurn"]["parts"][1]["text"], "kept");
+        assert_eq!(
+            elided["serverContent"]["modelTurn"]["parts"][1]["text"],
+            "kept"
+        );
         assert_eq!(elided["usageMetadata"]["totalTokenCount"], 7);
     }
 
@@ -1346,7 +1357,10 @@ mod tests {
     fn an_unparsed_message_is_named_by_its_keys() {
         let message = json!({ "somethingNew": { "a": 1 }, "goAwayLater": true });
         assert!(gemini::parse_server_message(&message).is_empty());
-        assert_eq!(top_level_keys(&message), vec!["goAwayLater", "somethingNew"]);
+        assert_eq!(
+            top_level_keys(&message),
+            vec!["goAwayLater", "somethingNew"]
+        );
         assert!(top_level_keys(&json!([1, 2])).is_empty());
     }
 

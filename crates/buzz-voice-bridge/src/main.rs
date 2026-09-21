@@ -189,9 +189,10 @@ async fn main() -> Result<()> {
                 }
                 Err(error) => {
                     warn!(%error, "relay connect failed; retrying");
-                    watcher
-                        .log
-                        .record("relay_connect_failed", json!({ "error": error.to_string() }));
+                    watcher.log.record(
+                        "relay_connect_failed",
+                        json!({ "error": error.to_string() }),
+                    );
                     tokio::time::sleep(Duration::from_secs(3)).await;
                     continue;
                 }
@@ -261,7 +262,9 @@ async fn main() -> Result<()> {
                 probe = Some((id, Instant::now()));
                 last_beat = Some(Instant::now());
             }
-            if let Some((id, at)) = probe.as_ref().filter(|(_, at)| at.elapsed() >= HEARTBEAT_DEADLINE)
+            if let Some((id, at)) = probe
+                .as_ref()
+                .filter(|(_, at)| at.elapsed() >= HEARTBEAT_DEADLINE)
             {
                 warn!(
                     subscription = %id,
@@ -357,12 +360,19 @@ async fn main() -> Result<()> {
         );
     }
     info!("voice bridge stopped");
-    watcher.log.record("down", json!({ "pid": std::process::id() }));
+    watcher
+        .log
+        .record("down", json!({ "pid": std::process::id() }));
     Ok(())
 }
 
 /// Expire call logs past the retention window and say how many went.
-fn sweep(watcher: &mut Watcher, dir: &std::path::Path, days: u64, keep: &std::path::Path) -> Instant {
+fn sweep(
+    watcher: &mut Watcher,
+    dir: &std::path::Path,
+    days: u64,
+    keep: &std::path::Path,
+) -> Instant {
     let removed = jsonl::sweep_older_than(dir, days, keep);
     watcher.log.record(
         "retention_sweep",

@@ -133,9 +133,7 @@ impl RateLimit {
     /// `Some(n)` when the caller should emit, `n` being how many it swallowed
     /// since the last emission. `None` means stay quiet.
     pub fn allow(&mut self) -> Option<u64> {
-        let due = self
-            .last
-            .is_none_or(|last| last.elapsed() >= self.window);
+        let due = self.last.is_none_or(|last| last.elapsed() >= self.window);
         if due {
             self.last = Some(Instant::now());
             return Some(std::mem::take(&mut self.suppressed));
@@ -150,10 +148,8 @@ mod tests {
     use super::*;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "voice-bridge-jsonl-{name}-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("voice-bridge-jsonl-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("temp dir");
         dir
@@ -216,10 +212,12 @@ mod tests {
         for path in [&bridge, &old, &fresh, &other] {
             std::fs::write(path, "{}\n").expect("write");
         }
-        let long_ago =
-            SystemTime::now() - Duration::from_secs(40 * 24 * 60 * 60);
+        let long_ago = SystemTime::now() - Duration::from_secs(40 * 24 * 60 * 60);
         for path in [&bridge, &old] {
-            let file = std::fs::File::options().write(true).open(path).expect("open");
+            let file = std::fs::File::options()
+                .write(true)
+                .open(path)
+                .expect("open");
             file.set_modified(long_ago).expect("mtime");
         }
         assert_eq!(sweep_older_than(&dir, 30, &bridge), 1);
