@@ -388,6 +388,15 @@ pub struct CliArgs {
     #[arg(long, env = "BUZZ_ACP_SELF_WAKE_TAG", value_parser = parse_self_wake_tag)]
     pub self_wake_tag: Option<SelfWakeTag>,
 
+    /// Announce provider usage-limit warnings to this channel.
+    ///
+    /// A usage limit belongs to the account, so every seat on the box sees the
+    /// same warning within seconds of the others. Set this on exactly ONE seat
+    /// — the designated announcer — and leave it unset everywhere else, or the
+    /// fleet says the same thing N times. Unset means say nothing.
+    #[arg(long, env = "BUZZ_ACP_LIMIT_WARNING_CHANNEL")]
+    pub limit_warning_channel: Option<Uuid>,
+
     /// Maximum number of context messages to include for thread replies and DMs.
     /// Set to 0 to disable automatic context fetching. Max 100.
     #[arg(long, env = "BUZZ_ACP_CONTEXT_MESSAGE_LIMIT", default_value_t = 12,
@@ -572,6 +581,9 @@ pub struct Config {
     pub initial_message: Option<String>,
     pub subscribe_mode: SubscribeMode,
     pub dedup_mode: DedupMode,
+    /// Where to announce provider usage-limit warnings, if this seat is the
+    /// designated announcer. `None` on every other seat.
+    pub limit_warning_channel: Option<Uuid>,
     /// How ACP provider sessions are scoped in channels (channel vs thread).
     pub session_policy: crate::scope::SessionPolicy,
     pub multiple_event_handling: MultipleEventHandling,
@@ -1319,6 +1331,7 @@ impl Config {
 
         let config = Config {
             keys,
+            limit_warning_channel: args.limit_warning_channel,
             relay_url: args.relay_url,
             agent_command,
             agent_args,
@@ -1747,6 +1760,7 @@ mod tests {
     /// Build a minimal Config for testing without CLI parsing.
     fn test_config(mode: SubscribeMode) -> Config {
         Config {
+            limit_warning_channel: None,
             keys: nostr::Keys::generate(),
             relay_url: "ws://localhost:3000".into(),
             agent_command: "goose".into(),

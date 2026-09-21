@@ -230,6 +230,64 @@ pub struct EventQueue {
     /// Must be strictly greater than `max_turn_duration` so a turn running to
     /// the hard cap returns via `mark_complete` before the backstop fires.
     in_flight_deadline: Duration,
+    /// Seat-wide hold while the provider is refusing every turn on a usage
+    /// limit. `None` when nothing is held.
+    limit_hold: Option<LimitHold>,
+    /// Scopes that have already had their one "held, not lost" notice for the
+    /// current hold. Cleared with the hold.
+    limit_announced: HashSet<SessionScope>,
+    /// Usage-limit windows this process has already warned about, as
+    /// `(rateLimitType, resetsAt)`. The provider re-sends the warning on every
+    /// turn once the threshold is crossed, and one line per window is enough.
+    ///
+    /// It lives here rather than in its own store because the queue is the
+    /// loop's long-lived, single-owner state; nothing about it is queue-ish.
+    /// Never cleared: a new window has a new `resetsAt`, so the key moves on
+    /// its own, and the set gains one entry per window per process lifetime.
+    warned_windows: HashSet<(String, u64)>,
+}
+
+/// A seat-wide pause while the provider is refusing on a usage limit.
+///
+/// A usage limit belongs to the account, not to a channel or a batch, so
+/// retrying a different scope cannot succeed where this one failed. Before
+/// this existed, each scope spent its own ten-attempt budget against the same
+/// limit and then dead-lettered: on 2026-09-21 hip destroyed ten triggers
+/// across four seats in twenty-four minutes that way, and the work was gone.
+///
+/// So a limit does not spend retry budget and never dead-letters. It stops the
+/// seat until there is reason to try again, and the held work runs then.
+#[derive(Debug, Clone)]
+pub struct LimitHold {
+    /// When to try again. Taken from the provider's own `resetsAt` when it
+    /// sent one, otherwise a capped backoff.
+    ///
+    /// This is when to *probe*, never a claim that the limit has lifted: if
+    /// the probe is refused again the next report carries a new deadline —
+    /// which is exactly what a weekly limit sitting under a five-hour one
+    /// looks like.
+    pub until: Instant,
+    /// A probe turn has been released and has not yet returned. Nothing else
+    /// dispatches until it does, so one refusal re-arms the hold instead of
+    /// every held scope burning a turn against the same limit.
+    probing: bool,
+    /// Consecutive refusals, for the capped backoff when no `resetsAt` came.
+    consecutive: u32,
+    /// The notice a held trigger gets, rendered once when the hold is armed.
+    ///
+    /// Kept here so a trigger that arrives DURING the hold — which never fails,
+    /// because it never dispatches — is told the same thing as the one that
+    /// was refused. Without it, anyone who writes to a held seat waits in
+    /// silence until the window resets, which is the failure this whole change
+    /// exists to remove.
+    pub notice: String,
+}
+
+impl LimitHold {
+    /// Whether the seat may dispatch right now.
+    fn blocks(&self, now: Instant) -> bool {
+        self.probing || self.until > now
+    }
 }
 
 impl EventQueue {
@@ -247,6 +305,9 @@ impl EventQueue {
             retry_after: HashMap::new(),
             retry_counts: HashMap::new(),
             dedup_mode,
+            limit_hold: None,
+            limit_announced: HashSet::new(),
+            warned_windows: HashSet::new(),
             cancelled_batches: HashMap::new(),
             cancel_reasons: HashMap::new(),
             withheld_native_steer: HashMap::new(),
@@ -370,7 +431,27 @@ impl EventQueue {
     /// across channels), drains ALL events for that channel into a single batch,
     /// inserts into `in_flight_channels`, and returns the batch.
     pub fn flush_next(&mut self) -> Option<FlushBatch> {
+        let batch = self.flush_next_inner();
+        // Past a hold's deadline the first batch out is the probe, and nothing
+        // else may go until it answers. Marked here rather than at each of the
+        // inner function's returns so the two cannot drift apart.
+        if batch.is_some() {
+            if let Some(hold) = self.limit_hold.as_mut() {
+                hold.probing = true;
+            }
+        }
+        batch
+    }
+
+    fn flush_next_inner(&mut self) -> Option<FlushBatch> {
         let now = Instant::now();
+
+        // A provider usage limit belongs to the account, so while one is in
+        // force no scope can succeed and none may dispatch. Checked before the
+        // in-flight expiry sweep below so a hold cannot be walked past.
+        if self.limit_hold.as_ref().is_some_and(|h| h.blocks(now)) {
+            return None;
+        }
 
         // Auto-expire any stuck in-flight entries that missed mark_complete.
         let expired: Vec<SessionScope> = self
@@ -542,6 +623,82 @@ impl EventQueue {
     ///
     /// Note: does NOT remove from `in_flight_channels` — caller must call
     /// `mark_complete` separately.
+    /// Hold the seat on a provider usage limit, and put the batch back.
+    ///
+    /// The batch keeps its original timestamps and spends no retry budget:
+    /// a limit is not the batch's fault and retrying it sooner cannot help.
+    /// `until` is the provider's `resetsAt` when it gave one; `None` falls
+    /// back to a capped backoff that grows with consecutive refusals, so a
+    /// provider that reports no deadline still cannot be hammered.
+    ///
+    /// Re-arming while already held (the probe was refused again) keeps the
+    /// consecutive count so the fallback keeps growing.
+    pub fn hold_for_limit(
+        &mut self,
+        batch: FlushBatch,
+        until: Option<Instant>,
+        notice: String,
+        now: Instant,
+    ) {
+        let consecutive = self.limit_hold.as_ref().map_or(0, |h| h.consecutive) + 1;
+        let until = until.unwrap_or_else(|| {
+            let secs = BASE_RETRY_DELAY_SECS.saturating_mul(1u64 << (consecutive - 1).min(6));
+            now + Duration::from_secs(secs.min(MAX_RETRY_DELAY_SECS))
+        });
+        tracing::warn!(
+            channel_id = %batch.channel_id,
+            events = batch.events.len(),
+            consecutive,
+            holds_for_secs = until.saturating_duration_since(now).as_secs(),
+            "holding the seat on a provider usage limit — no retry spent, nothing discarded"
+        );
+        self.limit_hold = Some(LimitHold {
+            until,
+            probing: false,
+            consecutive,
+            notice,
+        });
+        self.requeue_preserve_timestamps(batch);
+    }
+
+    /// Release the seat: the provider answered, so the limit is over.
+    ///
+    /// Everything held resumes in arrival order, because nothing ever left the
+    /// queues and `flush_next` orders by `received_at`.
+    pub fn clear_limit_hold(&mut self) -> Option<LimitHold> {
+        self.limit_announced.clear();
+        let held = self.limit_hold.take();
+        if let Some(h) = &held {
+            tracing::info!(
+                consecutive = h.consecutive,
+                refused_with = %h.notice,
+                "provider answered — releasing the seat's usage-limit hold"
+            );
+        }
+        held
+    }
+
+    /// Record that a scope has had its one notice, and say whether this call
+    /// is the one that earned it.
+    ///
+    /// Returns `true` exactly once per scope per hold. Cleared with the hold,
+    /// so a later, unrelated limit announces again.
+    pub fn note_limit_announced(&mut self, scope: &SessionScope) -> bool {
+        self.limit_announced.insert(scope.clone())
+    }
+
+    /// Record a usage-limit warning for a window, and say whether this call is
+    /// the first time this process has seen that window at that reset.
+    pub fn note_limit_warning(&mut self, window: &str, resets_at: u64) -> bool {
+        self.warned_windows.insert((window.to_owned(), resets_at))
+    }
+
+    /// The live hold, if the seat is holding.
+    ///
+    pub fn limit_hold(&self) -> Option<&LimitHold> {
+        self.limit_hold.as_ref()
+    }
+
     pub fn requeue(&mut self, batch: FlushBatch) -> Option<FlushBatch> {
         let channel_id = batch.channel_id;
         let scope = batch.scope.clone();
@@ -705,6 +862,12 @@ impl EventQueue {
     /// full `flush_next` call.
     pub fn has_flushable_work(&mut self) -> bool {
         let now = Instant::now();
+
+        // Held work is not flushable work: reporting it as flushable spins the
+        // dispatch loop against a limit it cannot pass.
+        if self.limit_hold.as_ref().is_some_and(|h| h.blocks(now)) {
+            return false;
+        }
 
         // Auto-expire stuck in-flight entries (same logic as flush_next).
         let expired: Vec<SessionScope> = self
@@ -1470,6 +1633,23 @@ fn resolve_reply_anchor(
             .clone()
             .unwrap_or_else(|| triggering_event_id.to_string()),
     )
+}
+
+/// Where a "your request is held" notice should be posted for `event`.
+///
+/// Replies TO the trigger rather than merely into whatever thread it sits in:
+/// `parse_thread_tags` yields no root for a top-level message, and posting at
+/// the channel root puts the answer somewhere the asker is not looking. For a
+/// voice ask it is worse than that — the bridge only reads replies carrying
+/// `#e` of its ask, so a top-level notice is one it can never speak.
+pub fn held_notice_target(event: &Event) -> ThreadTags {
+    let existing = parse_thread_tags(event);
+    let trigger = event.id.to_hex();
+    ThreadTags {
+        root_event_id: Some(existing.root_event_id.unwrap_or_else(|| trigger.clone())),
+        parent_event_id: Some(trigger),
+        mentioned_pubkeys: Vec::new(),
+    }
 }
 
 /// Thread tags for a turn's typing indicator: where Desktop should show it.
@@ -4575,6 +4755,41 @@ mod tests {
         assert_eq!(anchor, None);
     }
 
+    // ── held_notice_target ──────────────────────────────────────────────────
+
+    #[test]
+    fn a_held_notice_replies_to_a_top_level_trigger_rather_than_the_channel() {
+        // The first ask of every voice call is top-level, and the bridge only
+        // reads replies carrying `#e` of its ask — so a notice with no thread
+        // is one the caller never hears.
+        let event = make_event_with_tags("@agent what is the status", vec![]);
+        let target = held_notice_target(&event);
+        assert_eq!(
+            target.root_event_id.as_deref(),
+            Some(event.id.to_hex().as_str())
+        );
+        assert_eq!(
+            target.parent_event_id.as_deref(),
+            Some(event.id.to_hex().as_str())
+        );
+    }
+
+    #[test]
+    fn a_held_notice_stays_in_the_thread_the_trigger_was_already_in() {
+        let event = make_event_with_tags("@agent more", vec![e_tag(ROOT_ID, "reply")]);
+        let target = held_notice_target(&event);
+        assert_eq!(
+            target.root_event_id.as_deref(),
+            Some(ROOT_ID),
+            "the thread's root"
+        );
+        assert_eq!(
+            target.parent_event_id.as_deref(),
+            Some(event.id.to_hex().as_str()),
+            "and a reply to the trigger itself"
+        );
+    }
+
     // ── typing_thread_tags ──────────────────────────────────────────────────
 
     fn e_tag(id: &str, marker: &str) -> Vec<String> {
@@ -4590,6 +4805,7 @@ mod tests {
             Uuid::nil(),
             tt.root_event_id.as_deref(),
             tt.parent_event_id.as_deref(),
+            None,
         )
         .unwrap();
         tags.iter()
@@ -4600,6 +4816,59 @@ mod tests {
                     && t.get(3).map(String::as_str) == Some("reply")
             })
             .and_then(|t| t.get(1).cloned())
+    }
+
+    /// The `trigger` tag a typing indicator carries, if any.
+    fn trigger_of(tags: &[nostr::Tag]) -> Option<String> {
+        tags.iter()
+            .map(|t| t.as_slice())
+            .find(|t| t.first().map(String::as_str) == Some(crate::relay::TYPING_TRIGGER_TAG))
+            .and_then(|t| t.get(1).cloned())
+    }
+
+    #[test]
+    fn the_trigger_tag_never_moves_a_channel_keyed_indicator() {
+        // The case the voice bridge needs and the one most easily broken: a
+        // top-level trigger. The indicator must still carry NO `e` tag, or the
+        // channel surfaces stop showing it (`useChannelActivityTyping.ts`) and
+        // it appears in a thread panel that does not exist yet.
+        let tags =
+            crate::relay::typing_event_tags(Uuid::nil(), None, None, Some(TRIGGER_ID)).unwrap();
+        assert_eq!(
+            tags.iter()
+                .filter(|t| t.as_slice().first().map(String::as_str) == Some("e"))
+                .count(),
+            0,
+            "a trigger must never become an `e` tag"
+        );
+        assert_eq!(trigger_of(&tags).as_deref(), Some(TRIGGER_ID));
+    }
+
+    #[test]
+    fn the_trigger_tag_leaves_thread_keying_alone() {
+        let with = crate::relay::typing_event_tags(
+            Uuid::nil(),
+            Some(ROOT_ID),
+            Some(ROOT_ID),
+            Some(TRIGGER_ID),
+        )
+        .unwrap();
+        let without =
+            crate::relay::typing_event_tags(Uuid::nil(), Some(ROOT_ID), Some(ROOT_ID), None)
+                .unwrap();
+        let e_tags = |tags: &[nostr::Tag]| -> Vec<Vec<String>> {
+            tags.iter()
+                .map(|t| t.as_slice().to_vec())
+                .filter(|t| t.first().map(String::as_str) == Some("e"))
+                .collect()
+        };
+        assert_eq!(
+            e_tags(&with),
+            e_tags(&without),
+            "the trigger tag must not change which thread an indicator keys to"
+        );
+        assert_eq!(trigger_of(&with).as_deref(), Some(TRIGGER_ID));
+        assert_eq!(trigger_of(&without), None, "absent when not supplied");
     }
 
     #[test]
@@ -4628,8 +4897,8 @@ mod tests {
         assert_eq!(tt.parent_event_id.as_deref(), Some(ROOT_ID));
         // One `reply` marker on the root: the head of the thread panel.
         assert_eq!(desktop_typing_key(&event).as_deref(), Some(ROOT_ID));
-        let tags =
-            crate::relay::typing_event_tags(Uuid::nil(), Some(ROOT_ID), Some(ROOT_ID)).unwrap();
+        let tags = crate::relay::typing_event_tags(Uuid::nil(), Some(ROOT_ID), Some(ROOT_ID), None)
+            .unwrap();
         assert_eq!(
             tags.iter()
                 .filter(|t| t.as_slice().first().map(String::as_str) == Some("e"))
@@ -6559,6 +6828,157 @@ mod tests {
             "only the formatter's real closing boundary may remain; got: {prompt}"
         );
         assert!(!prompt.contains("<agent-instructions>injected</agent-instructions>"));
+    }
+
+    // ── the usage-limit hold ─────────────────────────────────────────────────
+
+    /// A queue with one event queued and its batch flushed out, ready to fail.
+    fn held_setup() -> (EventQueue, FlushBatch, Uuid) {
+        let ch = Uuid::new_v4();
+        let mut q = EventQueue::new(DedupMode::Queue);
+        q.push(make_queued(ch, "do the thing"));
+        let batch = q.flush_next().expect("a batch to fail");
+        q.mark_complete(conv(ch));
+        (q, batch, ch)
+    }
+
+    #[test]
+    fn a_limit_holds_the_seat_and_spends_no_retry_budget() {
+        let (mut q, batch, ch) = held_setup();
+        let now = Instant::now();
+        q.hold_for_limit(
+            batch,
+            Some(now + Duration::from_secs(120)),
+            "limit".into(),
+            now,
+        );
+
+        // Nothing dispatches while the hold stands, and the queue does not
+        // pretend there is work to do.
+        assert!(q.flush_next().is_none(), "a held seat must not dispatch");
+        assert!(!q.has_flushable_work(), "held work is not flushable work");
+        // The event is still there — this is the whole point.
+        assert_eq!(
+            q.retry_counts.get(&conv(ch)),
+            None,
+            "a limit must spend no retry budget"
+        );
+        assert!(q.limit_hold().is_some());
+    }
+
+    #[test]
+    fn a_limit_never_dead_letters_however_often_it_repeats() {
+        let (mut q, mut batch, ch) = held_setup();
+        // Twice the retry budget. `requeue` would have discarded the events on
+        // attempt 11; the hold must still be holding them.
+        for _ in 0..(MAX_RETRIES * 2 + 5) {
+            let now = Instant::now();
+            q.hold_for_limit(
+                batch,
+                Some(now + Duration::from_secs(60)),
+                "limit".into(),
+                now,
+            );
+            q.clear_limit_hold();
+            batch = q
+                .flush_next()
+                .expect("the held events must still be queued");
+            q.mark_complete(conv(ch));
+        }
+        assert_eq!(batch.events.len(), 1, "the trigger survived every refusal");
+        assert_eq!(q.retry_counts.get(&conv(ch)), None);
+    }
+
+    #[test]
+    fn past_the_deadline_exactly_one_probe_goes_out() {
+        let ch = Uuid::new_v4();
+        let mut q = EventQueue::new(DedupMode::Queue);
+        q.push(make_queued(ch, "first"));
+        let batch = q.flush_next().expect("first batch");
+        q.mark_complete(conv(ch));
+        // A second scope's work arrives while the seat is held.
+        let other = Uuid::new_v4();
+        q.push(make_queued(other, "second"));
+
+        let now = Instant::now();
+        // Already due: the hold is armed but its deadline has passed.
+        q.hold_for_limit(
+            batch,
+            Some(now - Duration::from_secs(1)),
+            "limit".into(),
+            now,
+        );
+
+        assert!(q.flush_next().is_some(), "the probe may go");
+        assert!(
+            q.flush_next().is_none(),
+            "nothing else may follow the probe until it answers"
+        );
+    }
+
+    #[test]
+    fn the_provider_answering_releases_everything_in_arrival_order() {
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        let mut q = EventQueue::new(DedupMode::Queue);
+        q.push(make_queued(first, "older"));
+        std::thread::sleep(Duration::from_millis(5));
+        q.push(make_queued(second, "newer"));
+
+        let batch = q.flush_next().expect("older first");
+        q.mark_complete(conv(first));
+        let now = Instant::now();
+        q.hold_for_limit(
+            batch,
+            Some(now + Duration::from_secs(300)),
+            "limit".into(),
+            now,
+        );
+        assert!(q.flush_next().is_none());
+
+        q.clear_limit_hold();
+        let a = q.flush_next().expect("older released first");
+        q.mark_complete(a.scope.clone());
+        let b = q.flush_next().expect("then the newer one");
+        assert_eq!(a.channel_id, first, "arrival order survives the hold");
+        assert_eq!(b.channel_id, second);
+    }
+
+    #[test]
+    fn a_scope_is_announced_once_per_hold_and_again_after_it_lifts() {
+        let ch = Uuid::new_v4();
+        let mut q = EventQueue::new(DedupMode::Queue);
+        assert!(
+            q.note_limit_announced(&conv(ch)),
+            "first refusal earns the notice"
+        );
+        assert!(
+            !q.note_limit_announced(&conv(ch)),
+            "the hold is silent after that"
+        );
+        q.clear_limit_hold();
+        assert!(
+            q.note_limit_announced(&conv(ch)),
+            "a later, unrelated limit announces again"
+        );
+    }
+
+    #[test]
+    fn with_no_reset_instant_the_hold_backs_off_and_keeps_growing() {
+        let (mut q, batch, ch) = held_setup();
+        let now = Instant::now();
+        q.hold_for_limit(batch, None, "limit".into(), now);
+        let first = q.limit_hold().expect("held").until;
+
+        // The probe is refused again: the fallback must grow, not reset.
+        let batch = {
+            let mut q2 = EventQueue::new(DedupMode::Queue);
+            q2.push(make_queued(ch, "again"));
+            q2.flush_next().expect("batch")
+        };
+        q.hold_for_limit(batch, None, "limit".into(), now);
+        let second = q.limit_hold().expect("still held").until;
+        assert!(second > first, "consecutive refusals must back off further");
     }
 
     #[test]

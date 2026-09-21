@@ -110,7 +110,32 @@ pub enum AcpError {
     Protocol(String),
 
     #[error("Agent reported error (code {code}): {message}")]
-    AgentError { code: i64, message: String },
+    AgentError {
+        code: i64,
+        message: String,
+        /// The JSON-RPC error's `data`, kept whole.
+        ///
+        /// claude-agent-acp puts its failure classification here —
+        /// `{"errorKind":"rate_limit"}` for a usage limit — and it used to be
+        /// dropped on arrival, so the harness could only tell a limit from a
+        /// crash by matching the human-readable message. Callers dispatch on
+        /// [`error_kind`](AcpError::error_kind) rather than on wording.
+        data: Option<serde_json::Value>,
+    },
+}
+
+impl AcpError {
+    /// The adapter's own name for what went wrong, when it gave one.
+    ///
+    /// A convention across ACP adapters (claude-agent-acp writes it in every
+    /// categorical failure): dispatching on this is stable where matching the
+    /// message text is not.
+    pub fn error_kind(&self) -> Option<&str> {
+        let Self::AgentError { data, .. } = self else {
+            return None;
+        };
+        data.as_ref()?.get("errorKind")?.as_str()
+    }
 }
 
 /// Build an [`AcpError::AgentError`] from a JSON-RPC error object,
@@ -123,7 +148,11 @@ fn agent_error_from_json(error: &serde_json::Value) -> AcpError {
         Some(m) => m.to_string(),
         None => error.to_string(),
     };
-    AcpError::AgentError { code, message }
+    AcpError::AgentError {
+        code,
+        message,
+        data: error.get("data").cloned(),
+    }
 }
 
 fn build_initialize_params() -> serde_json::Value {
@@ -215,6 +244,14 @@ pub struct AcpClient {
     goose_usage: UsageTracker,
     /// Per-turn prompt-response usage and Claude's optional cumulative cost.
     standard_usage: StandardUsageTracker,
+    /// The provider's most recent rate-limit report for this agent process.
+    ///
+    /// claude-agent-acp forwards the SDK's whole `rate_limit_info` object as
+    /// `_meta["_claude/rateLimit"]` on a `usage_update`, so it arrives on a
+    /// *notification*, in a different message from the error that ends the
+    /// turn. It is the only place a machine-readable `resetsAt` exists — the
+    /// error carries the reset time as prose and nothing else.
+    rate_limit: Option<serde_json::Value>,
     /// Known adapter identity for prompt-response usage mapping.
     standard_adapter: Option<StandardAdapterKind>,
     /// What [`take_turn_usage`](Self::take_turn_usage) last handed out, kept so
@@ -591,6 +628,7 @@ impl AcpClient {
             steer_rx: None,
             goose_usage: UsageTracker::default(),
             standard_usage: StandardUsageTracker::default(),
+            rate_limit: None,
             standard_adapter,
             last_turn_usage: None,
         })
@@ -923,6 +961,14 @@ impl AcpClient {
     /// Consume per-turn usage for NIP-AM publishing. Goose/buzz-agent is an
     /// exclusive cumulative path; standard ACP prompt usage is used only when
     /// goose emitted nothing for this turn.
+    /// The provider's latest rate-limit report, cleared as it is read.
+    ///
+    /// Read once when a turn ends, the same way turn usage is, so a report
+    /// cannot be counted against two turns.
+    pub fn take_rate_limit(&mut self) -> Option<serde_json::Value> {
+        self.rate_limit.take()
+    }
+
     pub fn take_turn_usage(&mut self) -> Option<TurnUsage> {
         let goose_usage = self.goose_usage.take();
         let standard_usage = self.standard_usage.take();
@@ -1907,6 +1953,17 @@ impl AcpClient {
                 false
             }
             "usage_update" => {
+                // Before the adapter-specific handler: `standard_adapter` is
+                // derived from the agent COMMAND's name
+                // (`normalize_agent_command_identity`), so a seat that runs
+                // claude-agent-acp through a wrapper — or under any other
+                // name — is classified `None` and skips that handler
+                // entirely. The rate-limit report is namespaced
+                // (`_claude/rateLimit`), so an adapter that sends it means it,
+                // whatever we decided to call the binary. Gating it on the
+                // command name would silently disable every usage-limit hold
+                // on exactly the seats most likely to be wrapped.
+                self.capture_rate_limit(msg);
                 self.handle_standard_usage_update(msg);
                 false
             }
@@ -1915,6 +1972,18 @@ impl AcpClient {
                 tracing::debug!(target: "acp::update", "session/update: {other}");
                 false
             }
+        }
+    }
+
+    /// Keep the provider's rate-limit report off a `usage_update`.
+    ///
+    /// Separate from the cost handler because the two have nothing to do with
+    /// each other: a report carries no `cost`, so anything read after the cost
+    /// lookup would discard every one of them, and a report arrives whether or
+    /// not this adapter is one whose cost accounting we understand.
+    fn capture_rate_limit(&mut self, msg: &serde_json::Value) {
+        if let Some(limit) = msg.pointer("/params/update/_meta/_claude~1rateLimit") {
+            self.rate_limit = Some(limit.clone());
         }
     }
 
@@ -4882,7 +4951,7 @@ mod tests {
         // not be silently truncated to "unknown error" — the full JSON is preserved.
         let error = serde_json::json!({"code": -32000, "data": "quota exceeded"});
         match super::agent_error_from_json(&error) {
-            AcpError::AgentError { code, message } => {
+            AcpError::AgentError { code, message, .. } => {
                 assert_eq!(code, -32000);
                 assert!(
                     message.contains("quota exceeded"),
@@ -4897,7 +4966,7 @@ mod tests {
     fn agent_error_from_json_uses_message_field_when_present() {
         let error = serde_json::json!({"code": -32001, "message": "auth denied"});
         match super::agent_error_from_json(&error) {
-            AcpError::AgentError { code, message } => {
+            AcpError::AgentError { code, message, .. } => {
                 assert_eq!(code, -32001);
                 assert_eq!(message, "auth denied");
             }
