@@ -843,6 +843,33 @@ async fn handle_active_audio_connection(
         None
     };
 
+    // `audio peer joined` and `audio peer left` already bracket a connection.
+    // These lines are what happened between them, per peer, so a specific room
+    // and window can be read straight out of the relay's own log and lined up
+    // against the bridge's `audio_stats` for the same call.
+    let peer_stats = room
+        .peer_stats(peer_id)
+        .unwrap_or_else(|| Arc::new(crate::audio::stats::PeerAudioStats::default()));
+    let stats_task = {
+        let peer_stats = Arc::clone(&peer_stats);
+        let cancel = cancel.clone();
+        let pubkey = pubkey_hex.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(crate::audio::stats::STATS_INTERVAL);
+            // `interval` fires immediately; that first tick is the join, which
+            // is already logged and has nothing to report.
+            tick.tick().await;
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    _ = tick.tick() => {
+                        log_peer_stats(channel_id, &pubkey, peer_index, peer_stats.snapshot(), false);
+                    }
+                }
+            }
+        })
+    };
+
     recv_loop(
         ws_recv,
         Arc::clone(&room),
@@ -852,6 +879,7 @@ async fn handle_active_audio_connection(
         Arc::clone(&missed_pongs),
         cancel.clone(),
         remote_session.as_mut(),
+        Arc::clone(&peer_stats),
     )
     .await;
 
@@ -859,6 +887,7 @@ async fn handle_active_audio_connection(
     let _ = send_task.await;
     let _ = heartbeat_task.await;
     let _ = forward_task.await;
+    let _ = stats_task.await;
     // The reader task owns the owner control stream; joining it here guarantees
     // its clean-close (or teardown) completes before connection cleanup returns.
     if let Some(reader_task) = reader_task {
@@ -974,10 +1003,49 @@ async fn handle_active_audio_connection(
         }
     }
 
+    // The totals for the whole connection. A call that ends before the next
+    // 5 s tick would otherwise report nothing at all.
+    log_peer_stats(
+        channel_id,
+        &pubkey_hex,
+        peer_index,
+        peer_stats.snapshot(),
+        true,
+    );
     info!(
         channel_id = %channel_id,
         pubkey = %pubkey_hex,
         "audio peer left"
+    );
+}
+
+/// One peer's audio counters, as one log line. `last` marks the line written
+/// when the connection ends, so a reader can tell a final total from a tick.
+fn log_peer_stats(
+    channel_id: Uuid,
+    pubkey: &str,
+    peer_index: u8,
+    s: crate::audio::stats::PeerAudioSnapshot,
+    last: bool,
+) {
+    info!(
+        channel_id = %channel_id,
+        pubkey = %pubkey,
+        peer_index,
+        frames_in = s.frames_in,
+        frames_in_refused = s.frames_in_refused,
+        frames_out = s.frames_out,
+        frames_out_dropped = s.frames_out_dropped,
+        seq_gaps = s.seq_gaps,
+        seq_missing = s.seq_missing,
+        seq_regressions = s.seq_regressions,
+        seq_duplicates = s.seq_duplicates,
+        gaps_over_100ms = s.gaps_over_100ms,
+        gaps_over_500ms = s.gaps_over_500ms,
+        gap_total_ms = s.gap_total_ms,
+        gap_worst_ms = s.gap_worst_ms,
+        last,
+        "audio peer stats"
     );
 }
 
@@ -1050,8 +1118,13 @@ async fn recv_loop(
     missed_pongs: Arc<AtomicU8>,
     cancel: CancellationToken,
     mut remote_session: Option<&mut crate::audio::join::RemoteHuddleSession>,
+    stats: Arc<crate::audio::stats::PeerAudioStats>,
 ) {
     use crate::audio::wire::{FrameHeader, V2_HEADER_LEN};
+
+    // Per-connection, so no lock and no sharing: only the derived counters in
+    // `stats` are read by anyone else.
+    let mut inbound = crate::audio::stats::InboundTracker::default();
 
     loop {
         tokio::select! {
@@ -1061,6 +1134,7 @@ async fn recv_loop(
                 match msg {
                     Some(Ok(WsMessage::Binary(data))) => {
                         if data.len() > MAX_AUDIO_FRAME_BYTES {
+                            stats.frame_in_refused("too_large");
                             warn!(peer_id = %peer_id, bytes = data.len(), "audio frame too large — dropping");
                             continue;
                         }
@@ -1076,6 +1150,7 @@ async fn recv_loop(
                             // Frame must carry at least the 8-byte header
                             // plus a non-empty Opus payload.
                             if data.len() <= V2_HEADER_LEN {
+                                stats.frame_in_refused("short_frame");
                                 warn!(
                                     peer_id = %peer_id,
                                     bytes = data.len(),
@@ -1090,6 +1165,11 @@ async fn recv_loop(
                                     // do not drop the frame, they just lose
                                     // the metric (which the relay does not
                                     // trust for anything anyway).
+                                    inbound.observe(
+                                        &stats,
+                                        header.seq,
+                                        std::time::Instant::now(),
+                                    );
                                     tracing::trace!(
                                         peer_id = %peer_id,
                                         seq = header.seq,
@@ -1100,6 +1180,7 @@ async fn recv_loop(
                                     );
                                 }
                                 _ => {
+                                    stats.frame_in_refused("bad_header");
                                     warn!(
                                         peer_id = %peer_id,
                                         bytes = data.len(),
@@ -1115,6 +1196,7 @@ async fn recv_loop(
                         // fan-out authority); the owner-side room fans it back
                         // to every participant, including our co-located peers.
                         // Owner/local path fans out through the local room.
+                        stats.frame_in();
                         match remote_session.as_deref_mut() {
                             Some(session) => session.forward_media(&data),
                             None => room.broadcast_frame(peer_id, data),

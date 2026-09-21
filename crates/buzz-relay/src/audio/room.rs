@@ -38,6 +38,10 @@ pub struct AudioPeer {
     /// Pinned wire version used to shape outbound relay prefixes without
     /// taking the admission mutex on the per-frame audio hot path.
     pub protocol_version: u8,
+    /// Frames in, frames out, and the frames the fan-out could not hand to
+    /// this peer. Shared with the receive loop, which folds the inbound
+    /// sequence and arrival gaps into it.
+    pub stats: Arc<crate::audio::stats::PeerAudioStats>,
 }
 
 /// Control message for a single peer (separate from audio frames).
@@ -323,6 +327,7 @@ impl Room {
                 peer_index,
                 epoch,
                 protocol_version: requested_version,
+                stats: Arc::default(),
             },
         );
         g.roster_revision = g.roster_revision.wrapping_add(1);
@@ -384,6 +389,7 @@ impl Room {
                 peer_index,
                 epoch,
                 protocol_version: requested_version,
+                stats: Arc::default(),
             },
         );
         g.roster_revision = g.roster_revision.wrapping_add(1);
@@ -459,10 +465,17 @@ impl Room {
         Some((delta, should_end))
     }
 
+    /// The counters for one connected peer, for the receive loop that owns
+    /// that connection and for the stats line it writes.
+    pub fn peer_stats(&self, peer_id: Uuid) -> Option<Arc<crate::audio::stats::PeerAudioStats>> {
+        self.peers.get(&peer_id).map(|p| Arc::clone(&p.stats))
+    }
+
     /// Fan-out a binary frame to all peers except the sender. Protocol v3
     /// prepends the sender's `peer_index` and per-index `epoch`; v1/v2 retain
     /// their released one-byte `peer_index` prefix. Drops on full buffer —
-    /// real-time audio never queues.
+    /// real-time audio never queues, and every dropped frame is counted
+    /// against the peer it could not reach.
     pub fn broadcast_frame(&self, sender_id: Uuid, frame: Bytes) {
         let (sender_index, sender_epoch, protocol_version) = match self.peers.get(&sender_id) {
             Some(p) => (p.peer_index, p.epoch, p.protocol_version),
@@ -482,7 +495,14 @@ impl Room {
             if *entry.key() == sender_id {
                 continue;
             }
-            let _ = entry.audio_tx.try_send(prefixed.clone());
+            // A full queue is 160 ms of unsent audio and the frame goes on the
+            // floor, by design — real-time audio never queues. Counting it is
+            // the only way a later post-mortem can tell "the relay fed this
+            // peer" from "the relay could not".
+            match entry.audio_tx.try_send(prefixed.clone()) {
+                Ok(()) => entry.stats.frame_out(),
+                Err(_) => entry.stats.frame_out_dropped(),
+            }
         }
     }
 
@@ -500,7 +520,10 @@ impl Room {
             if entry.peer_index == author_index {
                 continue;
             }
-            let _ = entry.audio_tx.try_send(prefixed.clone());
+            match entry.audio_tx.try_send(prefixed.clone()) {
+                Ok(()) => entry.stats.frame_out(),
+                Err(_) => entry.stats.frame_out_dropped(),
+            }
         }
     }
 
@@ -892,6 +915,67 @@ mod tests {
             bob_epoch, 1,
             "reused index 0 must advance its epoch past alice's"
         );
+    }
+
+    /// A peer's outbound queue holds 160 ms of audio and then drops, by design.
+    /// The drop used to be `let _ = try_send(…)` and left no trace anywhere, so
+    /// a listener whose socket stalled for a fifth of a second lost audio that
+    /// nothing could later account for. The return path of a huddle is exactly
+    /// where that matters, and it is the half the voice bridge cannot see.
+    #[test]
+    fn a_listener_whose_queue_is_full_has_its_lost_frames_counted() {
+        let room = fresh_room();
+        let (sender_id, ..) = room.add_peer("sender".into(), 2).expect("sender admits");
+        let (listener_id, _, _, _listener_rx, _, _) = room
+            .add_peer("listener".into(), 2)
+            .expect("listener admits");
+
+        // AUDIO_CHANNEL_CAPACITY frames fit; `_listener_rx` is held and never
+        // read, which is what a stalled socket looks like from in here.
+        for _ in 0..AUDIO_CHANNEL_CAPACITY {
+            room.broadcast_frame(sender_id, Bytes::from_static(&[0xAB]));
+        }
+        let stats = room.peer_stats(listener_id).expect("listener has counters");
+        assert_eq!(
+            stats.snapshot().frames_out,
+            AUDIO_CHANNEL_CAPACITY as u64,
+            "every frame that fit must be counted as delivered"
+        );
+        assert_eq!(
+            stats.snapshot().frames_out_dropped,
+            0,
+            "nothing is dropped while the queue has room"
+        );
+
+        for _ in 0..3 {
+            room.broadcast_frame(sender_id, Bytes::from_static(&[0xAB]));
+        }
+        let after = stats.snapshot();
+        assert_eq!(
+            after.frames_out, AUDIO_CHANNEL_CAPACITY as u64,
+            "a full queue delivers nothing more"
+        );
+        assert_eq!(
+            after.frames_out_dropped, 3,
+            "and every frame it could not take is counted"
+        );
+    }
+
+    /// The sender never receives its own frames, so it must never be counted
+    /// as having been fed them either.
+    #[test]
+    fn a_sender_is_not_counted_as_a_recipient_of_its_own_frame() {
+        let room = fresh_room();
+        let (sender_id, ..) = room.add_peer("sender".into(), 2).expect("sender admits");
+        let (_listener_id, _, _, mut listener_rx, _, _) = room
+            .add_peer("listener".into(), 2)
+            .expect("listener admits");
+        room.broadcast_frame(sender_id, Bytes::from_static(&[0xAB]));
+        let _ = listener_rx.try_recv().expect("listener receives");
+        let sender_stats = room.peer_stats(sender_id).expect("sender has counters");
+        let s = sender_stats.snapshot();
+        assert_eq!(s.frames_out, 0, "the sender is skipped by the fan-out");
+        assert_eq!(s.frames_out_dropped, 0);
     }
 
     /// The epoch stamped on a fanned-out v3 frame matches the sender's current
