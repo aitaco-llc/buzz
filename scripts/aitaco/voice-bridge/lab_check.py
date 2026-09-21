@@ -208,6 +208,15 @@ if a.fault == "none" and seat_mode_top == "limited":
             bool(held)
             and "UTC" in held[0]["content"]
             and "Please re-send" not in held[0]["content"],
+        # It is read aloud in the seat's voice, so it quotes the provider and
+        # nothing of ours: AcpError's Display frames the message as "Agent
+        # reported error (code -32603): …", which Gemini speaks as "agent
+        # reported error code minus three two six zero three".
+        "the_spoken_line_quoted_the_provider_not_our_wrapper":
+            bool(held)
+            and "You've hit your session limit" in held[0]["content"]
+            and "Agent reported error" not in held[0]["content"]
+            and "-32603" not in held[0]["content"],
         # Same bar as the silent run: the call itself still worked, only the
         # answer is missing.
         "audio_counted_in_both_directions_through_the_wait":
