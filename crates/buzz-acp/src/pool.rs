@@ -5830,6 +5830,27 @@ pub(crate) async fn post_failure_notice(
 ) {
     // `react_answered` tells a notice from a reply by this prefix.
     debug_assert!(content.starts_with(FAILURE_NOTICE_PREFIX));
+    post_notice(rest, channel_id, thread_tags, content).await
+}
+
+/// Post a harness-authored message to a channel, with no `⚠️` required.
+///
+/// The usage-limit hold's notice goes out this way. It carries no
+/// [`FAILURE_NOTICE_PREFIX`] on purpose: nothing was discarded, so the
+/// dead-letter marker would be a lie, and on a voice ask the bridge reads this
+/// line aloud, where a prefix is noise.
+///
+/// Losing the prefix means losing the two exclusions it buys, and both are
+/// fine here. `answered_event_ids` only runs for a turn that earned an `✅`,
+/// which requires `Ok(EndTurn)` — a refused turn never does. And
+/// `published_message_ids` asks what the turn published, which this genuinely
+/// was.
+pub(crate) async fn post_notice(
+    rest: &crate::relay::RestClient,
+    channel_id: Uuid,
+    thread_tags: &ThreadTags,
+    content: &str,
+) {
     let thread_ref = thread_tags.root_event_id.as_deref().and_then(|root| {
         let root_id = nostr::EventId::from_hex(root).ok()?;
         let parent_id = thread_tags

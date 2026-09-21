@@ -170,6 +170,67 @@ else:
   }
 
 seat_mode_top = text("seat_mode") or "live"
+if a.fault == "none" and seat_mode_top == "limited":
+    # The seat woke and its provider refused on a usage limit. buzz-acp must
+    # hold the trigger rather than retry it to death, and say so exactly once
+    # in the ask's own thread — the line the bridge reads aloud.
+    held = [r for r in dm
+            if r.get("pubkey") == a.seat
+            and tag(r, "voice-bridge") is None
+            and "Nothing was lost" in r.get("content", "")]
+    dead_letters = [r for r in dm if "\u26a0\ufe0f I couldn't process" in r.get("content", "")]
+    checks = {
+        k: v for k, v in checks.items()
+        if k not in {"seat_answer_reached_gemini", "seat_answered_in_thread",
+                     "transcript_names_speakers", "call_log_complete",
+                     "resumed_with_handle_after_go_away"}
+    }
+    checks.update({
+        "the_seat_woke_and_could_not_run": len(prompts) >= 1 and not answers,
+        "the_held_trigger_was_announced_once": len(held) == 1,
+        "the_notice_went_to_the_ask_thread":
+            bool(held) and bool(asks)
+            and any(t[0] == "e" and t[1] == asks[0]["id"]
+                    for t in held[0].get("tags", [])),
+        # rock's constraint: a hold is not a dead-letter, and nothing was
+        # discarded, so the ⚠️ text must never appear.
+        "no_dead_letter_notice_was_posted": not dead_letters,
+        # The point of putting the notice in the ask's thread: the bridge reads
+        # replies to its ask, so this is what the caller HEARS instead of
+        # silence or a false "still working". No progress line ever fires,
+        # because the refusal comes back in about a second.
+        "the_voice_was_told_the_work_is_held":
+            any(t.startswith("rock answered") and "Nothing was lost" in t
+                for t in client_texts),
+        "no_progress_line_claimed_work":
+            not [e for e in call_log if e["event"] == "waiting_tick"],
+        "the_notice_names_the_reset_and_needs_no_resend":
+            bool(held)
+            and "UTC" in held[0]["content"]
+            and "Please re-send" not in held[0]["content"],
+        # It is read aloud in the seat's voice, so it quotes the provider and
+        # nothing of ours: AcpError's Display frames the message as "Agent
+        # reported error (code -32603): …", which Gemini speaks as "agent
+        # reported error code minus three two six zero three".
+        "the_spoken_line_quoted_the_provider_not_our_wrapper":
+            bool(held)
+            and "You've hit your session limit" in held[0]["content"]
+            and "Agent reported error" not in held[0]["content"]
+            and "-32603" not in held[0]["content"],
+        # Same bar as the silent run: the call itself still worked, only the
+        # answer is missing.
+        "audio_counted_in_both_directions_through_the_wait":
+            inbound[0].get("opus_frames", 0) > 50
+            and inbound[0].get("pcm_samples_to_gemini", 0) > 0
+            and (audio.get("from_gemini") or {}).get("audio_frames", 0) > 0
+            and (audio.get("out") or {}).get("opus_frames", 0) >= 50
+            and (audio.get("out") or {}).get("silence_injections", 0) > 0,
+        "timings_on_join_connect_and_end":
+            (first(call_log, "room_joined") or {}).get("join_ms") is not None
+            and (first(call_log, "gemini_connected") or {}).get("connect_ms") is not None
+            and ending.get("duration_ms") is not None,
+    })
+
 if a.fault == "none" and seat_mode_top == "silent":
     # The seat ran without the self-wake opt-in, so the ask reached a seat that
     # never picked it up. Everything about the call is expected to have worked
@@ -208,7 +269,7 @@ if a.fault == "none" and seat_mode_top == "silent":
 
 if a.fault == "none":
     checks.update(instrumented)
-    if seat_mode_top == "silent":
+    if seat_mode_top in ("silent", "limited"):
         # Re-stated above without the answer; adding the originals back here
         # would reintroduce the two that cannot hold in a run with no reply.
         pass
@@ -237,7 +298,7 @@ if a.fault == "none":
     delay = float(text("answer_delay_s") or 0)
     progress_s = float(text("progress_s") or 10)
     seat_mode = text("seat_mode") or "live"
-    if delay >= progress_s + 2:
+    if delay >= progress_s + 2 and seat_mode != "limited":
         ticks = [e["data"] for e in call_log if e["event"] == "waiting_tick"]
         spoken = [t for t in ticks if t.get("spoken")]
         states = {t.get("state") for t in ticks}

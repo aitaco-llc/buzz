@@ -46,6 +46,11 @@ const SILENCE_AFTER: Duration = Duration::from_millis(100);
 /// The seat's typing indicator (`buzz_core::kind::KIND_TYPING_INDICATOR`).
 /// Ephemeral by Nostr's range rule, so relays forward it and store nothing.
 const TYPING_INDICATOR_KIND: u16 = 20002;
+
+/// buzz-acp's tag naming the event a turn is answering (`relay::TYPING_TRIGGER_TAG`).
+/// Not an `e` tag on purpose: an extra `e` would move a channel-keyed
+/// indicator into a thread panel that does not exist yet.
+const TYPING_TRIGGER_TAG: &str = "trigger";
 /// Consecutive Gemini reconnects before the call gives up.
 const MAX_GEMINI_RECONNECTS: u32 = 3;
 /// How often the running audio counters are written to the call log.
@@ -311,17 +316,37 @@ struct Pending {
     last_progress: Instant,
     /// Whether the seat has been seen typing since this ask was published.
     picked_up: bool,
+    /// The ask's own event id, to match a `trigger`-tagged indicator to it.
+    event_id: Option<EventId>,
 }
 
 impl Pending {
     /// Count a typing indicator against this ask, if it can belong to it.
     ///
-    /// An indicator that predates the ask is the seat finishing something
-    /// else; counting it would call the ask picked up before anything had
-    /// looked at it, which is the failure this whole state exists to prevent.
-    fn note_typing(&mut self, seen: Instant) {
-        if seen >= self.asked_at {
-            self.picked_up = true;
+    /// Two ways to decide, in order of how much they prove:
+    ///
+    /// * the indicator names the event it is answering (buzz-acp's `trigger`
+    ///   tag). Then it is exact: ours, or somebody else's, with no guessing.
+    /// * it does not. Then all the bridge knows is that this seat is typing in
+    ///   this channel, so the best it can do is require the indicator to
+    ///   postdate the ask — an indicator that predates it is the seat
+    ///   finishing something else, and counting it would call the ask picked
+    ///   up before anything had looked at it.
+    ///
+    /// The fallback stays because a seat on an older buzz-acp sends no trigger
+    /// tag, and the Mac seats trail every roll.
+    fn note_typing(&mut self, seen: Instant, trigger: Option<&EventId>) {
+        match (trigger, self.event_id.as_ref()) {
+            (Some(trigger), Some(mine)) => {
+                if trigger == mine {
+                    self.picked_up = true;
+                }
+            }
+            _ => {
+                if seen >= self.asked_at {
+                    self.picked_up = true;
+                }
+            }
         }
     }
 }
@@ -1264,7 +1289,7 @@ async fn run_asks(
 ) {
     let mut root: Option<EventId> = None;
     let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<Event>();
-    let (typing_tx, mut typing_rx) = mpsc::unbounded_channel::<Instant>();
+    let (typing_tx, mut typing_rx) = mpsc::unbounded_channel::<(Instant, Option<EventId>)>();
     let mut pending: VecDeque<Pending> = VecDeque::new();
     // The seat's last observed typing indicator, for the whole call rather
     // than per ask: a channel-keyed indicator cannot be attributed to one ask
@@ -1318,6 +1343,7 @@ async fn run_asks(
                             asked_at: now,
                             last_progress: now,
                             picked_up: false,
+                            event_id: Some(event.id),
                         });
                         update_tx.send(AskUpdate::Asked { call_id: ask.call_id, event_id: event.id }).ok();
                     }
@@ -1333,6 +1359,7 @@ async fn run_asks(
                     asked_at: Instant::now(),
                     last_progress: Instant::now(),
                     picked_up: true,
+                    event_id: None,
                 });
                 update_tx.send(AskUpdate::Answer {
                     request: done.request,
@@ -1351,10 +1378,10 @@ async fn run_asks(
                 }
             }
             seen = typing_rx.recv() => {
-                let Some(seen) = seen else { continue };
+                let Some((seen, trigger)) = seen else { continue };
                 last_typing_at = Some(seen);
                 if let Some(front) = pending.front_mut() {
-                    front.note_typing(seen);
+                    front.note_typing(seen, trigger.as_ref());
                 }
             }
             _ = progress.tick() => {
@@ -1396,7 +1423,7 @@ async fn watch_typing(
     keys: Keys,
     parent: Uuid,
     me: String,
-    typing_tx: mpsc::UnboundedSender<Instant>,
+    typing_tx: mpsc::UnboundedSender<(Instant, Option<EventId>)>,
     cancel: CancellationToken,
 ) {
     while !cancel.is_cancelled() {
@@ -1428,7 +1455,17 @@ async fn watch_typing(
                 message = conn.next_event(Duration::from_secs(60)) => match message {
                     Ok(RelayMessage::Event { event, .. }) => {
                         if event.pubkey.to_hex() == me {
-                            typing_tx.send(Instant::now()).ok();
+                            // buzz-acp names the event its turn is answering.
+                            // Absent on a seat running an older harness, and
+                            // the caller falls back to timing when it is.
+                            let trigger = event
+                                .tags
+                                .iter()
+                                .map(|t| t.as_slice())
+                                .find(|t| t.first().map(String::as_str) == Some(TYPING_TRIGGER_TAG))
+                                .and_then(|t| t.get(1))
+                                .and_then(|id| EventId::from_hex(id).ok());
+                            typing_tx.send((Instant::now(), trigger)).ok();
                         }
                     }
                     Ok(RelayMessage::Closed { message, .. }) => {
@@ -1522,7 +1559,12 @@ mod tests {
             asked_at,
             last_progress: asked_at,
             picked_up: false,
+            event_id: None,
         }
+    }
+
+    fn id(byte: u8) -> EventId {
+        EventId::from_slice(&[byte; 32]).expect("32 bytes")
     }
 
     #[test]
@@ -1563,7 +1605,7 @@ mod tests {
         let mut ask = pending_at(asked_at);
 
         // The seat was already typing when the ask went out: another turn.
-        ask.note_typing(asked_at - Duration::from_secs(1));
+        ask.note_typing(asked_at - Duration::from_secs(1), None);
         assert!(!ask.picked_up);
         assert_eq!(
             wait_state(ask.picked_up, Some(Instant::now())),
@@ -1571,7 +1613,7 @@ mod tests {
         );
 
         // Then it types again, after the ask. That one is ours.
-        ask.note_typing(asked_at + Duration::from_secs(1));
+        ask.note_typing(asked_at + Duration::from_secs(1), None);
         assert!(ask.picked_up);
     }
 
@@ -1581,8 +1623,54 @@ mod tests {
         // quiet — not that nobody ever looked, which would be a new false
         // statement rather than the absence of one.
         let mut ask = pending_at(ago(60));
-        ask.note_typing(ago(59));
+        ask.note_typing(ago(59), None);
         assert_eq!(wait_state(ask.picked_up, Some(ago(40))), WaitState::Stalled);
+    }
+
+    #[test]
+    fn a_named_trigger_decides_exactly_and_ignores_another_turn() {
+        // With buzz-acp's `trigger` tag there is no guessing: an indicator for
+        // a different event is somebody else's turn, even though it arrives on
+        // this seat, in this channel, after our ask. That is the whole point
+        // of the tag — in a DM this is the common case, not a corner.
+        let mut ask = pending_at(ago(30));
+        ask.event_id = Some(id(1));
+
+        ask.note_typing(Instant::now(), Some(&id(2)));
+        assert!(
+            !ask.picked_up,
+            "another turn's indicator is not our pick-up"
+        );
+
+        ask.note_typing(Instant::now(), Some(&id(1)));
+        assert!(ask.picked_up, "our own trigger is exact");
+    }
+
+    #[test]
+    fn a_named_trigger_counts_even_when_it_looks_too_early() {
+        // Exactness beats the timing heuristic: if the seat names our event,
+        // it is ours whatever the clocks say.
+        let asked_at = ago(30);
+        let mut ask = pending_at(asked_at);
+        ask.event_id = Some(id(7));
+        ask.note_typing(asked_at - Duration::from_secs(5), Some(&id(7)));
+        assert!(ask.picked_up);
+    }
+
+    #[test]
+    fn without_a_trigger_the_timing_fallback_still_applies() {
+        // A seat on an older buzz-acp sends no tag, and the Mac seats trail
+        // every roll — so the fallback has to keep working.
+        let asked_at = ago(30);
+        let mut ask = pending_at(asked_at);
+        ask.event_id = Some(id(3));
+        ask.note_typing(asked_at - Duration::from_secs(1), None);
+        assert!(
+            !ask.picked_up,
+            "an untagged indicator predating the ask is not ours"
+        );
+        ask.note_typing(asked_at + Duration::from_secs(1), None);
+        assert!(ask.picked_up);
     }
 
     #[test]

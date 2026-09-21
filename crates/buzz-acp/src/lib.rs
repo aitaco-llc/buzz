@@ -2193,6 +2193,28 @@ fn inactivity_expired(
     !bound.is_zero() && !turn_in_flight && now.duration_since(last_activity) >= bound
 }
 
+/// Whether the seat may exit itself for having nothing to do.
+///
+/// The inactivity bound with one exemption: a seat held on a provider usage
+/// limit is not an idle seat. Its queue holds real triggers that run by
+/// themselves when the limit lifts, and it deliberately reports no flushable
+/// work — that is what stops the dispatch loop spinning against a limit it
+/// cannot pass — which makes it look idle to every other measure here.
+/// Exiting would take the held work with it, and a weekly limit is long enough
+/// for that to be the normal case rather than a corner.
+///
+/// Unreachable while `BUZZ_ACP_EXIT_AFTER_INACTIVITY` is 0, as it is
+/// fleet-wide today. It is written down here for whoever turns it back on.
+fn inactivity_exit_due(
+    last_activity: tokio::time::Instant,
+    now: tokio::time::Instant,
+    bound: Duration,
+    turn_in_flight: bool,
+    held_on_limit: bool,
+) -> bool {
+    !held_on_limit && inactivity_expired(last_activity, now, bound, turn_in_flight)
+}
+
 /// Whether a woken lazy pool may be torn back down to the empty-slot state.
 ///
 /// True only when the pool is ready, the idle bound has elapsed with no
@@ -2259,6 +2281,30 @@ mod inactivity_tests {
             dispatched,
             checked,
             Duration::from_secs(60),
+            false
+        ));
+    }
+
+    /// A held seat looks idle by every measure the reaper has — no turn in
+    /// flight, no flushable work, no activity since the refusal — and exiting
+    /// would discard the triggers waiting for the limit to lift.
+    #[test]
+    fn a_seat_held_on_a_usage_limit_does_not_reap_itself() {
+        let started = tokio::time::Instant::now();
+        let after_bound = started + Duration::from_secs(61);
+        let bound = Duration::from_secs(60);
+
+        assert!(
+            !inactivity_exit_due(started, after_bound, bound, false, true),
+            "a held seat must not exit: the hold is the only thing keeping its queue alive"
+        );
+        // The exemption is the hold and nothing else — an idle seat with no
+        // hold still reaps on the same bound it always did.
+        assert!(inactivity_exit_due(
+            started,
+            after_bound,
+            bound,
+            false,
             false
         ));
     }
@@ -2947,7 +2993,7 @@ async fn tokio_main() -> Result<()> {
     } else {
         None
     };
-    let mut typing_channels: HashMap<scope::SessionScope, ThreadTags> = HashMap::new();
+    let mut typing_channels: HashMap<scope::SessionScope, TypingScope> = HashMap::new();
     let mut presence_task: Option<tokio::task::JoinHandle<()>> = None;
 
     // Independent of pool readiness: a never-mentioned lazy agent must still
@@ -3697,6 +3743,11 @@ async fn tokio_main() -> Result<()> {
                             let scope_label = turn_log
                                 .as_ref()
                                 .map(|_| turn_log_scope(&session_scope));
+                            // Where a "this is held" notice would go, computed
+                            // before `push` moves the event.
+                            let held_reply_to = queue::held_notice_target(
+                                &ingress.buzz_event.event,
+                            );
                             let queued = ingress.push(&mut queue, session_scope);
                             if let (Some(log), Some((event, channel_id))) =
                                 (&turn_log, &logged_event)
@@ -3714,6 +3765,30 @@ async fn tokio_main() -> Result<()> {
                             // guard's cleanup may race with this add, leaving a
                             // cosmetic stale 👀. Acceptable — see ReactionGuard docs.
                             queued.mark_seen(&ctx.rest_client);
+                            // A seat held on a usage limit will not run this
+                            // for hours. Say so now, once per scope, rather
+                            // than leaving the asker in silence until the
+                            // window resets — a trigger that arrives mid-hold
+                            // never fails, so the refusal path never sees it.
+                            if queued.accepted {
+                                if let Some(notice) =
+                                    queue.limit_hold().map(|hold| hold.notice.clone())
+                                {
+                                    if queue.note_limit_announced(&queued.scope) {
+                                        let rest = ctx.rest_client.clone();
+                                        let channel_id = queued.scope.channel_id();
+                                        tokio::spawn(async move {
+                                            pool::post_notice(
+                                                &rest,
+                                                channel_id,
+                                                &held_reply_to,
+                                                &notice,
+                                            )
+                                            .await;
+                                        });
+                                    }
+                                }
+                            }
                             // Event is already queued. The authorized ingress
                             // retains its verified author, resolved scope, and
                             // event data through the optional steer/interrupt
@@ -3752,11 +3827,12 @@ async fn tokio_main() -> Result<()> {
                     }
                 } => {
                     let _ = result_rx;
-                    if inactivity_expired(
+                    if inactivity_exit_due(
                         last_activity,
                         tokio::time::Instant::now(),
                         inactivity_bound,
                         queue.has_in_flight() || heartbeat_in_flight,
+                        queue.limit_hold().is_some(),
                     ) {
                         tracing::info!(
                             inactivity_seconds = config.exit_after_inactivity_secs,
@@ -4615,12 +4691,22 @@ fn try_native_steer(
 /// Publish one typing indicator for `scope`. Non-blocking: indicators are
 /// ephemeral and must not stall the main loop during relay reconnection (#35),
 /// so a full command queue drops this one and the next refresh retries.
-fn publish_typing(relay: &HarnessRelay, scope: &scope::SessionScope, thread_tags: &ThreadTags) {
+/// Where a turn's typing indicator goes, and which event it is answering.
+#[derive(Debug, Clone, Default)]
+struct TypingScope {
+    tags: ThreadTags,
+    /// The triggering event's id, for readers that need to tell one of the
+    /// seat's turns from another.
+    trigger: Option<String>,
+}
+
+fn publish_typing(relay: &HarnessRelay, scope: &scope::SessionScope, typing: &TypingScope) {
     let ch = scope.channel_id();
     if let Ok(event) = relay.build_typing_event(
         ch,
-        thread_tags.root_event_id.as_deref(),
-        thread_tags.parent_event_id.as_deref(),
+        typing.tags.root_event_id.as_deref(),
+        typing.tags.parent_event_id.as_deref(),
+        typing.trigger.as_deref(),
     ) {
         if let Err(e) = relay.try_publish_event(event) {
             tracing::debug!("typing indicator dropped for {ch}: {e}");
@@ -4634,14 +4720,14 @@ fn publish_typing(relay: &HarnessRelay, scope: &scope::SessionScope, thread_tags
 fn begin_typing(
     relay: &HarnessRelay,
     typing_enabled: bool,
-    typing_channels: &mut HashMap<scope::SessionScope, ThreadTags>,
-    dispatched: Vec<(scope::SessionScope, ThreadTags)>,
+    typing_channels: &mut HashMap<scope::SessionScope, TypingScope>,
+    dispatched: Vec<(scope::SessionScope, TypingScope)>,
 ) {
-    for (scope, thread_tags) in dispatched {
+    for (scope, typing) in dispatched {
         if typing_enabled {
-            publish_typing(relay, &scope, &thread_tags);
+            publish_typing(relay, &scope, &typing);
         }
-        typing_channels.insert(scope, thread_tags);
+        typing_channels.insert(scope, typing);
     }
 }
 
@@ -4654,11 +4740,11 @@ fn dispatch_pending(
     ctx: &Arc<PromptContext>,
     last_activity: &mut tokio::time::Instant,
     observer: Option<&observer::ObserverHandle>,
-) -> Vec<(scope::SessionScope, ThreadTags)> {
+) -> Vec<(scope::SessionScope, TypingScope)> {
     // Keyed by the exact session scope, not the channel: two threads dispatching
     // concurrently in one channel get distinct typing entries so completing one
     // never clears the other's indicator.
-    let mut dispatched_channels = Vec::new();
+    let mut dispatched_channels: Vec<(scope::SessionScope, TypingScope)> = Vec::new();
     // Batches held back this cycle because the worker that owns their thread's
     // session is busy. They stay flushed-out of the queue (in-flight) until we
     // release them at the end so `flush_next` cannot re-pick them mid-loop;
@@ -4724,7 +4810,14 @@ fn dispatch_pending(
         let typing_scope = batch
             .events
             .last()
-            .map(|event| queue::typing_thread_tags(&event.event))
+            .map(|event| TypingScope {
+                tags: queue::typing_thread_tags(&event.event),
+                // The event this turn answers, so a reader can tell which of
+                // the seat's turns an indicator belongs to. A channel-keyed
+                // indicator carries no `e` tag at all, so without this there
+                // is nothing to match a turn by.
+                trigger: Some(event.event.id.to_hex()),
+            })
             .unwrap_or_default();
         // Scope-level affinity: reuse the worker that already holds THIS
         // thread's provider session so a temporarily busy worker cannot cause
@@ -4874,6 +4967,198 @@ fn dispatch_pending(
 /// False positives (misclassifying a transient error as non-retryable) silently
 /// drop a user message, which is worse than a false negative (extra retries on
 /// an auth error). Both patterns are therefore chosen for high precision.
+/// The provider warning that a window is filling up, before it refuses.
+///
+/// Arrives on the same `_claude/rateLimit` key as a refusal, with
+/// `status: "allowed_warning"` — the notice nobody had on 2026-09-20, when the
+/// fleet lost a day to a limit it had no warning of.
+#[derive(Debug, Clone)]
+struct LimitWarning {
+    window: String,
+    resets_at: u64,
+    /// How full the window is, 0.0–1.0.
+    utilization: f64,
+}
+
+/// Read a warning off a rate-limit report, if that is what it is.
+///
+/// Keyed on `status`, not on `surpassedThreshold`: that field is not always
+/// present (a real 0.9 capture on hip carries `utilization` and no threshold),
+/// so requiring it would drop warnings on the floor. `rateLimitType` and
+/// `resetsAt` are what identify the window, and both are always there.
+fn limit_warning(report: Option<&serde_json::Value>) -> Option<LimitWarning> {
+    let report = report?;
+    if report.get("status").and_then(serde_json::Value::as_str) != Some("allowed_warning") {
+        return None;
+    }
+    Some(LimitWarning {
+        window: report
+            .get("rateLimitType")
+            .and_then(serde_json::Value::as_str)?
+            .to_owned(),
+        resets_at: report.get("resetsAt").and_then(serde_json::Value::as_u64)?,
+        utilization: report
+            .get("utilization")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0),
+    })
+}
+
+/// The one line a filling window gets, in the announcer's channel.
+///
+/// No local-time rendering here, unlike the refusal notice: a warning arrives
+/// on a notification with no prose attached, so the provider never renders the
+/// instant in words. Deriving one would mean picking a timezone and hoping,
+/// which is the mistake the refusal notice exists to avoid.
+fn warning_notice(warning: &LimitWarning) -> String {
+    let window = match warning.window.as_str() {
+        "five_hour" => "The five-hour usage window",
+        "seven_day" => "The weekly usage window",
+        other => {
+            return format!(
+                "The {other} usage window is {:.0}% full. It resets at {}. Work is still running; \
+ once it fills, turns are held rather than lost.",
+                warning.utilization * 100.0,
+                utc_stamp(warning.resets_at)
+            )
+        }
+    };
+    format!(
+        "{window} is {:.0}% full. It resets at {}. Work is still running; once it fills, turns \
+         are held until it resets rather than lost.",
+        warning.utilization * 100.0,
+        utc_stamp(warning.resets_at)
+    )
+}
+
+/// The provider refusing on a usage limit, as opposed to anything else.
+///
+/// Two independent signals, both structural, both on the wire today:
+///
+/// * the error's own `data.errorKind` — `"rate_limit"`; and
+/// * the provider's `_claude/rateLimit` report, forwarded on a `usage_update`
+///   notification, whose `status` reads `"rejected"`.
+///
+/// Either is enough. The report is the richer of the two but does not always
+/// arrive — claude-agent-acp only forwards it once an assistant message with
+/// usage has landed in the turn — and it is the only place a machine-readable
+/// reset instant exists. The error's wording is deliberately not consulted:
+/// matching "You've hit your" would work this week and break on a rewording.
+#[derive(Debug, Clone)]
+struct LimitRefusal {
+    /// When the provider says the window resets. Absent when no report came.
+    resets_at: Option<std::time::SystemTime>,
+    /// Which window: `five_hour`, `seven_day`, …
+    window: Option<String>,
+    /// The provider's own words, kept verbatim for the notice.
+    ///
+    /// The adapter's `message` and nothing of ours: `AcpError`'s `Display`
+    /// frames it as `Agent reported error (code -32603): …`, and a voice ask
+    /// reads that frame aloud. `None` when the refusal was classified from the
+    /// `_claude/rateLimit` report alone — the error is then some other variant
+    /// whose text is entirely ours, and quoting ourselves as "it reported" is
+    /// the same defect in smaller print.
+    prose: Option<String>,
+}
+
+fn limit_refusal(
+    outcome: &pool::PromptOutcome,
+    report: Option<&serde_json::Value>,
+) -> Option<LimitRefusal> {
+    let error = match outcome {
+        pool::PromptOutcome::Error(error) => error,
+        _ => return None,
+    };
+    let rejected = report
+        .is_some_and(|r| r.get("status").and_then(serde_json::Value::as_str) == Some("rejected"));
+    if error.error_kind() != Some("rate_limit") && !rejected {
+        return None;
+    }
+    let resets_at = report
+        .and_then(|r| r.get("resetsAt"))
+        .and_then(serde_json::Value::as_u64)
+        .map(|secs| std::time::UNIX_EPOCH + Duration::from_secs(secs));
+    let window = report
+        .and_then(|r| r.get("rateLimitType"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    Some(LimitRefusal {
+        resets_at,
+        window,
+        prose: error.agent_message().map(str::to_owned),
+    })
+}
+
+/// The one line a held trigger gets, in its own thread.
+///
+/// Written to be read aloud: on a voice ask this is the first reply after the
+/// ask, so the bridge speaks it. That rules out the `⚠️` prefix — which stays
+/// for genuine dead-letters and must never appear for a limit, because nothing
+/// was discarded — and it rules out a bare unix timestamp.
+///
+/// The provider's own words are quoted rather than paraphrased, and the reset
+/// instant is given in UTC beside them. The local rendering in the provider's
+/// prose ("1:10am (America/Denver)") is left exactly as it arrived: it is the
+/// same instant, and re-deriving it here would be a second chance to be wrong.
+/// Quoted verbatim, prefix and all, for the same reason: trimming the
+/// adapter's leading "Internal error:" would be a wording match on the one
+/// field this design deliberately never matches on.
+fn limit_notice(refusal: &LimitRefusal) -> String {
+    let window = match refusal.window.as_deref() {
+        Some("five_hour") => "the five-hour limit",
+        Some("seven_day") => "the weekly limit",
+        Some(other) => return limit_notice_with(refusal, &format!("the {other} limit")),
+        None => "a usage limit",
+    };
+    limit_notice_with(refusal, window)
+}
+
+fn limit_notice_with(refusal: &LimitRefusal, window: &str) -> String {
+    let mut line = format!(
+        "I can't run this yet — {window} on the account is in force, so I have not started it. Nothing was lost: this request is held and runs by itself as soon as the limit lifts, with no need to re-send."
+    );
+    if let Some(at) = refusal.resets_at {
+        let secs = at
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or_default();
+        line.push_str(&format!(
+            " The provider says it resets at {}.",
+            utc_stamp(secs)
+        ));
+    }
+    if let Some(prose) = &refusal.prose {
+        line.push_str(&format!(" It reported: \"{prose}\"."));
+    }
+    line
+}
+
+/// `YYYY-MM-DD HH:MM UTC` from a unix timestamp, without pulling in a date
+/// crate for one line. Days-since-epoch to a civil date by Howard Hinnant's
+/// algorithm, which is exact for every date this will ever see.
+fn utc_stamp(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let tod = secs % 86_400;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02} UTC",
+        y,
+        m,
+        d,
+        tod / 3_600,
+        (tod % 3_600) / 60
+    )
+}
+
 fn is_auth_error(error: &acp::AcpError) -> bool {
     let acp::AcpError::AgentError { message, .. } = error else {
         return false;
@@ -4885,6 +5170,28 @@ fn is_auth_error(error: &acp::AcpError) -> bool {
 ///
 /// Shared by the hard-cap immediate dead-letter path and the retries-exhausted
 /// dead-letter path so neither duplicates the tokio::spawn block.
+/// Post the held-trigger notice into the trigger's own thread.
+///
+/// Same shape as [`spawn_failure_notice`] but through `pool::post_notice`,
+/// because a hold is not a dead-letter and the line carries no `⚠️`.
+fn spawn_limit_notice(
+    rest_client: Option<&relay::RestClient>,
+    batch: &FlushBatch,
+    content: String,
+) {
+    if let Some(rest) = rest_client {
+        let Some(trigger) = batch.events.last() else {
+            return;
+        };
+        let thread_tags = queue::held_notice_target(&trigger.event);
+        let rest = rest.clone();
+        let channel_id = batch.channel_id;
+        tokio::spawn(async move {
+            pool::post_notice(&rest, channel_id, &thread_tags, &content).await;
+        });
+    }
+}
+
 fn spawn_failure_notice(
     rest_client: Option<&relay::RestClient>,
     batch: &FlushBatch,
@@ -4982,6 +5289,42 @@ fn handle_prompt_result(
     // match arm in the death_message construction reads it.
     let mut hard_timeout_fate_suffix: Option<&'static str> = None;
 
+    // The provider's rate-limit report for this turn, read once and cleared,
+    // the same discipline `take_turn_usage` uses. It arrives on a `usage_update`
+    // notification rather than with the error, so it must be collected here
+    // whether or not the turn failed.
+    let limit_report = result.agent.acp.take_rate_limit();
+    // Any outcome that is not the provider refusing on a limit means the
+    // provider answered us, so a standing hold is over. The refusal branch
+    // below re-arms it if this turn was refused.
+    if limit_refusal(&result.outcome, limit_report.as_ref()).is_none() {
+        queue.clear_limit_hold();
+    }
+    // The warning that precedes a limit, announced once per window by the one
+    // seat configured to announce. Every seat on the box sees the same warning
+    // seconds apart, so without that config this would be said N times.
+    if let (Some(channel), Some(warning)) = (
+        config.limit_warning_channel,
+        limit_warning(limit_report.as_ref()),
+    ) {
+        if queue.note_limit_warning(&warning.window, warning.resets_at) {
+            if let Some(rest) = rest_client {
+                let rest = rest.clone();
+                let content = warning_notice(&warning);
+                tracing::warn!(
+                    window = %warning.window,
+                    utilization = warning.utilization,
+                    "announcing a provider usage-limit warning"
+                );
+                // Top-level, and nobody is mentioned: it is for whoever reads
+                // the channel, and it asks nothing of anyone.
+                tokio::spawn(async move {
+                    pool::post_notice(&rest, channel, &ThreadTags::default(), &content).await;
+                });
+            }
+        }
+    }
+
     // Requeue BEFORE mark_complete: requeue() sets retry_after with a future
     // deadline, and mark_complete() checks for it to decide whether to preserve
     // retry_counts. If mark_complete runs first, retry_counts is cleared and
@@ -5054,7 +5397,7 @@ fn handle_prompt_result(
                 }
             } else if matches!(
                 &result.outcome,
-                PromptOutcome::Error(acp::AcpError::AgentError { code: -32002, message })
+                PromptOutcome::Error(acp::AcpError::AgentError { code: -32002, message, .. })
                     if message.contains("model not found")
             ) {
                 // Retrying the same missing model cannot repair its configuration.
@@ -5071,6 +5414,27 @@ fn handle_prompt_result(
                     pool::FAILURE_NOTICE_PREFIX
                 );
                 spawn_failure_notice(rest_client, &batch, content);
+            } else if let Some(refusal) = limit_refusal(&result.outcome, limit_report.as_ref()) {
+                // A usage limit is the account's, not the batch's: retrying
+                // sooner cannot help and retrying elsewhere cannot either. So
+                // it spends no retry budget and is never dead-lettered — the
+                // seat holds, and this work runs when the provider answers.
+                // std, not tokio: the queue's deadlines are std Instants.
+                let now = std::time::Instant::now();
+                let until = refusal.resets_at.and_then(|at| {
+                    at.duration_since(std::time::SystemTime::now())
+                        .ok()
+                        .map(|d| now + d)
+                });
+                // One notice per held scope, in its own thread, at its first
+                // refusal. After that the hold is silent: the work running is
+                // the signal, and a line every probe would be noise about a
+                // thing nobody can act on.
+                let notice = limit_notice(&refusal);
+                if queue.note_limit_announced(&batch.scope) {
+                    spawn_limit_notice(rest_client, &batch, notice.clone());
+                }
+                queue.hold_for_limit(batch, until, notice, now);
             } else if matches!(&result.outcome, PromptOutcome::Error(e) if is_auth_error(e)) {
                 // Auth errors are non-retryable: the token won't self-repair
                 // between retries, so requeueing only wastes attempt slots and
@@ -5362,7 +5726,7 @@ fn recover_panicked_agent(
     join_error: tokio::task::JoinError,
     heartbeat_in_flight: &mut bool,
     removed_channels: &HashSet<Uuid>,
-    typing_channels: &mut HashMap<scope::SessionScope, ThreadTags>,
+    typing_channels: &mut HashMap<scope::SessionScope, TypingScope>,
     crash_history: &mut [SlotCircuit],
     respawn_tx: &mpsc::Sender<RespawnResult>,
     respawn_tasks: &mut tokio::task::JoinSet<()>,
@@ -5374,6 +5738,14 @@ fn recover_panicked_agent(
         return;
     };
     let i = meta.agent_index;
+
+    // A panic never reaches `handle_prompt_result`, so the two calls that
+    // resolve a usage-limit hold — clear on an answer, re-arm on a refusal —
+    // never run for this turn. Release any outstanding probe explicitly: the
+    // requeue below does it too, but only when there is a recoverable batch
+    // for a live channel, and a probe left marked outstanding blocks both
+    // dispatch and the in-flight expiry sweep that would otherwise recover.
+    queue.release_limit_probe();
 
     // Requeue BEFORE mark_complete (same rationale as handle_prompt_result).
     if let Some(batch) = meta.recoverable_batch {
@@ -5475,7 +5847,7 @@ fn drain_ready_join_results(
     config: &Config,
     heartbeat_in_flight: &mut bool,
     removed_channels: &HashSet<Uuid>,
-    typing_channels: &mut HashMap<scope::SessionScope, ThreadTags>,
+    typing_channels: &mut HashMap<scope::SessionScope, TypingScope>,
     crash_history: &mut [SlotCircuit],
     respawn_tx: &mpsc::Sender<RespawnResult>,
     respawn_tasks: &mut tokio::task::JoinSet<()>,
@@ -9536,6 +9908,7 @@ mod build_mcp_servers_tests {
 
     fn test_config() -> Config {
         Config {
+            limit_warning_channel: None,
             keys: nostr::Keys::generate(),
             relay_url: "ws://localhost:3000".into(),
             agent_command: "goose".into(),
@@ -9761,6 +10134,7 @@ mod error_outcome_emission_tests {
 
     fn test_config() -> Config {
         Config {
+            limit_warning_channel: None,
             keys: nostr::Keys::generate(),
             relay_url: "ws://localhost:3000".into(),
             // `true` exits cleanly, so the async respawn fails fast and
@@ -11285,6 +11659,212 @@ mod error_outcome_emission_tests {
         assert!(respawn_tasks.is_empty());
     }
 
+    // ── usage-limit classification ─────────────────────────────────────────
+
+    fn limit_error(kind: Option<&str>) -> PromptOutcome {
+        PromptOutcome::Error(acp::AcpError::AgentError {
+            code: -32603,
+            message:
+                "Internal error: You've hit your session limit · resets 1:10am (America/Denver)"
+                    .into(),
+            data: kind.map(|k| serde_json::json!({ "errorKind": k })),
+        })
+    }
+
+    /// The payload exactly as captured from a real refusal on hip, 2026-09-21
+    /// (`~/.local/state/buzz-turns/aldrin/turns/2026-09-21/b307414a-….jsonl`).
+    fn real_report() -> serde_json::Value {
+        serde_json::json!({
+            "status": "rejected",
+            "rateLimitType": "five_hour",
+            "resetsAt": 1789974600u64,
+            "overageStatus": "rejected"
+        })
+    }
+
+    #[test]
+    fn either_signal_alone_identifies_a_usage_limit() {
+        // The error's own kind, with no report — the 59-of-351 case where the
+        // turn failed before any assistant message carried usage.
+        assert!(limit_refusal(&limit_error(Some("rate_limit")), None).is_some());
+        // The report alone, with an error that carries no kind at all.
+        assert!(limit_refusal(&limit_error(None), Some(&real_report())).is_some());
+    }
+
+    #[test]
+    fn an_ordinary_failure_is_not_a_usage_limit() {
+        assert!(
+            limit_refusal(&limit_error(None), None).is_none(),
+            "wording alone must not count"
+        );
+        assert!(limit_refusal(&limit_error(Some("server_error")), None).is_none());
+        // A report that is not a refusal: the 0.75 warning arrives on this very
+        // key before any limit, and must never hold the seat.
+        let warning = serde_json::json!({
+            "status": "allowed_warning", "surpassedThreshold": 0.75, "rateLimitType": "seven_day"
+        });
+        assert!(limit_refusal(&limit_error(None), Some(&warning)).is_none());
+    }
+
+    #[test]
+    fn the_reset_instant_is_read_from_the_report_not_the_prose() {
+        let refusal = limit_refusal(&limit_error(Some("rate_limit")), Some(&real_report()))
+            .expect("a refusal");
+        let secs = refusal
+            .resets_at
+            .expect("the report carried an instant")
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("after the epoch")
+            .as_secs();
+        assert_eq!(secs, 1789974600);
+        assert_eq!(refusal.window.as_deref(), Some("five_hour"));
+    }
+
+    #[test]
+    fn utc_stamp_renders_the_instant_the_provider_meant() {
+        // 1789974600 is the real capture, and the same turn's prose read
+        // "resets 1:10am (America/Denver)" — 07:10 UTC. If these disagree the
+        // notice tells the reader the wrong time.
+        assert_eq!(utc_stamp(1789974600), "2026-09-21 07:10 UTC");
+        // The weekly limit from 2026-09-20: prose "Sep 22, 4pm (America/Denver)".
+        assert_eq!(utc_stamp(1790114400), "2026-09-22 22:00 UTC");
+        assert_eq!(utc_stamp(0), "1970-01-01 00:00 UTC");
+        // A leap day, because the civil-date conversion is the part most
+        // likely to be subtly wrong.
+        assert_eq!(utc_stamp(1709164800), "2024-02-29 00:00 UTC");
+    }
+
+    #[test]
+    fn the_held_notice_says_nothing_was_lost_and_is_not_a_dead_letter() {
+        let refusal = limit_refusal(&limit_error(Some("rate_limit")), Some(&real_report()))
+            .expect("a refusal");
+        let notice = limit_notice(&refusal);
+        assert!(notice.contains("Nothing was lost"), "got: {notice}");
+        assert!(
+            notice.contains("runs by itself"),
+            "the held work needs no re-send: {notice}"
+        );
+        assert!(notice.contains("2026-09-21 07:10 UTC"), "got: {notice}");
+        assert!(notice.contains("the five-hour limit"), "got: {notice}");
+        // The provider's own words, carried rather than paraphrased.
+        assert!(
+            notice.contains("resets 1:10am (America/Denver)"),
+            "got: {notice}"
+        );
+        // The dead-letter marker must never appear: nothing was discarded, and
+        // on a voice ask this line is spoken aloud.
+        assert!(
+            !notice.contains(pool::FAILURE_NOTICE_PREFIX),
+            "a hold is not a dead-letter: {notice}"
+        );
+        assert!(!notice.contains("Please re-send"), "got: {notice}");
+        // It is read aloud and posted verbatim, so stray padding from a
+        // collapsed line continuation is a real defect, not cosmetics.
+        assert!(
+            !notice.contains("  "),
+            "double space in a spoken line: {notice}"
+        );
+    }
+
+    /// The line is spoken aloud on a voice ask, so our own error framing must
+    /// not reach it: `AcpError`'s `Display` renders "Agent reported error
+    /// (code -32603): …", and Gemini reads that as "agent reported error code
+    /// minus three two six zero three" in the seat's voice.
+    #[test]
+    fn the_spoken_line_quotes_the_adapter_and_nothing_of_ours() {
+        let refusal = limit_refusal(&limit_error(Some("rate_limit")), Some(&real_report()))
+            .expect("a refusal");
+        let notice = limit_notice(&refusal);
+        assert!(
+            notice.contains("You've hit your session limit"),
+            "the adapter's own words must survive: {notice}"
+        );
+        assert!(
+            !notice.contains("Agent reported error"),
+            "our wrapper must not be spoken: {notice}"
+        );
+        assert!(!notice.contains("-32603"), "got: {notice}");
+        // Verbatim, prefix and all — trimming the adapter's leading "Internal
+        // error:" would be a wording match on the one field this design
+        // deliberately never matches on.
+        assert_eq!(
+            refusal.prose.as_deref(),
+            Some("Internal error: You've hit your session limit · resets 1:10am (America/Denver)")
+        );
+    }
+
+    /// Classified from the report alone, on an error variant whose text is
+    /// entirely ours: there is nothing of the provider's to quote, so the
+    /// notice must quote nobody rather than quote us back to the reader.
+    #[test]
+    fn with_no_adapter_message_the_notice_quotes_nobody() {
+        let outcome = PromptOutcome::Error(acp::AcpError::Timeout(Duration::from_secs(1500)));
+        let refusal = limit_refusal(&outcome, Some(&real_report())).expect("a refusal");
+        assert_eq!(refusal.prose, None);
+        let notice = limit_notice(&refusal);
+        assert!(!notice.contains("It reported"), "got: {notice}");
+        assert!(!notice.contains("did not respond"), "got: {notice}");
+        // Everything the reader actually needs is still there.
+        assert!(notice.contains("Nothing was lost"), "got: {notice}");
+        assert!(notice.contains("2026-09-21 07:10 UTC"), "got: {notice}");
+        assert!(
+            !notice.ends_with(' '),
+            "no trailing space where the quote would have gone: {notice:?}"
+        );
+    }
+
+    // ── usage-limit warnings ───────────────────────────────────────────────
+
+    /// A real `allowed_warning` captured on hip, 2026-09-21. Note there is no
+    /// `surpassedThreshold`: keying on that field would miss this one.
+    fn real_warning() -> serde_json::Value {
+        serde_json::json!({
+            "isUsingOverage": false,
+            "rateLimitType": "five_hour",
+            "resetsAt": 1789974600u64,
+            "status": "allowed_warning",
+            "utilization": 0.9
+        })
+    }
+
+    #[test]
+    fn a_warning_is_read_without_a_threshold_field() {
+        let w = limit_warning(Some(&real_warning())).expect("a warning");
+        assert_eq!(w.window, "five_hour");
+        assert_eq!(w.resets_at, 1789974600);
+        assert!((w.utilization - 0.9).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn a_refusal_is_not_a_warning_and_neither_is_nothing() {
+        assert!(
+            limit_warning(Some(&real_report())).is_none(),
+            "a refusal is not a warning"
+        );
+        assert!(limit_warning(None).is_none());
+        let allowed = serde_json::json!({ "status": "allowed", "rateLimitType": "five_hour" });
+        assert!(limit_warning(Some(&allowed)).is_none());
+    }
+
+    #[test]
+    fn the_warning_line_gives_the_window_the_fill_and_the_reset() {
+        let w = limit_warning(Some(&real_warning())).expect("a warning");
+        let line = warning_notice(&w);
+        assert!(line.contains("five-hour"), "got: {line}");
+        assert!(line.contains("90%"), "got: {line}");
+        assert!(line.contains("2026-09-21 07:10 UTC"), "got: {line}");
+        // It must not read as a failure: nothing has gone wrong yet.
+        assert!(!line.contains(pool::FAILURE_NOTICE_PREFIX), "got: {line}");
+        assert!(
+            line.contains("held"),
+            "it should say what happens next: {line}"
+        );
+        assert!(
+            !line.contains("  "),
+            "double space in an announced line: {line}"
+        );
+    }
+
     // ── is_auth_error classification ───────────────────────────────────────
 
     #[test]
@@ -11293,6 +11873,7 @@ mod error_outcome_emission_tests {
             code: -32000,
             message: "API Error: OAuth access token has expired. Re-authenticate to continue."
                 .to_string(),
+            data: None,
         };
         assert!(
             is_auth_error(&e),
@@ -11305,6 +11886,7 @@ mod error_outcome_emission_tests {
         let e = acp::AcpError::AgentError {
             code: -32000,
             message: "Internal error: API Error: 401 OAuth access token has expired.".to_string(),
+            data: None,
         };
         assert!(
             is_auth_error(&e),
@@ -11317,6 +11899,7 @@ mod error_outcome_emission_tests {
         let e = acp::AcpError::AgentError {
             code: -32601,
             message: "Usage credits required for 1M context — turn on usage credits".to_string(),
+            data: None,
         };
         assert!(
             !is_auth_error(&e),
@@ -11366,6 +11949,7 @@ mod error_outcome_emission_tests {
             code: -32000,
             message: "API Error: 401 OAuth access token has expired. Re-authenticate to continue."
                 .to_string(),
+            data: None,
         };
 
         let agent = dummy_agent(0).await;
@@ -11468,6 +12052,7 @@ mod error_outcome_emission_tests {
         let model_error = AcpError::AgentError {
             code: -32002,
             message: raw_error.to_string(),
+            data: None,
         };
         let expected_error = model_error.to_string();
         let observer = ObserverHandle::in_process();
@@ -11603,6 +12188,7 @@ mod error_outcome_emission_tests {
         assert_application_error_is_requeued(acp::AcpError::AgentError {
             code: -32000,
             message: "Usage credits required for 1M context".to_string(),
+            data: None,
         })
         .await;
     }
@@ -11612,6 +12198,7 @@ mod error_outcome_emission_tests {
         assert_application_error_is_requeued(acp::AcpError::AgentError {
             code: -32002,
             message: "Resource not found: session no longer exists".to_string(),
+            data: None,
         })
         .await;
     }
