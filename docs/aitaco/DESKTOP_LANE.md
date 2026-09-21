@@ -13,11 +13,29 @@ Status: written on hip, where nothing Apple can be built. The first run on the M
 
 | | Value | Why |
 |---|---|---|
-| Bundle identifier | `co.aitaco.buzz.desktop` | Keeps our app's data, single-instance socket, agent marker and updater separate from Block's. It is set in the generated release overlay, so `tauri.conf.json` keeps Block's value and a Block merge never touches it. |
+| Bundle identifier | `co.aitaco.buzz.desktop` | Keeps our app's data, single-instance socket, agent marker and updater separate from Block's. It is set in the generated release overlay, so `tauri.conf.json` keeps Block's value and a Block merge never touches it. **The identifier owns the app-data carry-over.** Tauri keys `app_data_dir()` off it, so without a mapping this build reads as a fresh install on a Mac that ran Block's Buzz. `migration.rs` maps `co.aitaco.buzz.desktop` -> `xyz.block.buzz.app` (`AITACO_RELEASE_IDENTIFIER`, `AITACO_PREDECESSOR_IDENTIFIER`), covered by `migration_tests.rs`. If the identifier ever changes, that mapping changes with it. |
 | Dev identifier | `xyz.block.buzz.app.dev`, unchanged | `migration.rs:24,48-53` recognises dev builds by this exact name. A dev build under any other name is treated as production and uses `~/.buzz`. |
 | Product name / executable | `Buzz` / `buzz-desktop`, unchanged | `instance_reaper.rs:5-12` decides whether a desktop is alive by these names. Under any other name, a Block Desktop on the same Mac would kill our agents every 60 s. |
 | Keychain item | service `buzz-desktop`, account `secrets`, unchanged | This name is fixed for every release build (`app_state_keyring.rs:9-23`), so our build reads the **same** identity key as Block's. |
 | Deep link | `buzz://`, unchanged | Hard-coded in `build_identity.rs:49-53`. macOS routes it to one app, so remove Block's app. |
+
+### App-data carry-over
+
+`migrate_legacy_app_data_dir` copies `~/Library/Application Support/xyz.block.buzz.app`
+into our directory on every launch. Two properties follow from `copy_dir_all`, and
+both matter:
+
+- **It never overwrites.** A file already present on our side is kept, so the copy
+  is safe to run every launch — but any file this build writes before the carry-over
+  lands permanently shadows the legacy copy of the same name. A Mac that has already
+  launched an aitaco build is not fully recovered by installing a build that has the
+  mapping; remove our directory first, or merge by hand.
+- **Factory reset now trashes the Block directory too.** `reset.rs:131,211-212` wipes
+  whatever `legacy_app_data_dir` names, so that a reset cannot restore the old
+  identity. It renames to trash rather than deleting.
+
+Not handled: a Mac that ran Sprout but never Block's Buzz. The mapping is one hop and
+does not chain to `xyz.block.sprout.app`. No such Mac is known.
 
 ## Versions and tags
 
