@@ -368,8 +368,11 @@ impl OwnedAgent {
     /// response whenever a switch applies, so a rejected or unsupported switch
     /// leaves the model the session is really running. The stable
     /// `configOptions.currentValue` is preferred over the unstable
-    /// `models.currentModelId`; when the adapter advertises neither (Codex,
-    /// `rebrand-acp`) this is `None` and callers must not guess.
+    /// `models.currentModelId`; when the adapter advertises neither (Codex)
+    /// this is `None` and callers must not guess. `rebrand-acp` advertises a
+    /// one-entry `model` category whose `currentValue` is the model `--model`
+    /// fixed at launch (aitaco-llc/rebrand#304, `of-acp/src/server.rs`
+    /// `session_result`), so a seat on that harness names its model here.
     pub fn session_model(&self) -> Option<String> {
         let caps = self.model_capabilities.as_ref()?;
         let from_config = caps.config_options_raw.iter().find_map(|opt| {

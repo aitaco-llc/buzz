@@ -1293,7 +1293,14 @@ impl Config {
                 persona_env_vars.push((var.to_string(), effort.to_string()));
             }
         }
-        let model = args.model;
+        // A blank model is not a model. The Anthropic gate below already reads
+        // it that way; `desired_model` did not, and an `EnvironmentFile` has
+        // no way to *unset* a var a shared file set — `BUZZ_ACP_MODEL=` sets
+        // it to empty. So a seat that overrode the fleet default with a blank
+        // line still asked for a switch to `""` on every session, which no
+        // adapter advertises: a warn and an `unsupported_model` frame per
+        // session, for a model nobody asked for.
+        let model = args.model.filter(|m| !m.trim().is_empty());
 
         // An effort level the harness cannot deliver is worse than none: the
         // operator believes the seat is configured. Refuse an unknown value
@@ -3262,6 +3269,41 @@ channels = "ALL"
     // A minimal valid private key for test use (secp256k1 scalar = 1).
     const TEST_PRIVATE_KEY: &str =
         "0000000000000000000000000000000000000000000000000000000000000001";
+
+    /// A seat's own env file cannot unset `BUZZ_ACP_MODEL` from the shared
+    /// one — it can only blank it. A blank must therefore mean "no model
+    /// asked for", or every session on an adapter that advertises a catalog
+    /// asks to switch to `""` and is told no.
+    #[test]
+    fn a_blank_model_is_no_model() {
+        for blank in ["", "   ", "\t"] {
+            let args = CliArgs::try_parse_from([
+                "buzz-acp",
+                "--private-key",
+                TEST_PRIVATE_KEY,
+                "--agent-command",
+                "rebrand-acp",
+                "--model",
+                blank,
+            ])
+            .expect("clap should parse args");
+            let config = Config::from_args(args).expect("blank model is not an error");
+            assert_eq!(config.model, None, "model {blank:?} should normalize away");
+        }
+
+        let args = CliArgs::try_parse_from([
+            "buzz-acp",
+            "--private-key",
+            TEST_PRIVATE_KEY,
+            "--agent-command",
+            "rebrand-acp",
+            "--model",
+            "gemini-3.8-flash",
+        ])
+        .expect("clap should parse args");
+        let config = Config::from_args(args).expect("named model is not an error");
+        assert_eq!(config.model.as_deref(), Some("gemini-3.8-flash"));
+    }
 
     #[test]
     fn allowed_respond_to_full_path_rejects_disallowed_mode() {
