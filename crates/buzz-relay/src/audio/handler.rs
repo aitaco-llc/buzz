@@ -1381,8 +1381,8 @@ async fn ensure_membership(
 /// Only the archive itself is fallible to the caller. A failed discovery
 /// re-emit is logged and swallowed: the channel really is archived at that
 /// point, and returning `Err` would make the caller resurrect a dead room.
-/// The boot-time reconciler (`reconcile_channel_events`) repairs a 39000 that
-/// was missed here.
+/// The boot-time reconciler (`reconcile_channel_events`, run at every start in
+/// its `StaleArchivedOnly` scope) repairs a 39000 that was missed here.
 async fn archive_auto_ended_huddle(
     state: &Arc<AppState>,
     tenant: &TenantContext,

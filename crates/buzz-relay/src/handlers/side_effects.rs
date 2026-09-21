@@ -3238,9 +3238,27 @@ fn discovery_event_marks_archived(event: &Event) -> bool {
     })
 }
 
+/// Which discovery mismatches a [`reconcile_channel_events`] pass repairs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiscoveryRepairScope {
+    /// Only an archived channel whose stored kind:39000 does not say so.
+    ///
+    /// Narrow enough to run unconditionally at boot, and it has to: this is
+    /// the backfill for rows archived before huddle auto-end re-emitted
+    /// discovery, and those rows are on production, where
+    /// `BUZZ_RECONCILE_CHANNELS` is deliberately unset. Live channels are
+    /// skipped before their discovery event is even read, so the pass costs
+    /// one query per *archived* channel, not per channel.
+    StaleArchivedOnly,
+    /// The above, plus channels that have no kind:39000 at all — created by a
+    /// direct SQL insert (a test seed script) rather than through the Nostr
+    /// event pipeline. Dev and CI only, behind `BUZZ_RECONCILE_CHANNELS`.
+    MissingOrStaleArchived,
+}
+
 /// Reconcile channels whose stored kind:39000 does not match the channel row.
 ///
-/// Two repairs, both satisfied by the same re-emit:
+/// Two repairs, both satisfied by the same re-emit, selected by `scope`:
 ///
 /// 1. **No kind:39000 at all** — the channel was created via direct SQL insert
 ///    (e.g. test seed scripts) rather than through the Nostr event pipeline.
@@ -3249,21 +3267,25 @@ fn discovery_event_marks_archived(event: &Event) -> bool {
 ///    huddle that ended before that fix left a stored 39000 reading "not
 ///    archived" — permanently, because the TTL reaper only ever revisits rows
 ///    where `archived_at IS NULL`. Clients read archived state off that tag
-///    (Flutter `channels_provider.dart`, Desktop `AppShell.tsx`), so those dead
+///    (Flutter `channels_provider.dart`, Desktop `AppShell.tsx`, and every
+///    buzz-acp seat through `merge_discovered_channels`), so those dead
 ///    channels list as live rows, including on a fresh install. This is the
 ///    forward-only fix's backfill; it is not huddle-specific, and any future
 ///    path that archives a row without re-emitting is repaired by it too.
 ///
 /// Idempotent by construction: after one pass the tag is present, so every
 /// later pass is a no-op. Bounded by `list_channels_for_bootstrap`'s existing
-/// `LIMIT 1000` — no separate sweep, no migration.
+/// `LIMIT 1000` — no separate sweep, no migration. A community with more than
+/// 1000 channels would need a paged sweep; that bound predates this repair and
+/// is unchanged by it.
 ///
 /// Emits kind:39000 (metadata) and kind:39002 (members) for each channel that
-/// needs the repair.
+/// needs the repair, and returns how many channels were repaired.
 pub async fn reconcile_channel_events(
     tenant: &TenantContext,
     state: &Arc<AppState>,
-) -> anyhow::Result<()> {
+    scope: DiscoveryRepairScope,
+) -> anyhow::Result<u32> {
     use buzz_db::event::EventQuery;
 
     let channels = state
@@ -3271,11 +3293,17 @@ pub async fn reconcile_channel_events(
         .list_channels_for_bootstrap(tenant.community(), None)
         .await?;
     if channels.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
 
     let mut reconciled = 0u32;
     for channel in &channels {
+        // The boot-wide pass only ever repairs archived rows, so a live
+        // channel costs nothing to skip here rather than one query below.
+        if scope == DiscoveryRepairScope::StaleArchivedOnly && channel.archived_at.is_none() {
+            continue;
+        }
+
         // Check if kind:39000 event already exists for this channel.
         let channel_id_str = channel.id.to_string();
         let existing = match state
@@ -3305,7 +3333,7 @@ pub async fn reconcile_channel_events(
         // (kind, pubkey, channel_id) — so this needs no ordered read of its own.
         let reason = match existing.first() {
             // No discovery event at all.
-            None => Some("missing"),
+            None => (scope == DiscoveryRepairScope::MissingOrStaleArchived).then_some("missing"),
             // Archived row whose discovery event still reads as live.
             Some(stored) if channel.archived_at.is_some() => {
                 (!discovery_event_marks_archived(&stored.event)).then_some("stale_archived")
@@ -3336,9 +3364,13 @@ pub async fn reconcile_channel_events(
     }
 
     if reconciled > 0 {
-        tracing::info!(count = reconciled, "reconciled channel discovery events");
+        tracing::info!(
+            count = reconciled,
+            ?scope,
+            "reconciled channel discovery events"
+        );
     }
-    Ok(())
+    Ok(reconciled)
 }
 
 /// Test-only barrier hooks for [`publish_nipia_archival_list`]. Lets a test
@@ -3883,10 +3915,7 @@ mod postgres_tests {
 
     /// A fresh community with one channel, so each test walks only its own
     /// rows when `reconcile_channel_events` iterates the bootstrap list.
-    async fn fresh_community_channel(
-        state: &Arc<AppState>,
-        label: &str,
-    ) -> (TenantContext, Uuid) {
+    async fn fresh_community_channel(state: &Arc<AppState>, label: &str) -> (TenantContext, Uuid) {
         let owner = nostr::Keys::generate();
         let owner_hex = owner.public_key().to_hex();
         let host = format!("{label}-{}.example", Uuid::new_v4().simple());
@@ -3917,10 +3946,7 @@ mod postgres_tests {
             )
             .await
             .expect("create channel");
-        (
-            TenantContext::resolved(community, host),
-            channel.id,
-        )
+        (TenantContext::resolved(community, host), channel.id)
     }
 
     /// The channel's current stored kind:39000, read the way the reconciler
@@ -3988,9 +4014,13 @@ mod postgres_tests {
              assertion below able to fail"
         );
 
-        reconcile_channel_events(&tenant, &state)
-            .await
-            .expect("reconcile");
+        // `StaleArchivedOnly` is the scope the relay runs unconditionally at
+        // boot, so this is the pass that has to reach the prod rows.
+        let count =
+            reconcile_channel_events(&tenant, &state, DiscoveryRepairScope::StaleArchivedOnly)
+                .await
+                .expect("reconcile");
+        assert_eq!(count, 1, "the one stale archived channel is repaired");
 
         let repaired = current_discovery_event(&state, &tenant, channel_id)
             .await
@@ -4006,10 +4036,13 @@ mod postgres_tests {
 
         // Idempotent: the second pass sees the tag and does nothing, so the
         // event id does not move again. This also covers the boot loop, which
-        // runs the reconciler every 5s for two minutes.
-        reconcile_channel_events(&tenant, &state)
-            .await
-            .expect("reconcile again");
+        // runs the reconciler every 5s for two minutes, and every later relay
+        // restart.
+        let count =
+            reconcile_channel_events(&tenant, &state, DiscoveryRepairScope::StaleArchivedOnly)
+                .await
+                .expect("reconcile again");
+        assert_eq!(count, 0, "a repaired channel is not repaired twice");
         let after_second_pass = current_discovery_event(&state, &tenant, channel_id)
             .await
             .expect("39000 after second reconcile");
@@ -4032,9 +4065,15 @@ mod postgres_tests {
             .await
             .expect("seeded 39000 exists");
 
-        reconcile_channel_events(&tenant, &state)
-            .await
-            .expect("reconcile");
+        for scope in [
+            DiscoveryRepairScope::StaleArchivedOnly,
+            DiscoveryRepairScope::MissingOrStaleArchived,
+        ] {
+            let count = reconcile_channel_events(&tenant, &state, scope)
+                .await
+                .expect("reconcile");
+            assert_eq!(count, 0, "{scope:?} repairs nothing on a live channel");
+        }
 
         let after = current_discovery_event(&state, &tenant, channel_id)
             .await
@@ -4062,9 +4101,30 @@ mod postgres_tests {
             "no 39000 before reconcile"
         );
 
-        reconcile_channel_events(&tenant, &state)
-            .await
-            .expect("reconcile");
+        // The boot-wide scope must not touch it: a live channel with no
+        // discovery event is the seed-script case, not the huddle case, and
+        // the pass every production relay now runs is deliberately narrower
+        // than the dev/CI one.
+        let count =
+            reconcile_channel_events(&tenant, &state, DiscoveryRepairScope::StaleArchivedOnly)
+                .await
+                .expect("reconcile, archived-only scope");
+        assert_eq!(count, 0, "the boot-wide scope skips a missing 39000");
+        assert!(
+            current_discovery_event(&state, &tenant, channel_id)
+                .await
+                .is_none(),
+            "still no 39000 after the archived-only pass"
+        );
+
+        let count = reconcile_channel_events(
+            &tenant,
+            &state,
+            DiscoveryRepairScope::MissingOrStaleArchived,
+        )
+        .await
+        .expect("reconcile");
+        assert_eq!(count, 1, "the dev/CI scope emits the missing 39000");
 
         assert!(
             current_discovery_event(&state, &tenant, channel_id)
