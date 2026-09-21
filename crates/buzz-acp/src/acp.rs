@@ -4729,7 +4729,11 @@ mod tests {
             .unwrap();
 
         let usage = client.take_turn_usage().expect("prompt usage");
-        assert_eq!(usage.turn_output_tokens, Some(1_000), "200 answer + 800 thought");
+        assert_eq!(
+            usage.turn_output_tokens,
+            Some(1_000),
+            "200 answer + 800 thought"
+        );
         assert_eq!(usage.turn_total_tokens, Some(6_000));
         assert_eq!(
             usage.turn_input_tokens.unwrap() + usage.turn_output_tokens.unwrap(),

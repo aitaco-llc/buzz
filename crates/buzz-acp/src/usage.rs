@@ -361,9 +361,7 @@ impl StandardUsageTracker {
                     usage
                         .input_tokens
                         .checked_add(usage.cached_read_tokens.unwrap_or(0))
-                        .and_then(|input| {
-                            input.checked_add(usage.cached_write_tokens.unwrap_or(0))
-                        })
+                        .and_then(|input| input.checked_add(usage.cached_write_tokens.unwrap_or(0)))
                 };
                 // Billed output. Thinking is disjoint from output on
                 // `rebrand-acp` and billed at the output rate; on the others
@@ -377,8 +375,8 @@ impl StandardUsageTracker {
                 };
                 // Claude's `totalTokens` is not a per-turn figure; the other
                 // two adapters report one that counts each token once.
-                let total_tokens = (adapter != StandardAdapterKind::Claude)
-                    .then_some(usage.total_tokens);
+                let total_tokens =
+                    (adapter != StandardAdapterKind::Claude).then_some(usage.total_tokens);
                 (
                     inclusive_input,
                     inclusive_input.and(billed_output),
