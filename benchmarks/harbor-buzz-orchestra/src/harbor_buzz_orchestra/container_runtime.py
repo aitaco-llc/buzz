@@ -74,6 +74,15 @@ class EndpointLaunchConfig:
     provider: str
     api_key_env: str
     env: dict[str, str] = field(default_factory=dict)
+    # Which ACP adapter buzz-acp drives for this endpoint. Empty keeps
+    # `buzz-agent`, the stack the desktop launches. An endpoint that names its
+    # own adapter (e.g. `rebrand-acp`, whose worker holds no signing key and
+    # takes its provider and model on the command line) is launched through
+    # that binary instead — the rest of the tree, buzz-acp above and
+    # buzz-dev-mcp beside it, is unchanged. `agent_command` is resolved under
+    # the uploaded bin directory unless it is already absolute.
+    agent_command: str = ""
+    agent_args: str = ""
 
 
 @dataclass(slots=True)
@@ -436,8 +445,8 @@ class BuzzContainerRuntime:
             # so buzz-dev-mcp's shim can wire git auth/signing for the agent.
             "NOSTR_PRIVATE_KEY": credential.nostr_secret_key,
             "BUZZ_AUTH_TAG": credential.nostr_auth_tag,
-            "BUZZ_ACP_AGENT_COMMAND": f"{REMOTE_BIN}/buzz-agent",
-            "BUZZ_ACP_AGENT_ARGS": "",
+            "BUZZ_ACP_AGENT_COMMAND": self._agent_command(endpoint),
+            "BUZZ_ACP_AGENT_ARGS": endpoint.agent_args,
             "BUZZ_ACP_MCP_COMMAND": f"{REMOTE_BIN}/buzz-dev-mcp",
             "BUZZ_ACP_CHANNELS": trial.channel_id,
             "BUZZ_ACP_SUBSCRIBE": "mentions",
@@ -463,6 +472,19 @@ class BuzzContainerRuntime:
             "BUZZ_AGENT_NO_HINTS": "1",
             endpoint.api_key_env: credential.llm_api_key,
         }
+
+    @staticmethod
+    def _agent_command(endpoint: EndpointLaunchConfig) -> str:
+        """The adapter binary, under the uploaded bin dir unless absolute.
+
+        A bare name is resolved rather than left to PATH on purpose: the
+        harness uploads the binaries it is pinning shas for, and a PATH lookup
+        would silently run whatever the task image happened to ship.
+        """
+        command = endpoint.agent_command or "buzz-agent"
+        if command.startswith("/"):
+            return command
+        return f"{REMOTE_BIN}/{command}"
 
     @staticmethod
     def _rust_log(configured: str | None) -> str:
