@@ -1,55 +1,45 @@
 import { cn } from "@/shared/lib/cn";
-import BuzzLogoAnimation, {
-  type BuzzLogoAnimationProps,
-} from "./BuzzLogoAnimation";
+import { AitacoMark } from "./AitacoMark";
 
 export type FuzzyLogoProps = {
-  /** When false, skips the looping feTurbulence texture filter and uses a CSS pulse instead. */
+  /** No longer meaningful: the feTurbulence texture went with the bee. */
   fuzz?: boolean;
   className?: string;
   ariaLabel?: string;
   loop?: boolean;
-  /** When looping, hide the mark for this many seconds between plays. */
+  /** No longer meaningful: there is no play cycle to rest between. */
   loopRestSeconds?: number;
   /** Set false when a parent drives its own opacity animation over the mark. */
   pulse?: boolean;
+  /** No longer meaningful: there is no morph to reverse. */
   reverse?: boolean;
-  variant?: BuzzLogoAnimationProps["variant"];
+  /** No longer meaningful: the v8 keyframes were the bee's geometry. */
+  variant?: string;
 };
 
 /**
- * The fuzzy Buzz mark. v8 ships a built-in animated texture (looping fractal-noise
- * turbulence + grain) applied via an SVG filter. Set `fuzz={false}` to render the
- * crisp geometry with a lightweight CSS pulse — recommended for long-lived mounts.
+ * The app's soft loading mark.
+ *
+ * Was the Buzz bee's v8 morph, animated with SMIL and textured with a looping
+ * `feTurbulence` filter — both of which paint on WebKit's main thread, and the
+ * texture was CPU-heavy enough that its own prop doc said so. The aitaco mark
+ * replaces it with a compositor `transform`, which is cheaper and does not
+ * stall behind main-thread work.
+ *
+ * The prop surface is kept so the call sites do not churn through the 1.0.0
+ * cut. The props describing the bee's morph and texture are now inert; they
+ * are typed rather than removed so nothing has to change at the call site, and
+ * they should go with the motion work that follows this build.
  */
 export function FuzzyLogo({
-  fuzz = true,
   className,
   ariaLabel = "aitaco logo",
-  loop = false,
-  loopRestSeconds = 0,
   pulse = true,
-  reverse = false,
-  variant = "v8",
 }: FuzzyLogoProps) {
-  // The rest-window loop already reads as "alive"; skip the pulse so the two
-  // opacity animations don't fight.
-  const hasRestWindow = loop && loopRestSeconds > 0;
-
   return (
-    <BuzzLogoAnimation
+    <AitacoMark
       ariaLabel={ariaLabel}
-      className={cn(
-        pulse && !fuzz && !hasRestWindow && "buzz-logo--pulse",
-        className,
-      )}
-      fullScreen={false}
-      loop={loop}
-      loopRestSeconds={loopRestSeconds}
-      reverse={reverse}
-      showBackground={false}
-      textured={fuzz}
-      variant={variant}
+      className={cn(pulse && "aitaco-mark--pulse", className)}
     />
   );
 }
