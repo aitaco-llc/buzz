@@ -264,11 +264,8 @@ test("repository pages show a centered Buzz loader while fetching", async ({
   await expect(
     loader.getByRole("img", { name: "Loading repository" }),
   ).toBeVisible();
-  const animatedMark = loader.locator(".buzz-logo__mark");
-  await expect(animatedMark).toHaveCSS(
-    "animation-name",
-    "buzz-logo-scale-pulse",
-  );
+  const animatedMark = loader.locator(".aitaco-mark");
+  await expect(animatedMark).toHaveCSS("animation-name", "aitaco-mark-pulse");
   await expect(animatedMark).toHaveCSS("opacity", "1");
   await expect(loader).toHaveCSS("justify-content", "center");
   await expect(loader).toBeHidden({ timeout: 5_000 });
