@@ -10,6 +10,8 @@ class _FakeRelaySession extends RelaySessionNotifier {
   int queryCount = 0;
   List<NostrEvent> replies = const [];
   Completer<List<NostrEvent>>? nextQueryGate;
+  final List<NostrFilter> requestedFilters = [];
+  List<List<NostrEvent>>? pages;
 
   @override
   SessionState build() => const SessionState(status: SessionStatus.connected);
@@ -24,11 +26,14 @@ class _FakeRelaySession extends RelaySessionNotifier {
     Duration timeout = const Duration(seconds: 8),
   }) async {
     queryCount++;
+    requestedFilters.addAll(filters);
     final gate = nextQueryGate;
     if (gate != null) {
       nextQueryGate = null;
       return gate.future;
     }
+    final queued = pages;
+    if (queued != null && queued.isNotEmpty) return queued.removeAt(0);
     return replies;
   }
 }
@@ -45,6 +50,23 @@ NostrEvent _reply(String id, int createdAt) => NostrEvent(
   content: 'reply $id',
   sig: '',
 );
+
+/// A NIP-AR (`kind:44201`) receipt overlaying [target]: it rides a thread page
+/// with the rows it annotates, and is never a row itself.
+NostrEvent _receipt(String id, int createdAt, String target) => NostrEvent(
+  id: id,
+  pubkey: 'bob',
+  createdAt: createdAt,
+  kind: EventKind.agentTurnReceipt,
+  tags: [
+    const ['h', 'chan'],
+    ['e', target],
+  ],
+  content: '{}',
+  sig: '',
+);
+
+String _rowId(int index) => 'r${index.toString().padLeft(3, '0')}';
 
 void main() {
   const args = ThreadRepliesArgs(channelId: 'chan', rootId: 'root');
@@ -234,5 +256,65 @@ void main() {
     final reopened = await container.read(threadRepliesProvider(args).future);
     expect(reopened.map((event) => event.id), ['r1', 'r2']);
     expect(fakeSession.queryCount, queriesAfterFirstLoad + 1);
+  });
+
+  test('the thread query asks the relay for its aux closure', () async {
+    // A receipt on a thread reply reaches this client through no other path:
+    // the channel window's aux closure targets the top-level rows it delivered,
+    // and a reply is not one of them.
+    final (container, fakeSession, _) = makeHarness([_reply('r1', 1000)]);
+    addTearDown(container.dispose);
+
+    await container.read(threadRepliesProvider(args).future);
+
+    expect(fakeSession.requestedFilters.single.extensions['include_aux'], true);
+  });
+
+  test('an overlay never advances the next page cursor', () async {
+    // The page is full of rows, so the query continues — from the last row.
+    // The receipt is newer than every one of them and is still not a position.
+    final fakeSession = _FakeRelaySession()
+      ..pages = [
+        [
+          for (var i = 0; i < 200; i++) _reply(_rowId(i), 1000 + i),
+          _receipt('rcpt', 9000, _rowId(199)),
+        ],
+        <NostrEvent>[],
+      ];
+    final container = ProviderContainer(
+      overrides: [relaySessionProvider.overrideWith(() => fakeSession)],
+    );
+    addTearDown(container.dispose);
+    container.listen(threadRepliesProvider(args), (_, _) {});
+
+    await container.read(threadRepliesProvider(args).future);
+
+    expect(fakeSession.queryCount, 2);
+    final second = fakeSession.requestedFilters[1].extensions;
+    expect(second['thread_cursor_id'], _rowId(199));
+    expect(second['thread_cursor'], 1199);
+  });
+
+  test('overlays do not count toward the page limit', () async {
+    // 201 events, 199 of them rows. The thread is exhausted; asking again
+    // would page past the end on the strength of two receipts.
+    final fakeSession = _FakeRelaySession()
+      ..pages = [
+        [
+          for (var i = 0; i < 199; i++) _reply(_rowId(i), 1000 + i),
+          _receipt('rcpt1', 9000, _rowId(198)),
+          _receipt('rcpt2', 9001, _rowId(197)),
+        ],
+      ];
+    final container = ProviderContainer(
+      overrides: [relaySessionProvider.overrideWith(() => fakeSession)],
+    );
+    addTearDown(container.dispose);
+    container.listen(threadRepliesProvider(args), (_, _) {});
+
+    final loaded = await container.read(threadRepliesProvider(args).future);
+
+    expect(fakeSession.queryCount, 1);
+    expect(loaded.length, 201);
   });
 }
