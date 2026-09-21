@@ -28,7 +28,16 @@ Environment=VOICE_BRIDGE_CONTEXT_FILES=%h/.buzz/GUIDES/AGENT_ROSTER.md
 #   gcloud secrets versions access latest --secret gemini-live-api-key --project aitaco-ml-dev
 # Do not restate it here unquoted: systemd splits Environment= on spaces.
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
-Environment=RUST_LOG=buzz_voice_bridge=info
+# Named, not inherited from $HOME: the unit must not be able to move its own
+# evidence. bridge.jsonl and the per-call logs live here.
+Environment=VOICE_BRIDGE_LOG_DIR=%h/.local/state/buzz-voice-bridge
+# Call logs hold every word spoken on the call, so they expire at 30 days,
+# matching the seat turn logs. bridge.jsonl holds no speech and is kept.
+Environment=VOICE_BRIDGE_RETENTION_DAYS=30
+# The transport crates are in the filter on purpose: buzz_voice_bridge=info
+# alone discards every tungstenite and buzz-ws-client line, and those are what
+# explain a call that never happened.
+Environment=RUST_LOG=buzz_voice_bridge=info,buzz_ws_client=info,tokio_tungstenite=info,tungstenite=info
 ExecStart=%h/.local/bin/buzz-voice-bridge
 Restart=on-failure
 RestartSec=5

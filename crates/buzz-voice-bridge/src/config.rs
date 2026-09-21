@@ -2,12 +2,14 @@
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
+use serde_json::{json, Value};
 use std::path::PathBuf;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Parser)]
 #[command(
     name = "buzz-voice-bridge",
+    version = crate::VERSION,
     about = "Join a Buzz huddle as a seat's voice and run a Gemini Live conversation"
 )]
 pub struct Args {
@@ -83,6 +85,36 @@ pub struct Args {
     /// How long to wait for the seat's answer to one ask.
     #[arg(long, env = "VOICE_BRIDGE_ASK_TIMEOUT_SECS", default_value_t = 900)]
     pub ask_timeout_secs: u64,
+
+    /// How often the watcher proves its huddle subscription is still live, by
+    /// running a REQ to EOSE on the same socket.
+    #[arg(long, env = "VOICE_BRIDGE_HEARTBEAT_SECS", default_value_t = 60)]
+    pub heartbeat_secs: u64,
+
+    /// How long a call's JSONL log is kept. Call logs hold every word spoken,
+    /// so they expire; `bridge.jsonl` holds no speech and is kept.
+    #[arg(long, env = "VOICE_BRIDGE_RETENTION_DAYS", default_value_t = 30)]
+    pub retention_days: u64,
+
+    /// Write every Gemini server message to a per-call sidecar, with the audio
+    /// elided. Off by default: it is a debugging tool, not an artifact.
+    #[arg(
+        long,
+        env = "VOICE_BRIDGE_TRACE_FRAMES",
+        action = clap::ArgAction::Set,
+        default_value = "0",
+        value_parser = parse_flag
+    )]
+    pub trace_frames: bool,
+}
+
+/// `1`/`true`/`yes`/`on` and their opposites, so an env var can carry a flag.
+fn parse_flag(value: &str) -> Result<bool, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" | "0" | "false" | "no" | "off" => Ok(false),
+        "1" | "true" | "yes" | "on" => Ok(true),
+        other => Err(format!("expected 0 or 1, got {other:?}")),
+    }
 }
 
 impl Args {
@@ -97,6 +129,54 @@ impl Args {
             bail!("relay URL must be ws:// or wss://");
         }
         Ok(())
+    }
+
+    /// Everything that shapes a call, as it was actually resolved. Recorded on
+    /// `up` and again on every `call_start`, so a log explains itself without
+    /// anyone having to guess at the unit file that produced it. No secret is
+    /// included: the key command is named, never its output.
+    pub fn resolved(&self) -> Value {
+        json!({
+            "relay_url": self.relay_url,
+            "key_file": self.key_file.display().to_string(),
+            "parent_channels": self.parent_channels,
+            "starters": self.starters,
+            "model": self.model,
+            "voice": self.voice,
+            "gemini_url": self.gemini_url,
+            "gemini_key_command": self.gemini_key_command,
+            "human_label": self.human_label,
+            "voice_label": self.voice_label,
+            "context_files": self.context_files_resolved(),
+            "log_dir": self.log_dir().display().to_string(),
+            "ask_timeout_secs": self.ask_timeout_secs,
+            "heartbeat_secs": self.heartbeat_secs,
+            "retention_days": self.retention_days,
+            "trace_frames": self.trace_frames,
+        })
+    }
+
+    /// Each context file with the size Gemini was actually given: a file that
+    /// vanished, or one truncated by the 16 KiB cap, changes what the voice
+    /// knows and must be visible in the log.
+    pub fn context_files_resolved(&self) -> Vec<Value> {
+        self.context_files
+            .iter()
+            .map(|path| match std::fs::read_to_string(path) {
+                Ok(content) => {
+                    let chars = content.chars().count();
+                    json!({
+                        "path": path.display().to_string(),
+                        "bytes": content.len(),
+                        "truncated_at_chars": (chars > CONTEXT_CHAR_CAP).then_some(CONTEXT_CHAR_CAP),
+                    })
+                }
+                Err(error) => json!({
+                    "path": path.display().to_string(),
+                    "error": error.to_string(),
+                }),
+            })
+            .collect()
     }
 
     pub fn log_dir(&self) -> PathBuf {
@@ -138,7 +218,7 @@ impl Args {
         for path in &self.context_files {
             match std::fs::read_to_string(path) {
                 Ok(content) => {
-                    let capped: String = content.chars().take(16 * 1024).collect();
+                    let capped: String = content.chars().take(CONTEXT_CHAR_CAP).collect();
                     text.push_str(&format!(
                         "\n\n## Context: {}\n\n{capped}",
                         path.file_name().and_then(|n| n.to_str()).unwrap_or("file")
@@ -152,6 +232,10 @@ impl Args {
         text
     }
 }
+
+/// Per context file, in characters. Beyond this Gemini is given a prefix, and
+/// [`Args::context_files_resolved`] says so.
+const CONTEXT_CHAR_CAP: usize = 16 * 1024;
 
 const PERSONA: &str = "\
 You are rock's voice in a live voice call with {human}. rock is the chief of staff of {human}'s AI team at aitaco. \
@@ -169,3 +253,84 @@ you are checking with rock. Keep talking with him while rock works. When a messa
 \"rock answered\", tell {human} the answer in your own words, briefly.
 
 Never invent status, numbers, dates or commitments. Never say something was done unless rock's answer says so.";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const STARTER: &str = "0f8471300f7806058507999b06f16805168c640aad3ffa5474cf8ec9e7c6a0ca";
+    const PARENT: &str = "daa0371a-17fc-41a8-bb70-272b7c7e8be0";
+
+    fn args(extra: &[&str]) -> Args {
+        let mut argv = vec![
+            "buzz-voice-bridge",
+            "--relay-url",
+            "wss://buzz.aitaco.co",
+            "--key-file",
+            "/dev/null",
+            "--parent-channels",
+            PARENT,
+            "--starters",
+            STARTER,
+        ];
+        argv.extend_from_slice(extra);
+        Args::try_parse_from(argv).expect("parse")
+    }
+
+    #[test]
+    fn the_trace_flag_takes_the_shapes_an_env_var_carries() {
+        assert!(!args(&[]).trace_frames, "off unless asked for");
+        assert!(args(&["--trace-frames", "1"]).trace_frames);
+        assert!(args(&["--trace-frames", "true"]).trace_frames);
+        assert!(!args(&["--trace-frames", "0"]).trace_frames);
+        assert_eq!(parse_flag("Yes"), Ok(true));
+        assert!(parse_flag("maybe").is_err());
+    }
+
+    #[test]
+    fn the_resolved_config_carries_what_shapes_a_call_and_no_secret() {
+        let resolved = args(&["--voice", "Charon"]).resolved();
+        assert_eq!(resolved["relay_url"], "wss://buzz.aitaco.co");
+        assert_eq!(resolved["parent_channels"][0], PARENT);
+        assert_eq!(resolved["starters"][0], STARTER);
+        assert_eq!(resolved["voice"], "Charon");
+        assert_eq!(resolved["ask_timeout_secs"], 900);
+        assert_eq!(resolved["heartbeat_secs"], 60);
+        assert_eq!(resolved["retention_days"], 30);
+        assert_eq!(resolved["trace_frames"], false);
+        // The key command is named so a bad key is diagnosable; its output,
+        // which is the key itself, is never in the log.
+        assert!(resolved["gemini_key_command"]
+            .as_str()
+            .is_some_and(|command| command.contains("gemini-live-api-key")));
+        assert!(resolved.get("gemini_key").is_none());
+    }
+
+    #[test]
+    fn context_files_report_their_size_their_truncation_and_their_absence() {
+        let dir = std::env::temp_dir().join(format!("voice-bridge-context-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let small = dir.join("roster.md");
+        let big = dir.join("big.md");
+        std::fs::write(&small, "# roster\n").expect("write");
+        std::fs::write(&big, "x".repeat(CONTEXT_CHAR_CAP + 10)).expect("write");
+        let missing = dir.join("gone.md");
+
+        let files = args(&[
+            "--context-files",
+            &format!(
+                "{},{},{}",
+                small.display(),
+                big.display(),
+                missing.display()
+            ),
+        ])
+        .context_files_resolved();
+
+        assert_eq!(files[0]["bytes"], 9);
+        assert!(files[0]["truncated_at_chars"].is_null());
+        assert_eq!(files[1]["truncated_at_chars"], CONTEXT_CHAR_CAP);
+        assert!(files[2]["error"].as_str().is_some_and(|e| !e.is_empty()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
