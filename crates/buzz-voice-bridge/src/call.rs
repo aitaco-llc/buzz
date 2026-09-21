@@ -322,7 +322,15 @@ pub async fn run_call(params: CallParams, cancel: CancellationToken) -> Result<(
         }
     };
 
-    post_outcome(&params, &mut log, &transcript, &outcome, &end_reason, duration).await;
+    post_outcome(
+        &params,
+        &mut log,
+        &transcript,
+        &outcome,
+        &end_reason,
+        duration,
+    )
+    .await;
     result.map(|_| ())
 }
 
@@ -471,9 +479,15 @@ async fn run_call_inner(
     let mut bed = crate::bed::Bed::new(params.working_sound, params.working_sound_gain);
     let mut working_since: Option<Instant> = None;
     let mut bed_frame = vec![0i16; OUT_FRAME];
-    // Frames leave on a wall-clock deadline rather than one per tick, so a
-    // late tick costs latency instead of audio. Reset whenever the queue runs
-    // dry: an idle line must not accrue a debt and then flush it in a burst.
+    // One frame per tick, and no more — nothing here leaves on a wall-clock
+    // deadline yet. `next_frame_at` is the deadline a drain would emit
+    // against; today the only thing that reads it is `worst_debt_ms`, which
+    // says how far behind real time the frame we are about to send already is.
+    // Reset whenever the queue runs dry, so an idle line does not book a debt
+    // it never owed and then report it as a stall. Combined with the `Skip`
+    // above, that means every tick the loop misses is 20 ms of audio it can
+    // never make up: the samples stay in `out_pcm`, the chance to emit them
+    // does not.
     let mut next_frame_at = Instant::now();
     let mut last_tick = Instant::now();
 
@@ -1338,7 +1352,10 @@ mod tests {
         let part = &elided["serverContent"]["modelTurn"]["parts"][0]["inlineData"];
         assert_eq!(part["mimeType"], "audio/pcm;rate=24000");
         assert_eq!(part["data"]["elided_chars"], 4);
-        assert_eq!(elided["serverContent"]["modelTurn"]["parts"][1]["text"], "kept");
+        assert_eq!(
+            elided["serverContent"]["modelTurn"]["parts"][1]["text"],
+            "kept"
+        );
         assert_eq!(elided["usageMetadata"]["totalTokenCount"], 7);
     }
 
@@ -1346,7 +1363,10 @@ mod tests {
     fn an_unparsed_message_is_named_by_its_keys() {
         let message = json!({ "somethingNew": { "a": 1 }, "goAwayLater": true });
         assert!(gemini::parse_server_message(&message).is_empty());
-        assert_eq!(top_level_keys(&message), vec!["goAwayLater", "somethingNew"]);
+        assert_eq!(
+            top_level_keys(&message),
+            vec!["goAwayLater", "somethingNew"]
+        );
         assert!(top_level_keys(&json!([1, 2])).is_empty());
     }
 

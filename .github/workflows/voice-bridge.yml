@@ -1,0 +1,75 @@
+# crates/buzz-voice-bridge is excluded from the root workspace, so every job in
+# ci.yml walks past it: nothing built it, linted it or ran its tests until this
+# workflow existed. It runs rock's voice on Lloyd's calls, so it gets a gate.
+#
+# Its own workflow rather than a job in ci.yml because ci.yml is upstream's file
+# and this crate is not; keeping the two apart costs nothing and keeps the
+# upstream merge clean.
+#
+# The two `paths:` lists below must stay identical. GitHub Actions does not
+# expand YAML anchors, so they are written out twice and the first step in the
+# job fails if they ever drift.
+name: Voice Bridge
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/buzz-voice-bridge/**'
+      # Path dependencies: a change to one of these can break the bridge while
+      # every workspace job stays green, because the workspace excludes it.
+      - 'crates/buzz-sdk/**'
+      - 'crates/buzz-ws-client/**'
+      - 'crates/buzz-core/**'
+      - 'scripts/aitaco/voice-bridge/**'
+      - 'Cargo.toml'
+      - 'rust-toolchain.toml'
+      - 'Justfile'
+      - '.github/workflows/voice-bridge.yml'
+  pull_request:
+    paths:
+      - 'crates/buzz-voice-bridge/**'
+      - 'crates/buzz-sdk/**'
+      - 'crates/buzz-ws-client/**'
+      - 'crates/buzz-core/**'
+      - 'scripts/aitaco/voice-bridge/**'
+      - 'Cargo.toml'
+      - 'rust-toolchain.toml'
+      - 'Justfile'
+      - '.github/workflows/voice-bridge.yml'
+
+concurrency:
+  group: voice-bridge-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  voice-bridge:
+    name: Voice Bridge
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      # A push filter that has drifted from the pull_request filter stops
+      # gating main silently, which is the failure this whole workflow exists
+      # to prevent. Catch it on the PR that writes it.
+      - name: Path filters agree
+        run: python3 scripts/aitaco/voice-bridge/check_workflow_paths.py
+      - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1
+      # audiopus_sys links the system libopus through pkg-config. Without it,
+      # it falls back to a bundled CMake build that predates CMake 4 and fails.
+      - name: Install libopus
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libopus-dev pkg-config
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: crates/buzz-voice-bridge
+          key: voice-bridge
+          save-if: ${{ github.event_name != 'pull_request' }}
+      - name: Voice bridge gate
+        run: just voice-bridge-ci
