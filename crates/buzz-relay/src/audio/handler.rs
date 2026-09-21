@@ -929,11 +929,7 @@ async fn handle_active_audio_connection(
     if should_auto_end {
         info!(channel_id = %channel_id, "audio room empty — auto-ending huddle");
 
-        match state
-            .db
-            .archive_channel(tenant.community(), channel_id)
-            .await
-        {
+        match archive_auto_ended_huddle(&state, &tenant, channel_id).await {
             Err(e) => {
                 warn!(channel_id = %channel_id, "auto-archive failed, huddle stays alive: {e}");
                 room.clear_ended();
@@ -1351,6 +1347,66 @@ async fn ensure_membership(
     Err("not a member".into())
 }
 
+/// Archive a huddle's backing channel when its room empties, and settle the
+/// state every client reads off that archive.
+///
+/// The TTL reaper archives the same kind of row for the same reason and runs
+/// three side effects after it (see the ephemeral reaper in `main.rs`). This
+/// path deliberately runs two of them:
+///
+/// - **`emit_group_discovery_events` — required.** The archived flag clients
+///   see lives in the stored kind:39000 (`side_effects.rs`, the
+///   `channel.archived_at.is_some()` branch). Archiving the row without
+///   re-emitting leaves that event reading "not archived" *permanently*: the
+///   reaper only ever revisits rows where `archived_at IS NULL`
+///   (`buzz-db/src/store/channel.rs`, `reap_expired_ephemeral_channels`), so
+///   nothing repairs it later. Both clients read the tag — Flutter
+///   (`channels_provider.dart`) and Desktop (`AppShell.tsx`) — so a dead huddle
+///   keeps listing as a live channel, including on a fresh install.
+/// - **`evict_all_channel_subscriptions` — wanted.** It makes a connected
+///   client drop the dead channel without waiting for a reconnect; `channel
+///   access revoked` is in the client's drop-set, so it costs one channel, not
+///   the socket. Note it is **pod-local**: `channel_subscriber_conns_scoped`
+///   only sees connections on the pod that handled the last leaver. That is
+///   harmless on today's single relay pod, but it is not a cross-pod broadcast
+///   and must not be described as one. Clients elsewhere are covered by the
+///   `archived=true` skip in `discover_channels` on their next discovery pass —
+///   which is exactly what the re-emit above makes true.
+///
+/// And deliberately omits the third: the reaper's `emit_system_message`
+/// `{"type":"channel_auto_archived"}`. That row would land inside a huddle
+/// backing channel, which by design nobody ever opens — cost with no reader.
+/// It is left out on purpose; do not add it back for symmetry with the reaper.
+///
+/// Only the archive itself is fallible to the caller. A failed discovery
+/// re-emit is logged and swallowed: the channel really is archived at that
+/// point, and returning `Err` would make the caller resurrect a dead room.
+/// The boot-time reconciler (`reconcile_channel_events`, run at every start in
+/// its `StaleArchivedOnly` scope) repairs a 39000 that was missed here.
+async fn archive_auto_ended_huddle(
+    state: &Arc<AppState>,
+    tenant: &TenantContext,
+    channel_id: Uuid,
+) -> Result<(), buzz_db::DbError> {
+    state
+        .db
+        .archive_channel(tenant.community(), channel_id)
+        .await?;
+
+    if let Err(e) =
+        crate::handlers::side_effects::emit_group_discovery_events(tenant, state, channel_id).await
+    {
+        warn!(
+            channel_id = %channel_id,
+            "auto-end discovery update failed, kind:39000 stays stale until reconcile: {e}"
+        );
+    }
+
+    crate::handlers::side_effects::evict_all_channel_subscriptions(tenant, state, channel_id).await;
+
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 struct ParticipantLifecycle<'a> {
     kind: Kind,
@@ -1707,6 +1763,194 @@ mod tests {
         assert!(
             !handler_receives_message_of_size(MAX_WEBSOCKET_MESSAGE_BYTES + 1).await,
             "oversized messages must be rejected by the WebSocket parser before the handler sees them"
+        );
+    }
+}
+
+#[cfg(test)]
+mod postgres_tests {
+    //! Regression test for the huddle auto-end stale kind:39000 defect
+    //! (`#buzz-platform`, 2026-09-21). Auto-end archived the backing channel
+    //! and emitted only the kind:48103 participant lifecycle — no discovery
+    //! re-emit — so every huddle that ended left a stored kind:39000 reading
+    //! "not archived", permanently. Six channels on prod were in that state
+    //! and clients listed all of them as live.
+    //!
+    //! This pins the archive path's contract. It does not drive the WebSocket
+    //! audio connection that calls it; what is covered is the side effects a
+    //! successful auto-end archive owes, not the room-emptied detection that
+    //! decides to call it.
+    //!
+    //! Postgres-gated like the other DB-backed relay tests. Run with:
+    //!   `cargo test -p buzz-relay --lib audio::handler::postgres_tests -- --ignored`
+    use super::*;
+    use buzz_core::channel::{ChannelType, ChannelVisibility};
+    use buzz_db::event::EventQuery;
+    use buzz_db::CreateCommunityWithOwnerResult;
+
+    async fn test_state() -> Arc<AppState> {
+        let mut config = crate::config::Config::from_env().expect("default config loads");
+        config.require_relay_membership = false;
+        config.redis_url = "redis://127.0.0.1:1".to_string();
+        let pool = sqlx::PgPool::connect_lazy(&config.database_url).expect("lazy pg pool");
+        let db = buzz_db::Db::from_pool(pool.clone());
+        let redis_pool = deadpool_redis::Config::from_url(&config.redis_url)
+            .create_pool(Some(deadpool_redis::Runtime::Tokio1))
+            .expect("redis pool");
+        let pubsub = Arc::new(
+            buzz_pubsub::PubSubManager::new(&config.redis_url, redis_pool.clone())
+                .await
+                .expect("pubsub manager"),
+        );
+        let audit = buzz_audit::AuditService::new(pool.clone());
+        let auth = buzz_auth::AuthService::new(config.auth.clone());
+        let search = buzz_search::SearchService::new(pool.clone());
+        let workflow_engine = Arc::new(buzz_workflow::WorkflowEngine::new(
+            db.clone(),
+            buzz_workflow::WorkflowConfig::default(),
+        ));
+        let media_storage = buzz_media::MediaStorage::new(&config.media).expect("media storage");
+        let (state, _audit_shutdown) = AppState::new(
+            config,
+            db,
+            redis_pool,
+            audit,
+            pubsub,
+            auth,
+            search,
+            workflow_engine,
+            nostr::Keys::generate(),
+            media_storage,
+        );
+        Arc::new(state)
+    }
+
+    /// A fresh community plus an ephemeral channel shaped like a huddle's
+    /// backing channel, already carrying the discovery events a live channel
+    /// has.
+    async fn seeded_backing_channel(state: &Arc<AppState>) -> (TenantContext, Uuid) {
+        let owner = nostr::Keys::generate();
+        let host = format!("huddle-autoend-{}.example", Uuid::new_v4().simple());
+        let community = match state
+            .db
+            .create_community_with_owner(&host, &owner.public_key().to_hex())
+            .await
+            .expect("create community")
+        {
+            CreateCommunityWithOwnerResult::Created(rec) => rec.id,
+            other => panic!("expected fresh community, got {other:?}"),
+        };
+        state
+            .db
+            .ensure_user(community, &owner.public_key().to_bytes())
+            .await
+            .expect("ensure owner user row");
+        let channel = state
+            .db
+            .create_channel(
+                community,
+                "huddle-backing",
+                ChannelType::Stream,
+                ChannelVisibility::Open,
+                None,
+                &owner.public_key().to_bytes(),
+                Some(3_600),
+            )
+            .await
+            .expect("create ephemeral channel");
+        let tenant = TenantContext::resolved(community, host);
+        crate::handlers::side_effects::emit_group_discovery_events(&tenant, state, channel.id)
+            .await
+            .expect("seed discovery events");
+        (tenant, channel.id)
+    }
+
+    async fn discovery_marks_archived(
+        state: &Arc<AppState>,
+        tenant: &TenantContext,
+        channel_id: Uuid,
+    ) -> bool {
+        let stored = state
+            .db
+            .query_events_for_bootstrap(&EventQuery {
+                kinds: Some(vec![39000]),
+                d_tag: Some(channel_id.to_string()),
+                limit: Some(1),
+                ..EventQuery::for_community(tenant.community())
+            })
+            .await
+            .expect("query discovery event")
+            .into_iter()
+            .next()
+            .expect("39000 exists");
+        stored.event.tags.iter().any(|t| {
+            let parts = t.as_slice();
+            parts.len() >= 2 && parts[0] == "archived" && parts[1] == "true"
+        })
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn auto_end_archive_leaves_discovery_saying_archived() {
+        let state = test_state().await;
+
+        // Control arm — the pre-fix behaviour, kept so this check is known to
+        // be able to fail. Archiving the row on its own is what auto-end used
+        // to do, and it leaves the stored 39000 reading as a live channel.
+        let (control_tenant, control_channel) = seeded_backing_channel(&state).await;
+        state
+            .db
+            .archive_channel(control_tenant.community(), control_channel)
+            .await
+            .expect("archive control channel");
+        assert!(
+            !discovery_marks_archived(&state, &control_tenant, control_channel).await,
+            "control: a bare archive_channel leaves the 39000 stale — this is the \
+             state six prod channels were in"
+        );
+
+        // Subject — the path auto-end now takes.
+        let (tenant, channel_id) = seeded_backing_channel(&state).await;
+        assert!(
+            !discovery_marks_archived(&state, &tenant, channel_id).await,
+            "a live channel's 39000 carries no archived tag"
+        );
+
+        archive_auto_ended_huddle(&state, &tenant, channel_id)
+            .await
+            .expect("auto-end archive");
+
+        let channel = state
+            .db
+            .get_channel_for_event_write(tenant.community(), channel_id)
+            .await
+            .expect("load channel");
+        assert!(
+            channel.archived_at.is_some(),
+            "the backing channel row is archived"
+        );
+        assert!(
+            discovery_marks_archived(&state, &tenant, channel_id).await,
+            "auto-end re-emits the 39000 with archived=true, so a client that \
+             reads archived state off the tag stops listing the dead huddle"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn auto_end_archive_reports_a_failed_archive_to_the_caller() {
+        let state = test_state().await;
+        let (tenant, _channel_id) = seeded_backing_channel(&state).await;
+
+        // A channel id that does not exist: the archive itself must fail so
+        // the caller keeps the room alive (`room.clear_ended()`), rather than
+        // being swallowed the way a failed discovery re-emit is.
+        let missing = Uuid::new_v4();
+        assert!(
+            archive_auto_ended_huddle(&state, &tenant, missing)
+                .await
+                .is_err(),
+            "a failed archive is surfaced, not swallowed"
         );
     }
 }
