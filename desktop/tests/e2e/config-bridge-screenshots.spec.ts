@@ -291,14 +291,14 @@ test.describe("config bridge screenshots", () => {
       managedAgents: [
         {
           pubkey: BUZZ_AGENT_PUBKEY,
-          name: "Buzz Agent",
+          name: "aitaco Agent",
           status: "running" as const,
           channelNames: ["agents"],
         },
       ],
     });
 
-    const panel = await openAgentProfileFromChannel(page, "Buzz Agent", {
+    const panel = await openAgentProfileFromChannel(page, "aitaco Agent", {
       anchorText: "MCP servers",
       tab: "Runtime",
     });
