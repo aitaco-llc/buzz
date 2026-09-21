@@ -221,6 +221,29 @@ struct ConversationPageTests {
     #expect(wire["include_aux"] as? Bool == true)
   }
 
+  // Lloyd hit `BuzzError.invalidResponse` on every "Open thread" in a channel an
+  // agent posts to (#general, 2026-09-21 03:50Z). The relay's aux closure began
+  // returning NIP-AR receipts, and `validate` rejects any kind outside
+  // `Projection.timelineKinds`, so one receipt on one reply failed the whole
+  // page. The literal 44201 is deliberate: this test has to compile and fail
+  // against a tree that does not yet know the kind by name.
+  @Test func aThreadCarryingATurnReceiptLoadsRatherThanFailingTheWholePage() async throws {
+    let f = try PageFixture()
+    let root = try f.message(at: 1)
+    let reply = try f.user.sign(
+      kind: 9, content: "Reply", tags: [["h", "c"], ["e", root.id, "", "reply"]], at: 2)
+    let receipt = try f.user.sign(
+      kind: 44201, content: #"{"model":"opus[1m]","harness":"buzz-acp","turn":{}}"#,
+      tags: [["h", "c"], ["e", reply.id]], at: 3)
+    let relay = ThreadResponseRelay(responses: [[reply, receipt]])
+    let page = try await ConversationPage.fetch(
+      relay: relay, channelID: "c", rootID: root.id, authority: f.relay.pubkey)
+    #expect(page.rows == [reply])
+    #expect(page.events.contains(receipt))
+    // An overlay is never a row, so it must not move the cursor or exhaustion.
+    #expect(page.next == nil)
+  }
+
   @Test func threadRejectsUnboundAuxiliariesWrongChannelsAndInvalidSignatures() async throws {
     let f = try PageFixture()
     let root = try f.message(at: 1)
