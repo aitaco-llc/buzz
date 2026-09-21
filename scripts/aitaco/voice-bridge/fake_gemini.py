@@ -11,8 +11,10 @@ import asyncio
 import base64
 import json
 import math
+import re
 import os
 import sys
+import time
 
 import websockets
 
@@ -56,6 +58,13 @@ async def handler(ws):
     await ws.send(json.dumps({"sessionResumptionUpdate": {"newHandle": f"handle-{me}", "resumable": True}}))
     loud = 0
     asked = False
+    # The working sound must never reach here. Measured over the span where
+    # the caller is not talking: everything fed in then is the bridge's own,
+    # and it is supposed to be silence. Counting from the ask instead would
+    # count the caller's own voice, which is still arriving.
+    last_loud = None
+    peak_while_quiet = 0
+    chunks_while_quiet = 0
     try:
         async for raw in ws:
             message = json.loads(raw)
@@ -64,6 +73,13 @@ async def handler(ws):
                 log(event="client_text", session=me, text=text)
                 if "just joined" in text:
                     for m in speak(tone(0.6, 440), "Hi Lloyd, rock here."):
+                        await ws.send(json.dumps(m))
+                elif text.startswith("rock is still working"):
+                    # Speak back only what the bridge counted, as the persona
+                    # now requires; the scorer reads the number out of this.
+                    seconds = re.search(r"been (\d+) seconds", text)
+                    said = f"rock is still working, it has been {seconds.group(1) if seconds else '?'} seconds."
+                    for m in speak(tone(0.3, 300), said):
                         await ws.send(json.dumps(m))
                 elif text.startswith("rock answered"):
                     for m in speak(tone(0.8, 660), "rock says the build is green."):
@@ -75,6 +91,10 @@ async def handler(ws):
                             for i in range(0, len(pcm), 2)), default=0)
                 if peak > 1000:
                     loud += 1
+                    last_loud = time.monotonic()
+                elif asked and last_loud is not None and time.monotonic() - last_loud > 2:
+                    chunks_while_quiet += 1
+                    peak_while_quiet = max(peak_while_quiet, peak)
                 if loud >= 25 and not asked and me == 1:
                     asked = True
                     log(event="heard_caller", session=me, loud_chunks=loud)
@@ -88,7 +108,8 @@ async def handler(ws):
                     await ws.send(json.dumps(m))
     except websockets.ConnectionClosed:
         pass
-    log(event="closed", session=me, loud_chunks=loud)
+    log(event="closed", session=me, loud_chunks=loud,
+        peak_while_quiet=peak_while_quiet, chunks_while_quiet=chunks_while_quiet)
 
 
 async def main():

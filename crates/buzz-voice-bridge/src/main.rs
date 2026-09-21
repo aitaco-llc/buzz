@@ -490,6 +490,10 @@ fn handle_event(
                 voice_label: args.voice_label.clone(),
                 log_path: log_path.clone(),
                 ask_timeout: Duration::from_secs(args.ask_timeout_secs),
+                progress_every: Duration::from_secs(args.progress_secs.max(1)),
+                working_sound: args.working_sound,
+                working_sound_gain: args.working_sound_gain,
+                working_sound_delay: Duration::from_millis(args.working_sound_delay_ms),
                 config: args.resolved(),
                 trace_frames: args.trace_frames,
             };

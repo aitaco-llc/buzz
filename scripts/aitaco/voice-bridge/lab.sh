@@ -150,13 +150,21 @@ LAB_GEMINI="${LAB_GEMINI:-fake}"
 echo "${LAB_GEMINI}" > "${RUN_DIR}/gemini_mode"
 LAB_FAULT="${LAB_FAULT:-none}"
 echo "${LAB_FAULT}" > "${RUN_DIR}/fault"
+# LAB_ANSWER_DELAY_S holds the seat's answer back so the run covers what the
+# caller hears while the seat is thinking: the progress line on the bridge's
+# own clock, and the working sound under the room track. The caller has to
+# stay on the line long enough to hear it.
+LAB_ANSWER_DELAY_S="${LAB_ANSWER_DELAY_S:-0}"
+LAB_PROGRESS_S="${LAB_PROGRESS_S:-10}"
+echo "${LAB_ANSWER_DELAY_S}" > "${RUN_DIR}/answer_delay_s"
+echo "${LAB_PROGRESS_S}" > "${RUN_DIR}/progress_s"
 if [[ "${LAB_GEMINI}" == "fake" ]]; then
   FAKE_GEMINI_LOG="${RUN_DIR}/gemini.jsonl" python3 "${HERE}/fake_gemini.py" "${GEMINI_PORT}" \
     >"${RUN_DIR}/gemini.log" 2>&1 &
   FAKE_GEMINI_PID=$!
   PIDS+=("${FAKE_GEMINI_PID}")
   GEMINI_ENV=(VOICE_BRIDGE_GEMINI_URL="ws://127.0.0.1:${GEMINI_PORT}" GEMINI_API_KEY=lab-key)
-  CALLER_TALK=(--talk-secs 3 --listen-secs "${LAB_LISTEN_S:-25}")
+  CALLER_TALK=(--talk-secs 3 --listen-secs "${LAB_LISTEN_S:-$((25 + LAB_ANSWER_DELAY_S))}")
 else
   [[ -f "${LAB_CALLER_PCM:-}" ]] || { echo "LAB_GEMINI=real needs LAB_CALLER_PCM" >&2; exit 64; }
   GEMINI_ENV=()
@@ -191,6 +199,7 @@ env -i HOME="${HOME}" USER="${USER}" PATH="$(dirname "${BUZZ_BIN}"):/usr/bin:/bi
   BUZZ_ACP_SESSION_POLICY=thread BUZZ_ACP_SELF_WAKE_TAG=voice-bridge=ask \
   BUZZ_ACP_TURN_LOG_DIR="${RUN_DIR}/turnlog" \
   STUB_SEAT_LOG="${RUN_DIR}/seat-prompts.jsonl" STUB_SEAT_NONCE="${NONCE}" \
+  STUB_SEAT_DELAY_SECS="${LAB_ANSWER_DELAY_S}" \
   RUST_LOG=buzz_acp=info \
   "${ACP_BIN}" >"${RUN_DIR}/seat.log" 2>&1 &
 PIDS+=($!)
@@ -212,6 +221,9 @@ start_bridge() {  # waits for this start's own "watching for huddles"
     VOICE_BRIDGE_LOG_DIR="${RUN_DIR}/bridge-calls" VOICE_BRIDGE_ASK_TIMEOUT_SECS=60 \
     VOICE_BRIDGE_HEARTBEAT_SECS="${LAB_HEARTBEAT_S:-5}" \
     VOICE_BRIDGE_TRACE_FRAMES="${LAB_TRACE_FRAMES:-0}" \
+    VOICE_BRIDGE_PROGRESS_SECS="${LAB_PROGRESS_S}" \
+    VOICE_BRIDGE_WORKING_SOUND="${LAB_WORKING_SOUND:-typing}" \
+    VOICE_BRIDGE_WORKING_SOUND_DELAY_MS="${LAB_WORKING_SOUND_DELAY_MS:-2000}" \
     RUST_LOG=buzz_voice_bridge=info,buzz_ws_client=info,tungstenite=info \
     "${BRIDGE_BIN}" >>"${RUN_DIR}/bridge.log" 2>&1 &
   BRIDGE_PID=$!
