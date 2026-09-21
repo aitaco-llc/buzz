@@ -12,6 +12,12 @@ final class ConversationHistory {
   private(set) var hasMore = true
   private(set) var error: String?
   private(set) var loaded = false
+  /// Counts completed head reloads. A reset load replaces the whole row set:
+  /// rows the relay's window no longer carries leave, and rows this device has
+  /// never seen arrive. The conversation view watches this so it can re-anchor
+  /// on the new newest row, instead of holding a scroll offset that belongs to
+  /// the rows that left. Loading an older page does not count.
+  private(set) var reloads = 0
   private var cursor: EventCursor?
   private var mode: ConversationPage.Mode?
   private var rowIDs = Set<String>()
@@ -111,6 +117,7 @@ final class ConversationHistory {
         retryFromHead = false
         pages += 1
         await workspace.reload()
+        if reset { reloads += 1 }
         await workspace.hydrateProfiles(for: page.rows)
       } catch is CancellationError { return } catch {
         guard generation == token else { return }
