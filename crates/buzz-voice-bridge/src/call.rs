@@ -42,6 +42,10 @@ const IN_FRAME: usize = (gemini::INPUT_RATE / 50) as usize;
 /// its voice-activity detection can hear the end of a turn even when the
 /// client sends nothing during silence (DTX).
 const SILENCE_AFTER: Duration = Duration::from_millis(100);
+
+/// The seat's typing indicator (`buzz_core::kind::KIND_TYPING_INDICATOR`).
+/// Ephemeral by Nostr's range rule, so relays forward it and store nothing.
+const TYPING_INDICATOR_KIND: u16 = 20002;
 /// Consecutive Gemini reconnects before the call gives up.
 const MAX_GEMINI_RECONNECTS: u32 = 3;
 /// How often the running audio counters are written to the call log.
@@ -235,10 +239,51 @@ enum AskUpdate {
     },
     /// No reply within the ask timeout.
     TimedOut { request: String, waited_ms: u128 },
-    /// The seat is still working. Carries the elapsed time the voice is
-    /// allowed to speak, counted here so it is not one the model invented.
-    Waiting { elapsed_secs: u64 },
+    /// The wait is still on. Carries the elapsed time the voice is allowed to
+    /// speak, counted here so it is not one the model invented, and what the
+    /// bridge actually knows about the seat — which decides what may be said.
+    Waiting { elapsed_secs: u64, state: WaitState },
 }
+
+/// What the bridge has observed about the seat while an ask is outstanding.
+///
+/// The wait line may only claim work the bridge has evidence of. The evidence
+/// is the seat's own typing indicator (kind:20002), published when buzz-acp
+/// dispatches the turn and refreshed every 3 s until the turn returns
+/// (`crates/buzz-acp/src/lib.rs`: `begin_typing` on dispatch, the 3 s
+/// `typing_refresh` tick, and `typing_channels.remove(scope)` on the result).
+/// So its arrival means a turn began, and its silence means one ended.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum WaitState {
+    /// No typing seen yet: the ask is published but no turn has begun. A seat
+    /// that cannot run — rate-limited, down, unauthorised — never leaves this
+    /// state, and saying "still working" about it is the fabrication we are
+    /// here to stop.
+    NotPickedUp,
+    /// Typing seen within [`TYPING_STALE_AFTER`]: a turn is in flight now.
+    Working,
+    /// Typing was seen and then stopped, with no answer. buzz-acp clears the
+    /// indicator when the turn returns, so this is a turn that ended without
+    /// answering — the shape of a seat that died on its first failure.
+    Stalled,
+}
+
+impl WaitState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NotPickedUp => "not_picked_up",
+            Self::Working => "working",
+            Self::Stalled => "stalled",
+        }
+    }
+}
+
+/// How long the seat's typing indicator may go unrefreshed before the bridge
+/// stops calling it work. buzz-acp republishes every 3 s, so this is three
+/// missed refreshes: long enough to ride out a dropped ephemeral event or a
+/// reconnect, short enough that a dead turn is not described as a live one for
+/// more than one progress line.
+const TYPING_STALE_AFTER: Duration = Duration::from_secs(10);
 
 /// When an update may reach Gemini.
 ///
@@ -255,6 +300,47 @@ enum Delivery {
     /// counted; held until the voice stops, it would arrive stale, and a
     /// stale number spoken as fact is the defect this exists to close.
     IfQuiet,
+}
+
+/// An ask that has been published and not yet answered.
+struct Pending {
+    request: String,
+    /// When the ask was published — the anchor every elapsed count uses.
+    asked_at: Instant,
+    /// When its last progress line went out.
+    last_progress: Instant,
+    /// Whether the seat has been seen typing since this ask was published.
+    picked_up: bool,
+}
+
+impl Pending {
+    /// Count a typing indicator against this ask, if it can belong to it.
+    ///
+    /// An indicator that predates the ask is the seat finishing something
+    /// else; counting it would call the ask picked up before anything had
+    /// looked at it, which is the failure this whole state exists to prevent.
+    fn note_typing(&mut self, seen: Instant) {
+        if seen >= self.asked_at {
+            self.picked_up = true;
+        }
+    }
+}
+
+/// What may be said about the seat, from what the bridge has actually seen.
+///
+/// Split out so the rule is one testable place rather than a condition inside
+/// a `select!` arm: never claim work without evidence of a turn, and stop
+/// claiming it once that evidence goes stale.
+fn wait_state(picked_up: bool, last_typing_at: Option<Instant>) -> WaitState {
+    if !picked_up {
+        return WaitState::NotPickedUp;
+    }
+    match last_typing_at {
+        Some(at) if at.elapsed() < TYPING_STALE_AFTER => WaitState::Working,
+        // Picked up, then the indicator stopped: buzz-acp clears it when the
+        // turn returns, so the turn ended and no answer came with it.
+        _ => WaitState::Stalled,
+    }
 }
 
 struct AskRequest {
@@ -869,18 +955,45 @@ async fn run_call_inner(
                             params.ask_timeout.as_secs() / 60
                         )), Delivery::WhenQuiet)
                     }
-                    AskUpdate::Waiting { elapsed_secs } => {
+                    AskUpdate::Waiting { elapsed_secs, state } => {
                         log.record("waiting_tick", json!({
                             "elapsed_secs": elapsed_secs,
+                            "state": state.as_str(),
                             "spoken": !speaking,
                         }));
-                        (gemini::user_turn(&format!(
-                            "rock is still working. It has been {elapsed_secs} seconds. Tell {} that rock is still \
-                             working and that it has been {elapsed_secs} seconds. Say only those two things. Do not \
-                             say what rock is doing, do not guess how much longer, and do not answer his request \
-                             yourself.",
-                            params.human_label
-                        )), Delivery::IfQuiet)
+                        // One sentence per state, and each says only what the
+                        // bridge has seen. "Still working" is a claim about a
+                        // turn that is running, so it is reserved for the one
+                        // state that has evidence of one.
+                        let line = match state {
+                            WaitState::NotPickedUp => format!(
+                                "rock has not picked this up yet. It has been {elapsed_secs} seconds. Tell {} \
+                                 exactly that: that rock has not picked it up yet and how long it has been. Do \
+                                 not say rock is working on it, because it is not. Do not guess why, do not \
+                                 guess how much longer, and do not answer his request yourself.",
+                                params.human_label
+                            ),
+                            WaitState::Working => format!(
+                                "rock is still working. It has been {elapsed_secs} seconds. Tell {} that rock is \
+                                 still working and that it has been {elapsed_secs} seconds. Say only those two \
+                                 things. Do not say what rock is doing, do not guess how much longer, and do not \
+                                 answer his request yourself.",
+                                params.human_label
+                            ),
+                            // Deliberately not "rock stopped". The indicator is
+                            // best-effort — buzz-acp drops it when its publish
+                            // queue is full, and this watcher can lose its own
+                            // subscription — so its silence is only ever a fact
+                            // about what the bridge saw, never a proven death.
+                            WaitState::Stalled => format!(
+                                "rock picked this up, and the bridge has stopped seeing it work. There is still \
+                                 no answer and it has been {elapsed_secs} seconds. Tell {} exactly that. Do not \
+                                 say rock is still working, do not say what went wrong or guess why, and do not \
+                                 answer his request yourself.",
+                                params.human_label
+                            ),
+                        };
+                        (gemini::user_turn(&line), Delivery::IfQuiet)
                     }
                 };
                 match delivery {
@@ -1151,8 +1264,12 @@ async fn run_asks(
 ) {
     let mut root: Option<EventId> = None;
     let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<Event>();
-    // request, when it was published, and when its last progress line went out
-    let mut pending: VecDeque<(String, Instant, Instant)> = VecDeque::new();
+    let (typing_tx, mut typing_rx) = mpsc::unbounded_channel::<Instant>();
+    let mut pending: VecDeque<Pending> = VecDeque::new();
+    // The seat's last observed typing indicator, for the whole call rather
+    // than per ask: a channel-keyed indicator cannot be attributed to one ask
+    // (see `watch_typing`), and the seat answers one ask at a time anyway.
+    let mut last_typing_at: Option<Instant> = None;
     let mut check = tokio::time::interval(Duration::from_secs(5));
     // One second so a progress line lands within a second of its due time
     // whatever `progress_every` is; the tick itself costs nothing.
@@ -1186,9 +1303,22 @@ async fn run_asks(
                                 reply_tx.clone(),
                                 cancel.clone(),
                             ));
+                            tokio::spawn(watch_typing(
+                                relay_url.clone(),
+                                publisher.keys().clone(),
+                                parent,
+                                me.clone(),
+                                typing_tx.clone(),
+                                cancel.clone(),
+                            ));
                         }
                         let now = Instant::now();
-                        pending.push_back((ask.request, now, now));
+                        pending.push_back(Pending {
+                            request: ask.request,
+                            asked_at: now,
+                            last_progress: now,
+                            picked_up: false,
+                        });
                         update_tx.send(AskUpdate::Asked { call_id: ask.call_id, event_id: event.id }).ok();
                     }
                     Err(error) => {
@@ -1198,34 +1328,118 @@ async fn run_asks(
             }
             reply = reply_rx.recv() => {
                 let Some(reply) = reply else { continue };
-                let (request, asked_at, _) = pending
-                    .pop_front()
-                    .unwrap_or_else(|| ("earlier request".into(), Instant::now(), Instant::now()));
+                let done = pending.pop_front().unwrap_or_else(|| Pending {
+                    request: "earlier request".into(),
+                    asked_at: Instant::now(),
+                    last_progress: Instant::now(),
+                    picked_up: true,
+                });
                 update_tx.send(AskUpdate::Answer {
-                    request,
+                    request: done.request,
                     text: reply.content.clone(),
-                    waited_ms: asked_at.elapsed().as_millis(),
+                    waited_ms: done.asked_at.elapsed().as_millis(),
                 }).ok();
             }
             _ = check.tick() => {
-                while pending.front().is_some_and(|(_, at, _)| at.elapsed() >= ask_timeout) {
-                    if let Some((request, at, _)) = pending.pop_front() {
+                while pending.front().is_some_and(|p| p.asked_at.elapsed() >= ask_timeout) {
+                    if let Some(late) = pending.pop_front() {
                         update_tx.send(AskUpdate::TimedOut {
-                            request,
-                            waited_ms: at.elapsed().as_millis(),
+                            waited_ms: late.asked_at.elapsed().as_millis(),
+                            request: late.request,
                         }).ok();
                     }
+                }
+            }
+            seen = typing_rx.recv() => {
+                let Some(seen) = seen else { continue };
+                last_typing_at = Some(seen);
+                if let Some(front) = pending.front_mut() {
+                    front.note_typing(seen);
                 }
             }
             _ = progress.tick() => {
                 // The oldest outstanding ask only. Two lines about two waits
                 // is noise, and the human asked one question at a time.
-                if let Some((_, asked_at, last)) = pending.front_mut() {
-                    if last.elapsed() >= progress_every {
-                        *last = Instant::now();
+                if let Some(front) = pending.front_mut() {
+                    if front.last_progress.elapsed() >= progress_every {
+                        front.last_progress = Instant::now();
                         update_tx.send(AskUpdate::Waiting {
-                            elapsed_secs: asked_at.elapsed().as_secs(),
+                            elapsed_secs: front.asked_at.elapsed().as_secs(),
+                            state: wait_state(front.picked_up, last_typing_at),
                         }).ok();
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Watch the seat's typing indicator (kind:20002) in the ask's channel.
+///
+/// This is the only evidence the bridge has that a turn actually began. It is
+/// an ephemeral kind, so the relay forwards it live and stores nothing: a
+/// watcher that connects late misses the first one and picks up the next 3 s
+/// refresh, which is why staleness is measured in refreshes rather than in a
+/// single event.
+///
+/// The filter cannot be narrowed to this ask. buzz-acp keys a turn's indicator
+/// to the *thread root* of its trigger, and a top-level trigger stays
+/// channel-keyed with no `e` tag at all (`queue.rs`: `typing_thread_tags`) —
+/// and the first ask of every call is top-level. So this matches on the seat's
+/// own pubkey in the ask's channel, and the caller only counts what arrives
+/// after it published. The residue is that the seat typing in this channel for
+/// unrelated work reads as pick-up; that says "working" of a seat that is
+/// working, which is the mild direction, and never says it of one that is not
+/// running at all — the case this exists to catch.
+async fn watch_typing(
+    relay_url: String,
+    keys: Keys,
+    parent: Uuid,
+    me: String,
+    typing_tx: mpsc::UnboundedSender<Instant>,
+    cancel: CancellationToken,
+) {
+    while !cancel.is_cancelled() {
+        let mut conn = match NostrWsConnection::connect_authenticated(&relay_url, &keys, None).await
+        {
+            Ok(conn) => conn,
+            Err(error) => {
+                warn!(%error, "typing watcher could not connect");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                continue;
+            }
+        };
+        // Channel reads need `#h`; without it the relay closes the REQ.
+        let filter = json!({
+            "kinds": [TYPING_INDICATOR_KIND],
+            "#h": [parent.to_string()],
+            "authors": [me],
+        });
+        if conn
+            .send_raw(&json!(["REQ", "typing", filter]))
+            .await
+            .is_err()
+        {
+            continue;
+        }
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => return,
+                message = conn.next_event(Duration::from_secs(60)) => match message {
+                    Ok(RelayMessage::Event { event, .. }) => {
+                        if event.pubkey.to_hex() == me {
+                            typing_tx.send(Instant::now()).ok();
+                        }
+                    }
+                    Ok(RelayMessage::Closed { message, .. }) => {
+                        warn!(%message, "the relay closed the typing subscription");
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        break;
+                    }
+                    Ok(_) | Err(WsClientError::Timeout) => {}
+                    Err(error) => {
+                        warn!(%error, "typing watcher lost its connection");
+                        break;
                     }
                 }
             }
@@ -1297,6 +1511,94 @@ async fn watch_replies(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ago(secs: u64) -> Instant {
+        Instant::now() - Duration::from_secs(secs)
+    }
+
+    fn pending_at(asked_at: Instant) -> Pending {
+        Pending {
+            request: "what is the status".into(),
+            asked_at,
+            last_progress: asked_at,
+            picked_up: false,
+        }
+    }
+
+    #[test]
+    fn a_seat_that_never_starts_is_never_called_working() {
+        // The 05:13Z shape: the ask is published, the seat cannot run, and no
+        // typing ever arrives. Every progress line must stay on the truth.
+        assert_eq!(wait_state(false, None), WaitState::NotPickedUp);
+    }
+
+    #[test]
+    fn typing_alone_does_not_make_an_unpicked_ask_working() {
+        // The seat is typing in this channel, but not since this ask went out
+        // — so it is someone else's work, and this ask is still untouched.
+        assert_eq!(
+            wait_state(false, Some(Instant::now())),
+            WaitState::NotPickedUp
+        );
+    }
+
+    #[test]
+    fn a_refreshing_indicator_is_the_only_thing_that_earns_still_working() {
+        assert_eq!(wait_state(true, Some(Instant::now())), WaitState::Working);
+        // buzz-acp republishes every 3 s, so just under the window is healthy.
+        assert_eq!(wait_state(true, Some(ago(9))), WaitState::Working);
+    }
+
+    #[test]
+    fn an_indicator_that_stops_refreshing_ends_the_claim_of_work() {
+        // buzz-acp clears the indicator when the turn returns, so three missed
+        // refreshes with no answer means the turn ended without one.
+        assert_eq!(wait_state(true, Some(ago(11))), WaitState::Stalled);
+        assert_eq!(wait_state(true, None), WaitState::Stalled);
+    }
+
+    #[test]
+    fn only_typing_that_postdates_the_ask_counts_as_picking_it_up() {
+        let asked_at = ago(30);
+        let mut ask = pending_at(asked_at);
+
+        // The seat was already typing when the ask went out: another turn.
+        ask.note_typing(asked_at - Duration::from_secs(1));
+        assert!(!ask.picked_up);
+        assert_eq!(
+            wait_state(ask.picked_up, Some(Instant::now())),
+            WaitState::NotPickedUp
+        );
+
+        // Then it types again, after the ask. That one is ours.
+        ask.note_typing(asked_at + Duration::from_secs(1));
+        assert!(ask.picked_up);
+    }
+
+    #[test]
+    fn a_picked_up_ask_that_goes_quiet_does_not_fall_back_to_not_picked_up() {
+        // Once a turn has begun, the honest report is that it began and went
+        // quiet — not that nobody ever looked, which would be a new false
+        // statement rather than the absence of one.
+        let mut ask = pending_at(ago(60));
+        ask.note_typing(ago(59));
+        assert_eq!(wait_state(ask.picked_up, Some(ago(40))), WaitState::Stalled);
+    }
+
+    #[test]
+    fn every_wait_state_has_a_distinct_log_name() {
+        let names = [
+            WaitState::NotPickedUp.as_str(),
+            WaitState::Working.as_str(),
+            WaitState::Stalled.as_str(),
+        ];
+        let unique: HashSet<&str> = names.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            names.len(),
+            "waiting_tick states must be distinguishable in the log"
+        );
+    }
 
     #[test]
     fn audio_stats_count_both_directions_and_each_peer() {
