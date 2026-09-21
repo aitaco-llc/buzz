@@ -47,13 +47,17 @@ public struct ConversationPage: Sendable {
         beforeID: cursor?.eventID, limit: 200)
     ])
     try Task.checkCancellation()
-    try validate(response, channelID: channelID, kinds: Projection.timelineKinds, maximum: 200)
-    guard response.allSatisfy({ cursor?.containsOlder($0) ?? true }) else {
+    let ordered = response.sorted(by: EventCursor.relayOrder)
+    let kept = try retained(
+      ordered, channelID: channelID, kinds: Projection.timelineKinds, maximum: 200)
+    guard kept.allSatisfy({ cursor?.containsOlder($0) ?? true }) else {
       throw BuzzError.invalidResponse
     }
-    let ordered = response.sorted(by: EventCursor.relayOrder)
     return ConversationPage(
-      events: ordered, rows: ordered.filter { Projection.messageKinds.contains($0.kind) },
+      events: kept, rows: kept.filter { Projection.messageKinds.contains($0.kind) },
+      // Exhaustion and the cursor read off what the relay delivered. A dropped
+      // event still filled a slot in the page, so counting survivors would end
+      // the chain early and key the next page to the wrong position.
       next: ordered.count == 200 ? ordered.last.map(EventCursor.init) : nil, mode: .standard)
   }
 
@@ -76,14 +80,14 @@ public struct ConversationPage: Sendable {
   public static func window(
     _ response: [Event], channelID: String, authority: String, after cursor: EventCursor?
   ) throws -> ConversationPage {
-    try validate(
+    let events = try retained(
       response, channelID: channelID, kinds: Projection.timelineKinds + [39005, 39006],
       maximum: 2251)
-    let rows = response.filter { Projection.messageKinds.contains($0.kind) }
+    let rows = events.filter { Projection.messageKinds.contains($0.kind) }
     guard rows.count <= 50, rows.allSatisfy({ cursor?.containsOlder($0) ?? true }),
       rows.map(\.id) == rows.sorted(by: EventCursor.relayOrder).map(\.id)
     else { throw BuzzError.invalidResponse }
-    let boundsEvents = response.filter { $0.kind == 39006 }
+    let boundsEvents = events.filter { $0.kind == 39006 }
     let binding =
       channelID.lowercased() + ":"
       + (cursor.map { "\($0.timestamp):\($0.eventID)" } ?? "head")
@@ -100,8 +104,8 @@ public struct ConversationPage: Sendable {
     else { throw BuzzError.invalidResponse }
 
     let rowIDs = Set(rows.map(\.id))
-    let aux = try auxiliaries(response, targeting: rowIDs)
-    for summary in response where summary.kind == 39005 {
+    let aux = try auxiliaries(events, targeting: rowIDs)
+    for summary in events where summary.kind == 39005 {
       guard summary.pubkey == authority, summary.tags.count == 3,
         let rowID = summary.tag("e"), rowIDs.contains(rowID),
         summary.tags.contains(["e", rowID]), summary.tags.contains(["d", rowID]),
@@ -124,15 +128,16 @@ public struct ConversationPage: Sendable {
     filter.threadCursorID = cursor?.eventID
     let response = try await relay.query([filter])
     try Task.checkCancellation()
-    try validate(response, channelID: channelID, kinds: Projection.timelineKinds, maximum: 5000)
-    let rows = response.filter { Projection.messageKinds.contains($0.kind) }
+    let events = try retained(
+      response, channelID: channelID, kinds: Projection.timelineKinds, maximum: 5000)
+    let rows = events.filter { Projection.messageKinds.contains($0.kind) }
     guard rows.count <= 200,
       rows.allSatisfy({ event in
         event.parentID != nil && event.id != rootID
           && (cursor.map { (event.createdAt, event.id) > ($0.timestamp, $0.eventID) } ?? true)
       })
     else { throw BuzzError.invalidResponse }
-    let aux = try auxiliaries(response, targeting: Set(rows.map(\.id) + [rootID]))
+    let aux = try auxiliaries(events, targeting: Set(rows.map(\.id) + [rootID]))
     let ordered = rows.sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
     return ConversationPage(
       events: ordered + aux, rows: ordered,
@@ -162,15 +167,29 @@ public struct ConversationPage: Sendable {
     return aux + receipts.filter { references($0, targetIDs) }
   }
 
-  private static func validate(
+  /// Validates everything this client will keep from a page, and returns it.
+  ///
+  /// **Rows stay strict**: a malformed, foreign or unsigned content event still
+  /// fails the whole page. An event of a kind this build has never heard of is
+  /// **dropped** instead. The relay's auxiliary closure grows on its own
+  /// schedule -- kind 44201 joined it while `2.0.0 (5)` was in testers' hands,
+  /// and every thread in a channel an agent posts to failed with
+  /// `invalidResponse` until a new build cleared the App Store. A closed
+  /// allowlist makes each future aux kind another outage of that shape, and
+  /// rejecting buys nothing a renderer that cannot draw the kind would have
+  /// used.
+  private static func retained(
     _ events: [Event], channelID: String, kinds: [Int], maximum: Int
-  ) throws {
-    guard events.count <= maximum, Set(events.map(\.id)).count == events.count,
-      events.allSatisfy({ event in
-        kinds.contains(event.kind)
-          && EventRelations.hasCompatibleChannel(event, channelID: channelID)
-      })
+  ) throws -> [Event] {
+    // The cap counts what the relay delivered, not what survives: an unknown
+    // kind still cost the memory and the page slot it arrived in.
+    guard events.count <= maximum else { throw BuzzError.invalidResponse }
+    let known = Set(kinds)
+    let kept = events.filter { known.contains($0.kind) }
+    guard Set(kept.map(\.id)).count == kept.count,
+      kept.allSatisfy({ EventRelations.hasCompatibleChannel($0, channelID: channelID) })
     else { throw BuzzError.invalidResponse }
-    guard events.allSatisfy({ $0.hasValidIDAndSignature() }) else { throw BuzzError.invalidEvent }
+    guard kept.allSatisfy({ $0.hasValidIDAndSignature() }) else { throw BuzzError.invalidEvent }
+    return kept
   }
 }

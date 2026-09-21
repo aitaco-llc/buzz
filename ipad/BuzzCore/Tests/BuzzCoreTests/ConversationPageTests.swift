@@ -244,6 +244,66 @@ struct ConversationPageTests {
     #expect(page.next == nil)
   }
 
+  // The relay's auxiliary closure grows without asking the app. Kind 44201
+  // joined it while 2.0.0 (5) was in testers' hands and every thread in
+  // #general failed for an evening, because the page validator rejected any
+  // kind it did not know (buzz#57). Rows stay strict; an unknown kind rides the
+  // page and is dropped, so the next aux kind is not another outage.
+  //
+  // 65001 stands in for that next kind: outside every range we assign, so it
+  // stays unknown however the real allowlist grows.
+  @Test func aThreadCarryingAnUnknownAuxiliaryKindLoadsRatherThanFailing() async throws {
+    let f = try PageFixture()
+    let root = try f.message(at: 1)
+    let reply = try f.user.sign(
+      kind: 9, content: "Reply", tags: [["h", "c"], ["e", root.id, "", "reply"]], at: 2)
+    let unknown = try f.user.sign(
+      kind: 65001, content: "{}", tags: [["h", "c"], ["e", reply.id]], at: 3)
+    let page = try await ConversationPage.fetch(
+      relay: ThreadResponseRelay(responses: [[reply, unknown]]), channelID: "c", rootID: root.id,
+      authority: f.relay.pubkey)
+    #expect(page.rows == [reply])
+    #expect(!page.events.contains(unknown))
+    #expect(page.next == nil)
+
+    // Dropped means dropped: an unknown kind is never signature-checked, never
+    // bound to a row, and never able to fail the page around it. A tampered one
+    // must not raise `invalidEvent` the way a tampered reaction does.
+    var object = try #require(
+      JSONSerialization.jsonObject(with: JSONEncoder().encode(unknown)) as? [String: Any])
+    object["content"] = "tampered"
+    let forged = try JSONDecoder().decode(
+      Event.self, from: JSONSerialization.data(withJSONObject: object))
+    let unbound = try f.user.sign(
+      kind: 65001, content: "{}", tags: [["h", "c"], ["e", String(repeating: "a", count: 64)]],
+      at: 4)
+    let foreign = try f.user.sign(kind: 65001, content: "{}", tags: [["h", "other"]], at: 5)
+    for stray in [forged, unbound, foreign] {
+      let tolerated = try await ConversationPage.fetch(
+        relay: ThreadResponseRelay(responses: [[reply, stray]]), channelID: "c", rootID: root.id,
+        authority: f.relay.pubkey)
+      #expect(tolerated.rows == [reply])
+      #expect(!tolerated.events.contains(stray))
+    }
+  }
+
+  // The same rule on the channel side, where the cost of rejecting is larger:
+  // `fetch` falls back to the plain filter on `invalidResponse`, so an unknown
+  // kind in the head window silently downgraded the whole channel to the
+  // pre-NIP-CW protocol instead of failing loudly.
+  @Test func aWindowCarryingAnUnknownAuxiliaryKindStillRendersItsRows() throws {
+    let f = try PageFixture()
+    let message = try f.message(at: 10)
+    let unknown = try f.user.sign(
+      kind: 65001, content: "{}", tags: [["h", "c"], ["e", message.id]], at: 11)
+    let page = try ConversationPage.window(
+      [message, unknown, try f.bounds(next: nil)], channelID: "c", authority: f.relay.pubkey,
+      after: nil)
+    #expect(page.rows == [message])
+    #expect(!page.events.contains(unknown))
+    #expect(page.mode == .window)
+  }
+
   @Test func threadRejectsUnboundAuxiliariesWrongChannelsAndInvalidSignatures() async throws {
     let f = try PageFixture()
     let root = try f.message(at: 1)
@@ -257,7 +317,6 @@ struct ConversationPageTests {
       try f.user.sign(kind: 7, content: "👍", tags: [["e", reaction.id]]),
       try f.user.sign(kind: 5, content: "", tags: [["e", validDelete.id]]),
       try f.user.sign(kind: 5, content: "", tags: [["h", "other"], ["e", reaction.id]]),
-      try f.user.sign(kind: 0, content: "{}", tags: [["h", "c"]]),
     ]
     for bad in badEvents {
       let relay = ThreadResponseRelay(responses: [[reply, reaction, validDelete, bad]])
