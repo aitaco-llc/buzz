@@ -866,7 +866,7 @@ fn default_agent_args(command: &str) -> Option<Vec<String>> {
     match normalize_agent_command_identity(command).as_str() {
         "goose" => Some(vec!["acp".to_string()]),
         "codex" | "codex-acp" | "claude-agent-acp" | "claude-code-acp" | "claude-code"
-        | "claudecode" | "buzz-agent" => Some(Vec::new()),
+        | "claudecode" | "buzz-agent" | "rebrand-acp" => Some(Vec::new()),
         _ => None,
     }
 }
@@ -886,6 +886,56 @@ fn default_agent_args(command: &str) -> Option<Vec<String>> {
 pub(crate) fn default_agent_env(command: &str) -> &'static [(&'static str, &'static str)] {
     match normalize_agent_command_identity(command).as_str() {
         "hermes" | "hermes-agent" | "hermes-acp" => &[("HERMES_ACP_SKIP_CONFIGURED_MCP", "1")],
+        _ => &[],
+    }
+}
+
+/// Adapters that reach Anthropic, where an unnamed model is not a default but
+/// a coin flip.
+///
+/// `claude-agent-acp` takes its model from `ANTHROPIC_MODEL` when set and
+/// otherwise from `~/.claude/settings.json` — a file shared by every seat on a
+/// body, which the operator's own `claude` CLI rewrites. A seat that names no
+/// model does not get a documented default; it gets whoever last ran `/model`.
+/// Measured 2026-09-20: two machines' seats were running Opus 5 only because
+/// two unrelated settings files happened to agree.
+pub(crate) fn model_must_be_named(command: &str) -> bool {
+    matches!(
+        normalize_agent_command_identity(command).as_str(),
+        "claude-agent-acp" | "claude-code-acp" | "claude-code" | "claudecode"
+    )
+}
+
+/// Effort levels Claude Code accepts, lowest first.
+pub(crate) const CLAUDE_EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+
+/// How an Anthropic seat's reasoning effort reaches the adapter.
+///
+/// `claude-agent-acp` 0.79.0 advertises only a `model` config option, so
+/// `apply_startup_effort`'s `session/set_config_option` path cannot set effort
+/// there — the ACP feature request for it is still open. The adapter does
+/// inherit its environment, and Claude Code reads `CLAUDE_CODE_EFFORT_LEVEL`
+/// from it. Measured 2026-09-20 on one reasoning-heavy prompt, sonnet:
+/// `low` spent 1,952 output tokens in 17.6s, `max` spent 29,268 in 240s.
+///
+/// So `BUZZ_ACP_EFFORT_LEVEL` — which was silently discarded on this adapter —
+/// is translated into that variable, and the per-seat knob means what it says.
+pub(crate) fn effort_env_var(command: &str) -> Option<&'static str> {
+    model_must_be_named(command).then_some("CLAUDE_CODE_EFFORT_LEVEL")
+}
+
+/// Environment variables an agent process must never receive, inherited or
+/// supplied.
+///
+/// Mirrors [`default_agent_env`], keyed on the same normalized identity.
+///
+/// `rebrand-acp` is a seat's *model*, not a first-party tool: it holds no
+/// signing credential by design and exits at startup if it finds one in its
+/// environment. Every other adapter inherits the harness's environment
+/// unchanged, as before.
+pub(crate) fn removed_agent_env(command: &str) -> &'static [&'static str] {
+    match normalize_agent_command_identity(command).as_str() {
+        "rebrand-acp" => &["BUZZ_PRIVATE_KEY", "BUZZ_AUTH_TAG"],
         _ => &[],
     }
 }
@@ -1218,7 +1268,41 @@ impl Config {
         // Spawned desktop agents now carry a complete instance snapshot. Team
         // instructions arrive independently so they can be layered at runtime.
         let mut persona_env_vars = Vec::new();
+        if let Some(var) = effort_env_var(&agent_command) {
+            let effort = args.effort_level.as_deref().map(str::trim).unwrap_or("");
+            if !effort.is_empty() {
+                if !CLAUDE_EFFORT_LEVELS.contains(&effort) {
+                    return Err(ConfigError::ConfigFile(format!(
+                        "BUZZ_ACP_EFFORT_LEVEL={effort:?} is not one of {CLAUDE_EFFORT_LEVELS:?}"
+                    )));
+                }
+                // Operator-wins, like every other entry: `AcpClient::spawn`
+                // skips a key already set in the parent environment.
+                persona_env_vars.push((var.to_string(), effort.to_string()));
+            }
+        }
         let model = args.model;
+
+        // An effort level the harness cannot deliver is worse than none: the
+        // operator believes the seat is configured. Refuse an unknown value
+        // rather than pass it to an adapter that ignores what it cannot parse.
+
+        // A seat on Anthropic must say which model it runs. `ANTHROPIC_MODEL`
+        // is the per-process pin the desktop already uses (it clears
+        // BUZZ_ACP_MODEL and sets that instead), so either names the model;
+        // neither means the seat would inherit a shared file.
+        if model_must_be_named(&agent_command)
+            && model.as_deref().is_none_or(|m| m.trim().is_empty())
+            && !std::env::var("ANTHROPIC_MODEL").is_ok_and(|m| !m.trim().is_empty())
+        {
+            return Err(ConfigError::ConfigFile(format!(
+                "{agent_command} needs its model named: set ANTHROPIC_MODEL (per-process, and \
+                 what the desktop uses) or BUZZ_ACP_MODEL. Unset, this seat runs whatever \
+                 ~/.claude/settings.json says, which every seat on this machine shares and the \
+                 `claude` CLI rewrites. `buzz-acp models --agent-command {agent_command} --json` \
+                 lists the ids this adapter accepts."
+            )));
+        }
 
         // Inject CODEX_CONFIG so the @agentclientprotocol/codex-acp adapter (1.x)
         // opens the Seatbelt network sandbox for buzz-cli (an MCP subprocess). No-op
@@ -1805,6 +1889,15 @@ mod tests {
             normalize_agent_args("claude-agent-acp", vec!["acp".into()]),
             Vec::<String>::new()
         );
+        // rebrand-acp takes flags only; the Goose `acp` default is a usage error there.
+        assert_eq!(
+            normalize_agent_args("rebrand-acp", vec!["acp".into()]),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            normalize_agent_args("rebrand-acp", vec!["--provider".into(), "gemini".into()]),
+            vec!["--provider", "gemini"]
+        );
     }
 
     #[test]
@@ -1868,6 +1961,83 @@ mod tests {
         assert_eq!(normalize_agent_command_identity("   "), "");
         assert_eq!(normalize_agent_command_identity("/"), "");
         assert_eq!(normalize_agent_command_identity("///"), "");
+    }
+
+    #[test]
+    fn an_anthropic_seats_effort_reaches_the_variable_claude_code_reads() {
+        // claude-agent-acp advertises no thought_level option, so the ACP
+        // config path cannot carry effort; the adapter inherits its
+        // environment instead. Measured on sonnet: low spent 1,952 output
+        // tokens, max spent 29,268.
+        assert_eq!(
+            effort_env_var("claude-agent-acp"),
+            Some("CLAUDE_CODE_EFFORT_LEVEL")
+        );
+        assert_eq!(
+            effort_env_var("/opt/bin/claude-code-acp"),
+            Some("CLAUDE_CODE_EFFORT_LEVEL")
+        );
+        // goose and buzz-agent carry their own thinking env; codex picks its
+        // own; rebrand-acp takes flags.
+        for command in ["goose", "buzz-agent", "codex-acp", "rebrand-acp", ""] {
+            assert_eq!(effort_env_var(command), None, "{command}");
+        }
+    }
+
+    #[test]
+    fn the_effort_levels_are_the_ones_claude_code_accepts() {
+        assert_eq!(
+            CLAUDE_EFFORT_LEVELS,
+            ["low", "medium", "high", "xhigh", "max"]
+        );
+    }
+
+    #[test]
+    fn only_the_anthropic_adapters_must_name_their_model() {
+        for command in [
+            "claude-agent-acp",
+            "/home/seat/.local/bin/claude-code-acp",
+            "CLAUDE-CODE.EXE",
+        ] {
+            assert!(model_must_be_named(command), "{command}");
+        }
+        // Codex authenticates and picks its own model; goose and buzz-agent
+        // carry provider+model env of their own; rebrand-acp takes --model.
+        for command in [
+            "codex-acp",
+            "codex",
+            "goose",
+            "buzz-agent",
+            "rebrand-acp",
+            "",
+        ] {
+            assert!(!model_must_be_named(command), "{command}");
+        }
+    }
+
+    #[test]
+    fn removed_agent_env_is_for_the_keyless_worker_only() {
+        for command in [
+            "rebrand-acp",
+            "/home/seat/.local/bin/rebrand-acp",
+            "REBRAND_ACP.EXE",
+        ] {
+            assert_eq!(
+                removed_agent_env(command),
+                &["BUZZ_PRIVATE_KEY", "BUZZ_AUTH_TAG"],
+                "{command}"
+            );
+        }
+        for command in [
+            "goose",
+            "codex-acp",
+            "claude-agent-acp",
+            "buzz-agent",
+            "rebrand",
+            "",
+        ] {
+            assert!(removed_agent_env(command).is_empty(), "{command}");
+        }
     }
 
     #[test]

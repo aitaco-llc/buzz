@@ -2,6 +2,7 @@ import {
   CHANNEL_AUX_EVENT_KINDS,
   CHANNEL_EVENT_KINDS,
   CHANNEL_TIMELINE_CONTENT_KINDS,
+  KIND_AGENT_TURN_RECEIPT,
   KIND_DELETION,
   KIND_NIP29_DELETE_EVENT,
   KIND_REACTION,
@@ -102,9 +103,14 @@ export function buildChannelAuxFilter(
 }
 
 /**
- * Structural aux filter for history backfill: edits/deletions only. Reactions
- * are hydrated from the rows the GUI actually renders, so the slow kind:5 scan
- * never shares a request with first-paint reaction pills.
+ * Structural aux filter for history backfill: edits/deletions and NIP-AR turn
+ * receipts. Reactions are hydrated from the rows the GUI actually renders, so
+ * the slow kind:5 scan never shares a request with first-paint reaction pills.
+ *
+ * Receipts belong on this request, not the reaction one: like an edit they are
+ * published after the message they annotate and can therefore fall outside any
+ * fetched time window, so scrollback must pull them by `#e` reference or an
+ * agent turn silently loses its model and token counts on reload.
  */
 export function buildChannelStructuralAuxFilter(
   _channelId: string,
@@ -114,6 +120,7 @@ export function buildChannelStructuralAuxFilter(
     KIND_DELETION,
     KIND_NIP29_DELETE_EVENT,
     KIND_STREAM_MESSAGE_EDIT,
+    KIND_AGENT_TURN_RECEIPT,
   ]);
 }
 

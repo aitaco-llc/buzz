@@ -219,9 +219,12 @@ CREATE TABLE events (
     -- Privacy: encrypted/private routing wrappers and p-gated membership notices
     -- must never be discoverable through NIP-50 full-text search. NULL tsvector
     -- never matches `@@`.
-    -- Keep in sync with migrations (final state: 0001 + 0005 + 0014 + 0033).
+    -- Kind 44201 (NIP-AR agent turn receipts) is public, but its content is a
+    -- JSON usage record, not prose: indexing it would put model ids and token
+    -- counts into every channel search.
+    -- Keep in sync with migrations (final state: 0001 + 0005 + 0014 + 0033 + 0047).
     search_tsv  TSVECTOR GENERATED ALWAYS AS (
-        CASE WHEN kind IN (1059, 30179, 30300, 30350, 30622, 44100, 44101, 44200) THEN NULL::tsvector
+        CASE WHEN kind IN (1059, 30179, 30300, 30350, 30622, 44100, 44101, 44200, 44201) THEN NULL::tsvector
              ELSE to_tsvector('simple', content)
         END
     ) STORED,

@@ -47,9 +47,18 @@ test("buildChannelReactionAuxFilter fetches only kind:7 by #e", () => {
   assert.equal("#h" in filter, false);
 });
 
+// NIP-AR receipts are published AFTER the messages they name, so — exactly
+// like an edit — they can fall outside any fetched time window. Scrollback
+// must pull them by `#e` reference or a reloaded agent turn loses its model
+// and token counts.
+test("buildChannelStructuralAuxFilter backfills NIP-AR turn receipts", () => {
+  const filter = buildChannelStructuralAuxFilter(CHANNEL, IDS);
+  assert.ok(filter.kinds.includes(44201));
+});
+
 test("buildChannelStructuralAuxFilter excludes reactions", () => {
   const filter = buildChannelStructuralAuxFilter(CHANNEL, IDS);
-  assert.deepEqual(filter.kinds, [5, 9005, 40003]);
+  assert.deepEqual(filter.kinds, [5, 9005, 40003, 44201]);
   assert.deepEqual(filter["#e"], IDS);
   assert.equal("#h" in filter, false);
 });

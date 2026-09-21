@@ -544,6 +544,26 @@ pub const KIND_MEMBER_REMOVED_NOTIFICATION: u32 = 44101;
 /// See `docs/nips/NIP-AM.md`.
 pub const KIND_AGENT_TURN_METRIC: u32 = 44200;
 
+/// NIP-AR: Agent Turn Receipt — public per-turn model and token record.
+///
+/// Regular stored event, channel-scoped, **plaintext**. The agent publishes one
+/// event per turn that published at least one message, binding what the turn
+/// cost to what it said: one `h` tag (the channel), one `e` tag per message the
+/// turn published in publication order, and a `model` tag. Content is the
+/// receipt JSON.
+///
+/// The sibling of [`KIND_AGENT_TURN_METRIC`], and deliberately its opposite:
+/// 44200 is encrypted to the owner and carries no `h` tag so a relay operator
+/// cannot see which channel a turn served. A receipt is for the people in the
+/// room. It says what a turn spent on their behalf, so spend is answerable to
+/// the channel it was spent in rather than only to whoever pays. Both exist:
+/// the metric is the owner's ledger, the receipt is the room's.
+///
+/// A receipt is a claim by its author about its author. A consumer MUST ignore
+/// one whose `pubkey` is not the author of the `e`-tagged message it would
+/// annotate. See `docs/nips/NIP-AR.md`.
+pub const KIND_AGENT_TURN_RECEIPT: u32 = 44201;
+
 // Forum / social (45000–45999)
 // V1 used addressable range (30001–30003) — wrong.
 /// A forum post (thread root).
@@ -727,6 +747,7 @@ pub const ALL_KINDS: &[u32] = &[
     KIND_MEMBER_ADDED_NOTIFICATION,
     KIND_MEMBER_REMOVED_NOTIFICATION,
     KIND_AGENT_TURN_METRIC,
+    KIND_AGENT_TURN_RECEIPT,
     KIND_WORKFLOW_DEF,
     KIND_LONG_FORM,
     KIND_USER_STATUS,
@@ -888,6 +909,12 @@ const _: () = assert!(!is_ephemeral(KIND_AGENT_TURN_METRIC));
 const _: () = assert!(!is_replaceable(KIND_AGENT_TURN_METRIC));
 const _: () = assert!(!is_parameterized_replaceable(KIND_AGENT_TURN_METRIC));
 const _: () = assert!(KIND_AGENT_TURN_METRIC <= u16::MAX as u32);
+// Compile-time: KIND_AGENT_TURN_RECEIPT is a regular stored kind, same as its
+// sibling — a receipt is append-only history, never replaced or ephemeral.
+const _: () = assert!(!is_ephemeral(KIND_AGENT_TURN_RECEIPT));
+const _: () = assert!(!is_replaceable(KIND_AGENT_TURN_RECEIPT));
+const _: () = assert!(!is_parameterized_replaceable(KIND_AGENT_TURN_RECEIPT));
+const _: () = assert!(KIND_AGENT_TURN_RECEIPT <= u16::MAX as u32);
 // Moderation kinds fit u16 and are neither replaceable nor ephemeral:
 // 1984 is a regular event (persisted to the queue, never fanned out);
 // 9040–9044 are direct commands (executed, never stored).
@@ -1084,5 +1111,19 @@ mod tests {
         // from its own delegated readers.
         assert!(!is_shared_gated_kind(KIND_TEAM));
         assert!(!is_shared_gated_kind(KIND_MANAGED_AGENT));
+    }
+
+    /// NIP-AR receipts are deliberately public to the channel they name. Every
+    /// read gate the relay owns is a way to make them private by accident, so
+    /// pin their absence: adding 44201 to any of these sets must fail here.
+    #[test]
+    fn agent_turn_receipts_are_not_read_gated() {
+        assert!(!P_GATED_KINDS.contains(&KIND_AGENT_TURN_RECEIPT));
+        assert!(!RESULT_GATED_KINDS.contains(&KIND_AGENT_TURN_RECEIPT));
+        assert!(!AUTHOR_ONLY_KINDS.contains(&KIND_AGENT_TURN_RECEIPT));
+        assert!(!is_shared_gated_kind(KIND_AGENT_TURN_RECEIPT));
+        // Its sibling is the opposite on every one of those axes.
+        assert!(P_GATED_KINDS.contains(&KIND_AGENT_TURN_METRIC));
+        assert!(RESULT_GATED_KINDS.contains(&KIND_AGENT_TURN_METRIC));
     }
 }
