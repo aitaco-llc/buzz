@@ -5473,27 +5473,55 @@ fn answered_event_ids(targets: &[AnswerTarget], replies: &serde_json::Value) -> 
     answered
 }
 
-/// The relay query for the seat's own replies in any target's thread since
-/// the turn started.
-fn answered_reply_filter(author: nostr::PublicKey, ledger: &AnswerLedger) -> nostr::Filter {
+/// The relay query for everything the seat published in the turn's channel
+/// since the turn started.
+///
+/// Scoped by channel (`#h`), not by thread: a turn answers its triggers with
+/// replies in their threads, but it also opens threads of its own — a fan-out
+/// root, a release post, a roll-up — and those carry no `e` tag at all. A
+/// query keyed on the targets' thread keys never returned them, so a NIP-AR
+/// receipt never named a top-level post, and a turn whose only message was one
+/// published no receipt. The channel query returns both kinds of message;
+/// `answered_event_ids` still judges ✅ by thread key on top of it.
+///
+/// The seat runs one turn at a time, so "ours, in this channel, since the turn
+/// started" is exactly this turn's output. A seat running concurrent turns in
+/// one channel would need per-turn tracking instead; nothing here supports
+/// that, and nothing here claims to.
+///
+/// A completion without a channel has no room to ask, and keeps the thread
+/// form so ✅ still settles from the targets' threads.
+fn turn_publications_filter(
+    author: nostr::PublicKey,
+    channel_id: Option<Uuid>,
+    ledger: &AnswerLedger,
+) -> nostr::Filter {
     use nostr::{Alphabet, SingleLetterTag};
 
-    let mut thread_keys: Vec<&str> = ledger
-        .targets
-        .iter()
-        .map(|t| t.thread_key.as_str())
-        .collect();
-    thread_keys.sort_unstable();
-    thread_keys.dedup();
-    nostr::Filter::new()
+    let filter = nostr::Filter::new()
         .kinds(
             ANSWER_REPLY_KINDS
                 .iter()
                 .map(|kind| nostr::Kind::Custom(*kind as u16)),
         )
         .author(author)
-        .custom_tags(SingleLetterTag::lowercase(Alphabet::E), thread_keys)
-        .since(nostr::Timestamp::from(ledger.since))
+        .since(nostr::Timestamp::from(ledger.since));
+    match channel_id {
+        Some(channel_id) => filter.custom_tags(
+            SingleLetterTag::lowercase(Alphabet::H),
+            [channel_id.to_string()],
+        ),
+        None => {
+            let mut thread_keys: Vec<&str> = ledger
+                .targets
+                .iter()
+                .map(|t| t.thread_key.as_str())
+                .collect();
+            thread_keys.sort_unstable();
+            thread_keys.dedup();
+            filter.custom_tags(SingleLetterTag::lowercase(Alphabet::E), thread_keys)
+        }
+    }
 }
 
 /// Whether a turn's outcome earns ✅ on the triggers it answered.
@@ -5697,8 +5725,9 @@ const RECEIPT_TIMEOUT: Duration = Duration::from_secs(3);
 /// receipt from one relay query.
 ///
 /// Detection reads the relay, not the agent's tool calls: one query for our own
-/// reply-kind events created since the turn started that carry a target's
-/// thread key in an `e` tag. Agents publish with `buzz messages send`, which
+/// message-kind events in the turn's channel created since the turn started —
+/// replies in the triggers' threads and top-level posts alike, see
+/// [`turn_publications_filter`]. Agents publish with `buzz messages send`, which
 /// returns only once the relay has accepted the event, so every message a turn
 /// sent is queryable by the time its result reaches the main loop. A turn that
 /// heard a post and stayed out published nothing there: no ✅, no receipt.
@@ -5719,7 +5748,11 @@ pub(crate) fn spawn_turn_completion(rest: &RestClient, completion: TurnCompletio
     }
     let rest = rest.clone();
     tokio::spawn(async move {
-        let filter = answered_reply_filter(rest.keys.public_key(), &completion.ledger);
+        let filter = turn_publications_filter(
+            rest.keys.public_key(),
+            completion.channel_id,
+            &completion.ledger,
+        );
         let replies = match timeout(Duration::from_millis(1_000), rest.query(&[filter])).await {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => {
@@ -8789,7 +8822,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
     }
 
     #[test]
-    fn answered_reply_filter_asks_for_our_replies_in_target_threads_since_dispatch() {
+    fn turn_publications_filter_asks_for_everything_we_published_in_the_channel_since_dispatch() {
         let (top, root) = ("a".repeat(64), "b".repeat(64));
         let ledger = AnswerLedger {
             targets: vec![
@@ -8800,7 +8833,9 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             since: 1_790_000_000,
         };
         let me = Keys::generate().public_key();
-        let filter = serde_json::to_value(answered_reply_filter(me, &ledger)).unwrap();
+        let channel = Uuid::new_v4();
+        let filter =
+            serde_json::to_value(turn_publications_filter(me, Some(channel), &ledger)).unwrap();
 
         let mut kinds: Vec<u64> = filter["kinds"]
             .as_array()
@@ -8811,6 +8846,38 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
         kinds.sort_unstable();
         assert_eq!(kinds, vec![9, 40002, 40008, 45003], "reply kinds, never 7");
         assert_eq!(filter["authors"], json!([me.to_hex()]));
+        assert_eq!(
+            filter["#h"],
+            json!([channel.to_string()]),
+            "scoped to the channel the turn ran in"
+        );
+        // The whole defect: keyed on the targets' threads, the query could not
+        // return a top-level post, so no receipt ever named one.
+        assert!(
+            filter.get("#e").is_none(),
+            "not keyed on the targets' threads: {filter}"
+        );
+        assert_eq!(filter["since"], json!(1_790_000_000u64));
+    }
+
+    #[test]
+    fn without_a_channel_the_filter_keeps_the_targets_threads() {
+        let (top, root) = ("a".repeat(64), "b".repeat(64));
+        let ledger = AnswerLedger {
+            targets: vec![
+                target(&top, &top),
+                target(&"c".repeat(64), &root),
+                target(&"d".repeat(64), &root),
+            ],
+            since: 1_790_000_000,
+        };
+        let me = Keys::generate().public_key();
+        let filter = serde_json::to_value(turn_publications_filter(me, None, &ledger)).unwrap();
+
+        assert!(
+            filter.get("#h").is_none(),
+            "no channel to scope to: {filter}"
+        );
         let mut keys: Vec<&str> = filter["#e"]
             .as_array()
             .unwrap()
@@ -8823,6 +8890,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             vec![top.as_str(), root.as_str()],
             "one key per thread"
         );
+        assert_eq!(filter["authors"], json!([me.to_hex()]));
         assert_eq!(filter["since"], json!(1_790_000_000u64));
     }
 
