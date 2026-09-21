@@ -155,8 +155,16 @@ echo "${LAB_FAULT}" > "${RUN_DIR}/fault"
 # own clock, and the working sound under the room track. The caller has to
 # stay on the line long enough to hear it.
 LAB_ANSWER_DELAY_S="${LAB_ANSWER_DELAY_S:-0}"
+# LAB_SEAT=silent starts the seat without the self-wake opt-in, so the ask is
+# published, delivered, and never picked up by anything. That is the shape of
+# Lloyd's call 3e9686d6 — a seat that could not run — and it is the only way to
+# make the bridge's "has not picked this up yet" line happen on a real call
+# path rather than in a unit test.
+LAB_SEAT="${LAB_SEAT:-live}"
+case "${LAB_SEAT}" in live|silent) ;; *) echo "LAB_SEAT must be live or silent" >&2; exit 2;; esac
 LAB_PROGRESS_S="${LAB_PROGRESS_S:-10}"
 echo "${LAB_ANSWER_DELAY_S}" > "${RUN_DIR}/answer_delay_s"
+echo "${LAB_SEAT}" > "${RUN_DIR}/seat_mode"
 echo "${LAB_PROGRESS_S}" > "${RUN_DIR}/progress_s"
 if [[ "${LAB_GEMINI}" == "fake" ]]; then
   FAKE_GEMINI_LOG="${RUN_DIR}/gemini.jsonl" python3 "${HERE}/fake_gemini.py" "${GEMINI_PORT}" \
@@ -188,6 +196,13 @@ require_mention = false
 filter = 'author == "${CALLER_PUB}"'
 prompt_tag = "front-door"
 TOML
+# The opt-in that lets a bridge ask wake the seat. Dropping it is what makes
+# LAB_SEAT=silent a seat that never picks up: it still connects and subscribes,
+# so the readiness gate below still passes, and the ask simply lands on nobody.
+# Omitted, not emptied: buzz-acp rejects `--self-wake-tag ""` outright ("must
+# be name=value"), and the seat we want is one that never opted in at all.
+SEAT_WAKE=(BUZZ_ACP_SELF_WAKE_TAG=voice-bridge=ask)
+[[ "${LAB_SEAT}" == "silent" ]] && SEAT_WAKE=()
 NONCE="$(head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 echo "${NONCE}" > "${RUN_DIR}/nonce"
 env -i HOME="${HOME}" USER="${USER}" PATH="$(dirname "${BUZZ_BIN}"):/usr/bin:/bin" NO_COLOR=1 \
@@ -196,7 +211,7 @@ env -i HOME="${HOME}" USER="${USER}" PATH="$(dirname "${BUZZ_BIN}"):/usr/bin:/bi
   BUZZ_ACP_AGENT_COMMAND="${HERE}/stub_seat_agent.py" BUZZ_ACP_MCP_COMMAND="" \
   BUZZ_ACP_NO_MEMORY=true BUZZ_ACP_SUBSCRIBE=config BUZZ_ACP_CONFIG="${RUN_DIR}/seat-rules.toml" \
   BUZZ_ACP_RESPOND_TO=owner-only BUZZ_ACP_AGENT_OWNER="${CALLER_PUB}" \
-  BUZZ_ACP_SESSION_POLICY=thread BUZZ_ACP_SELF_WAKE_TAG=voice-bridge=ask \
+  BUZZ_ACP_SESSION_POLICY=thread "${SEAT_WAKE[@]}" \
   BUZZ_ACP_TURN_LOG_DIR="${RUN_DIR}/turnlog" \
   STUB_SEAT_LOG="${RUN_DIR}/seat-prompts.jsonl" STUB_SEAT_NONCE="${NONCE}" \
   STUB_SEAT_DELAY_SECS="${LAB_ANSWER_DELAY_S}" \

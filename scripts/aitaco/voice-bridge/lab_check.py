@@ -169,9 +169,51 @@ else:
           and any(e["event"] == "gemini_connected" and e["data"].get("resumed") for e in call_log),
   }
 
+seat_mode_top = text("seat_mode") or "live"
+if a.fault == "none" and seat_mode_top == "silent":
+    # The seat ran without the self-wake opt-in, so the ask reached a seat that
+    # never picked it up. Everything about the call is expected to have worked
+    # except the answer, which must never arrive — that absence is the point.
+    # Everything downstream of an answer is dropped, and replaced with the
+    # same assertion minus the answer — the bar moves off the reply, not down.
+    # `resumed_with_handle_after_go_away` goes because the scripted goAway
+    # follows the answer, so no resume is reached in this run.
+    checks = {
+        k: v for k, v in checks.items()
+        if k not in {"seat_answer_reached_gemini", "seat_woke_once_on_the_ask",
+                     "seat_answered_in_thread", "transcript_names_speakers",
+                     "call_log_complete", "resumed_with_handle_after_go_away"}
+    }
+    checks.update({
+        "the_ask_was_published_and_addressed_to_the_seat":
+            len(asks) == 1 and tag(asks[0], "p") == a.seat,
+        "nothing_ever_picked_the_ask_up": not prompts and not answers,
+        "the_call_still_ran_and_ended_cleanly":
+            all(e in call_events for e in ["call_start", "room_joined", "ask_posted", "call_end"])
+            and "rock_answer" not in call_events,
+        # Both directions still carry audio through a wait that never ends.
+        # Outbound is the greeting only — an answer is what makes it grow —
+        # so this is `>=` where the live run can demand more.
+        "audio_counted_in_both_directions_through_the_wait":
+            inbound[0].get("opus_frames", 0) > 50
+            and inbound[0].get("pcm_samples_to_gemini", 0) > 0
+            and (audio.get("from_gemini") or {}).get("audio_frames", 0) > 0
+            and (audio.get("out") or {}).get("opus_frames", 0) >= 50
+            and (audio.get("out") or {}).get("silence_injections", 0) > 0,
+        "timings_on_join_connect_and_end":
+            (first(call_log, "room_joined") or {}).get("join_ms") is not None
+            and (first(call_log, "gemini_connected") or {}).get("connect_ms") is not None
+            and ending.get("duration_ms") is not None,
+    })
+
 if a.fault == "none":
     checks.update(instrumented)
-    checks.update({
+    if seat_mode_top == "silent":
+        # Re-stated above without the answer; adding the originals back here
+        # would reintroduce the two that cannot hold in a run with no reply.
+        pass
+    else:
+      checks.update({
         "audio_counted_in_both_directions":
             inbound[0].get("opus_frames", 0) > 50
             and inbound[0].get("pcm_samples_to_gemini", 0) > 0
@@ -194,11 +236,20 @@ if a.fault == "none":
     # ── the wait: only when the run was set up to have one ───────────────────
     delay = float(text("answer_delay_s") or 0)
     progress_s = float(text("progress_s") or 10)
+    seat_mode = text("seat_mode") or "live"
     if delay >= progress_s + 2:
         ticks = [e["data"] for e in call_log if e["event"] == "waiting_tick"]
         spoken = [t for t in ticks if t.get("spoken")]
-        said = [g["text"] for g in gemini
-                if g["event"] == "client_text" and g["text"].startswith("rock is still working")]
+        states = {t.get("state") for t in ticks}
+        # The line the voice was actually handed, per state. Asserting on the
+        # opening words is asserting the claim that was made about the seat.
+        working_said = [g["text"] for g in gemini
+                        if g["event"] == "client_text"
+                        and g["text"].startswith("rock is still working")]
+        unpicked_said = [g["text"] for g in gemini
+                         if g["event"] == "client_text"
+                         and g["text"].startswith("rock has not picked this up yet")]
+        said = working_said if seat_mode == "live" else unpicked_said
         closed = next((g for g in gemini if g["event"] == "closed" and g["session"] == 1), {})
         bed_frames = (audio.get("out") or {}).get("bed_frames", 0)
         # The room track ran for the length of the wait at 50 frames/s; allow
@@ -209,11 +260,21 @@ if a.fault == "none":
             # inside the wait, rises, and rises by the configured interval.
             "the_wait_is_counted_by_the_bridge":
                 bool(ticks)
-                and all(0 < t["elapsed_secs"] <= delay + 2 for t in ticks)
+                # With no answer coming, the wait runs to the end of the call,
+                # so only the live run has `delay` as its ceiling.
+                and all(0 < t["elapsed_secs"] <= delay + 2 for t in ticks
+                        if seat_mode == "live")
                 and [t["elapsed_secs"] for t in ticks] == sorted(t["elapsed_secs"] for t in ticks)
                 and all(progress_s - 1 <= b["elapsed_secs"] - a["elapsed_secs"] <= progress_s + 1
                         for a, b in zip(ticks, ticks[1:])),
             "a_progress_line_reached_the_voice": bool(spoken) and len(said) >= 1,
+            # The point of the three states: a claim of work needs evidence of
+            # a turn. With the seat woken, every tick saw its typing indicator
+            # and said so; with the opt-in dropped, nothing ever picked the ask
+            # up and no tick may claim otherwise.
+            "the_wait_line_claimed_work_only_with_evidence":
+                (states == {"working"} and not unpicked_said) if seat_mode == "live"
+                else (states == {"not_picked_up"} and not working_said),
             "the_voice_was_given_only_the_elapsed_seconds":
                 bool(said) and all(f"been {t['elapsed_secs']} seconds" in " ".join(said)
                                    for t in spoken[:len(said)]),
@@ -230,7 +291,8 @@ if a.fault == "none":
 result = {"pass": all(checks.values()), "mode": result_mode, "checks": checks, "run_dir": str(a.run_dir),
           "binaries": text("binaries"), "repo_commit": text("repo_commit"),
           "caller": caller, "transcript_lines": lines, "call_log_lines": lines_logged,
-          "fault": a.fault, "audio_stats": audio, "bridge_events": bridge_events,
+          "fault": a.fault, "seat_mode": text("seat_mode") or "live",
+          "audio_stats": audio, "bridge_events": bridge_events,
           "waiting_ticks": [e["data"] for e in call_log if e["event"] == "waiting_tick"],
           "end_reason": ending.get("reason") or ending.get("error")}
 with a.results.open("a") as out:
