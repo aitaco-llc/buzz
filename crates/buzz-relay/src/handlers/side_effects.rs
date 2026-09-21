@@ -3224,14 +3224,42 @@ pub async fn reconcile_large_channel_member_snapshots(
     Ok(reconciled)
 }
 
-/// Reconcile channels that exist in the DB but don't have kind:39000 events.
+/// True when a stored kind:39000 carries the archived marker that
+/// [`emit_group_discovery_events`] writes for an archived channel.
 ///
-/// This handles the case where channels were created via direct SQL inserts
-/// (e.g. test seed scripts) rather than through the Nostr event pipeline.
-/// Emits kind:39000 (metadata) and kind:39002 (members) for each channel
-/// that is missing its discovery events.
+/// That emitter only ever writes `["archived","true"]`, and omits the tag
+/// entirely for a live channel — so this tests the value rather than the tag's
+/// presence. A 39000 carrying `["archived","false"]` on an archived channel is
+/// just as stale as one carrying no tag at all.
+fn discovery_event_marks_archived(event: &Event) -> bool {
+    event.tags.iter().any(|t| {
+        let parts = t.as_slice();
+        parts.len() >= 2 && parts[0] == "archived" && parts[1] == "true"
+    })
+}
+
+/// Reconcile channels whose stored kind:39000 does not match the channel row.
 ///
-/// Idempotent: checks for existing kind:39000 events before emitting.
+/// Two repairs, both satisfied by the same re-emit:
+///
+/// 1. **No kind:39000 at all** — the channel was created via direct SQL insert
+///    (e.g. test seed scripts) rather than through the Nostr event pipeline.
+/// 2. **Archived channel whose kind:39000 does not say so.** Huddle auto-end
+///    archived the backing channel without re-emitting discovery, so every
+///    huddle that ended before that fix left a stored 39000 reading "not
+///    archived" — permanently, because the TTL reaper only ever revisits rows
+///    where `archived_at IS NULL`. Clients read archived state off that tag
+///    (Flutter `channels_provider.dart`, Desktop `AppShell.tsx`), so those dead
+///    channels list as live rows, including on a fresh install. This is the
+///    forward-only fix's backfill; it is not huddle-specific, and any future
+///    path that archives a row without re-emitting is repaired by it too.
+///
+/// Idempotent by construction: after one pass the tag is present, so every
+/// later pass is a no-op. Bounded by `list_channels_for_bootstrap`'s existing
+/// `LIMIT 1000` — no separate sweep, no migration.
+///
+/// Emits kind:39000 (metadata) and kind:39002 (members) for each channel that
+/// needs the repair.
 pub async fn reconcile_channel_events(
     tenant: &TenantContext,
     state: &Arc<AppState>,
@@ -3271,15 +3299,37 @@ pub async fn reconcile_channel_events(
             }
         };
 
-        if existing.is_empty() {
-            // No discovery event — emit one.
+        // `limit: 1` over `ORDER BY created_at DESC, id ASC`
+        // (`buzz-db/src/store/event.rs`) is the current replaceable event, and
+        // `replace_addressable_event` keeps exactly one live row per
+        // (kind, pubkey, channel_id) — so this needs no ordered read of its own.
+        let reason = match existing.first() {
+            // No discovery event at all.
+            None => Some("missing"),
+            // Archived row whose discovery event still reads as live.
+            Some(stored) if channel.archived_at.is_some() => {
+                (!discovery_event_marks_archived(&stored.event)).then_some("stale_archived")
+            }
+            Some(_) => None,
+        };
+
+        if let Some(reason) = reason {
+            // `emit_addressable_discovery_event` forces the replacement's
+            // `created_at` past the existing row's, so a repair of an event
+            // dated days ago clears stale-write protection for free.
             if let Err(e) = emit_group_discovery_events(tenant, state, channel.id).await {
                 tracing::warn!(
                     channel_id = %channel.id,
+                    reason,
                     error = %e,
                     "reconcile: failed to emit discovery events"
                 );
             } else {
+                tracing::info!(
+                    channel_id = %channel.id,
+                    reason,
+                    "reconcile: re-emitted channel discovery events"
+                );
                 reconciled += 1;
             }
         }
@@ -3768,5 +3818,259 @@ mod tests {
         }];
 
         assert!(actor_is_channel_owner_or_admin(&members, &actor));
+    }
+}
+
+#[cfg(test)]
+mod postgres_tests {
+    //! Regression tests for the huddle auto-end stale kind:39000 defect
+    //! (`#buzz-platform`, 2026-09-21). The huddle auto-end path archived a
+    //! backing channel without re-emitting discovery, so the stored kind:39000
+    //! read "not archived" forever — the TTL reaper only revisits rows where
+    //! `archived_at IS NULL`, so nothing repaired it later. Six channels on
+    //! prod were in that state.
+    //!
+    //! `reconcile_channel_events` is the backfill for rows already archived
+    //! that way. These tests pin its two conditions and its idempotence.
+    //!
+    //! Postgres-gated like the other DB-backed relay tests. Run with:
+    //!   `cargo test -p buzz-relay --lib postgres_tests -- --ignored`
+    use super::*;
+    use buzz_core::channel::{ChannelType, ChannelVisibility};
+    use buzz_db::event::EventQuery;
+    use buzz_db::CreateCommunityWithOwnerResult;
+    use std::sync::Arc;
+
+    /// Real-PG state mirroring `workflow_sink::postgres_tests::test_state`:
+    /// the live database from `DATABASE_URL`, with Redis pointed at a closed
+    /// port so nothing here depends on a running cache.
+    async fn test_state() -> Arc<AppState> {
+        let mut config = crate::config::Config::from_env().expect("default config loads");
+        config.require_relay_membership = false;
+        config.redis_url = "redis://127.0.0.1:1".to_string();
+        let pool = sqlx::PgPool::connect_lazy(&config.database_url).expect("lazy pg pool");
+        let db = buzz_db::Db::from_pool(pool.clone());
+        let redis_pool = deadpool_redis::Config::from_url(&config.redis_url)
+            .create_pool(Some(deadpool_redis::Runtime::Tokio1))
+            .expect("redis pool");
+        let pubsub = Arc::new(
+            buzz_pubsub::PubSubManager::new(&config.redis_url, redis_pool.clone())
+                .await
+                .expect("pubsub manager"),
+        );
+        let audit = buzz_audit::AuditService::new(pool.clone());
+        let auth = buzz_auth::AuthService::new(config.auth.clone());
+        let search = buzz_search::SearchService::new(pool.clone());
+        let workflow_engine = Arc::new(buzz_workflow::WorkflowEngine::new(
+            db.clone(),
+            buzz_workflow::WorkflowConfig::default(),
+        ));
+        let media_storage = buzz_media::MediaStorage::new(&config.media).expect("media storage");
+        let (state, _audit_shutdown) = AppState::new(
+            config,
+            db,
+            redis_pool,
+            audit,
+            pubsub,
+            auth,
+            search,
+            workflow_engine,
+            nostr::Keys::generate(),
+            media_storage,
+        );
+        Arc::new(state)
+    }
+
+    /// A fresh community with one channel, so each test walks only its own
+    /// rows when `reconcile_channel_events` iterates the bootstrap list.
+    async fn fresh_community_channel(
+        state: &Arc<AppState>,
+        label: &str,
+    ) -> (TenantContext, Uuid) {
+        let owner = nostr::Keys::generate();
+        let owner_hex = owner.public_key().to_hex();
+        let host = format!("{label}-{}.example", Uuid::new_v4().simple());
+        let community = match state
+            .db
+            .create_community_with_owner(&host, &owner_hex)
+            .await
+            .expect("create community")
+        {
+            CreateCommunityWithOwnerResult::Created(rec) => rec.id,
+            other => panic!("expected fresh community, got {other:?}"),
+        };
+        state
+            .db
+            .ensure_user(community, &owner.public_key().to_bytes())
+            .await
+            .expect("ensure owner user row");
+        let channel = state
+            .db
+            .create_channel(
+                community,
+                label,
+                ChannelType::Stream,
+                ChannelVisibility::Open,
+                None,
+                &owner.public_key().to_bytes(),
+                None,
+            )
+            .await
+            .expect("create channel");
+        (
+            TenantContext::resolved(community, host),
+            channel.id,
+        )
+    }
+
+    /// The channel's current stored kind:39000, read the way the reconciler
+    /// reads it.
+    async fn current_discovery_event(
+        state: &Arc<AppState>,
+        tenant: &TenantContext,
+        channel_id: Uuid,
+    ) -> Option<buzz_core::StoredEvent> {
+        state
+            .db
+            .query_events_for_bootstrap(&EventQuery {
+                kinds: Some(vec![39000]),
+                d_tag: Some(channel_id.to_string()),
+                limit: Some(1),
+                ..EventQuery::for_community(tenant.community())
+            })
+            .await
+            .expect("query discovery event")
+            .into_iter()
+            .next()
+    }
+
+    /// Reproduce the defect exactly: archive the row and emit nothing, which
+    /// is what the huddle auto-end path did before this change.
+    async fn archive_without_rediscovery(
+        state: &Arc<AppState>,
+        tenant: &TenantContext,
+        channel_id: Uuid,
+    ) {
+        state
+            .db
+            .archive_channel(tenant.community(), channel_id)
+            .await
+            .expect("archive channel");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn reconcile_repairs_archived_channel_whose_discovery_event_is_stale() {
+        let state = test_state().await;
+        let (tenant, channel_id) = fresh_community_channel(&state, "stale-archived").await;
+
+        // A live channel with correct discovery: no `archived` tag.
+        emit_group_discovery_events(&tenant, &state, channel_id)
+            .await
+            .expect("seed discovery events");
+        let seeded = current_discovery_event(&state, &tenant, channel_id)
+            .await
+            .expect("seeded 39000 exists");
+        assert!(
+            !discovery_event_marks_archived(&seeded.event),
+            "a live channel's 39000 carries no archived tag"
+        );
+
+        // The defect: the row is archived, the discovery event is not told.
+        archive_without_rediscovery(&state, &tenant, channel_id).await;
+        let stale = current_discovery_event(&state, &tenant, channel_id)
+            .await
+            .expect("39000 still present");
+        assert!(
+            !discovery_event_marks_archived(&stale.event),
+            "control arm: archiving alone leaves the stored 39000 reading as live — \
+             this is the state six prod channels were in, and it is what makes the \
+             assertion below able to fail"
+        );
+
+        reconcile_channel_events(&tenant, &state)
+            .await
+            .expect("reconcile");
+
+        let repaired = current_discovery_event(&state, &tenant, channel_id)
+            .await
+            .expect("39000 after reconcile");
+        assert!(
+            discovery_event_marks_archived(&repaired.event),
+            "reconcile re-emits an archived channel's 39000 with archived=true"
+        );
+        assert_ne!(
+            repaired.event.id, stale.event.id,
+            "the repair replaces the stale event rather than leaving it"
+        );
+
+        // Idempotent: the second pass sees the tag and does nothing, so the
+        // event id does not move again. This also covers the boot loop, which
+        // runs the reconciler every 5s for two minutes.
+        reconcile_channel_events(&tenant, &state)
+            .await
+            .expect("reconcile again");
+        let after_second_pass = current_discovery_event(&state, &tenant, channel_id)
+            .await
+            .expect("39000 after second reconcile");
+        assert_eq!(
+            after_second_pass.event.id, repaired.event.id,
+            "a repaired channel is not re-emitted on every later pass"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn reconcile_leaves_a_live_channels_discovery_event_alone() {
+        let state = test_state().await;
+        let (tenant, channel_id) = fresh_community_channel(&state, "live-untouched").await;
+
+        emit_group_discovery_events(&tenant, &state, channel_id)
+            .await
+            .expect("seed discovery events");
+        let seeded = current_discovery_event(&state, &tenant, channel_id)
+            .await
+            .expect("seeded 39000 exists");
+
+        reconcile_channel_events(&tenant, &state)
+            .await
+            .expect("reconcile");
+
+        let after = current_discovery_event(&state, &tenant, channel_id)
+            .await
+            .expect("39000 after reconcile");
+        assert_eq!(
+            after.event.id, seeded.event.id,
+            "a live channel with a current 39000 is not touched"
+        );
+        assert!(!discovery_event_marks_archived(&after.event));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn reconcile_still_emits_for_a_channel_with_no_discovery_event() {
+        let state = test_state().await;
+        let (tenant, channel_id) = fresh_community_channel(&state, "no-discovery").await;
+
+        // `create_channel` writes the row directly, the way a seed script
+        // does — no discovery event exists yet. This is the reconciler's
+        // original job and must survive the new condition.
+        assert!(
+            current_discovery_event(&state, &tenant, channel_id)
+                .await
+                .is_none(),
+            "no 39000 before reconcile"
+        );
+
+        reconcile_channel_events(&tenant, &state)
+            .await
+            .expect("reconcile");
+
+        assert!(
+            current_discovery_event(&state, &tenant, channel_id)
+                .await
+                .is_some(),
+            "reconcile emits the missing 39000"
+        );
     }
 }
