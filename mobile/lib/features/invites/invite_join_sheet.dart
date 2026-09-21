@@ -75,7 +75,7 @@ class InviteJoinSheet extends ConsumerWidget {
             Text(
               isStarterSetupRecovery
                   ? 'Finish setting up'
-                  : 'Join this Buzz community?',
+                  : 'Join this aitaco community?',
               style: context.textTheme.titleLarge,
             ),
             const SizedBox(height: Grid.xxs),

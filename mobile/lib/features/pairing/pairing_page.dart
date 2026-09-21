@@ -9,18 +9,19 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../shared/security/sensitive_action_authorizer.dart';
 import '../../shared/theme/theme.dart';
+import '../../shared/widgets/aitaco_mark.dart';
 import '../../shared/widgets/buzz_loading_indicator.dart';
 import '../../shared/widgets/ios_glass_navigation_button.dart';
-import '../../shared/widgets/tappable_flapping_bee.dart';
 import 'pairing_provider.dart';
 import 'pairing_qr_scanner.dart';
 
 part 'pairing_page/onboarding_background.dart';
 part 'pairing_page/pairing_welcome_view.dart';
 
-const _onboardingChartreuse = Color(0xFFD7D72E);
-const _onboardingShellBottom = Color(0xFFD7E7F6);
-const _onboardingCtaLabel = Color(0xFFD7E6F0);
+// aitaco.co's teal (the mark's disc), fading to a pale teal shell.
+const _onboardingTeal = Color(0xFF71BEC4);
+const _onboardingShellBottom = Color(0xFFE6F4F5);
+const _onboardingCtaLabel = Color(0xFFE6F4F5);
 const _onboardingInk = Color(0xFF111111);
 const _onboardingMutedInk = Color(0xB3111111);
 const _onboardingErrorInk = Color(0xFF7A1025);
@@ -117,7 +118,7 @@ class PairingPage extends HookConsumerWidget {
                     onPressed: () => Navigator.of(context).pop(),
                   ),
             title: Text(
-              identityRecoveryOnly ? 'Send to Desktop' : 'Add Community',
+              identityRecoveryOnly ? 'Send to Desktop' : 'Pair with Desktop',
               style: context.textTheme.titleMedium?.copyWith(
                 color: _onboardingInk,
               ),
@@ -262,8 +263,8 @@ class _SasVerificationView extends StatelessWidget {
         const SizedBox(height: Grid.xxs),
         Text(
           sendsIdentityToDesktop
-              ? 'Make sure the six-digit code matches on both devices. Your full Buzz identity will transfer to the desktop and grant it permanent access. Only continue if you started this recovery.'
-              : 'Make sure the six-digit code matches on both devices. Your Buzz identity will transfer to this device. Only continue if you started this pairing from your desktop.',
+              ? 'Make sure the six-digit code matches on both devices. Your full aitaco identity will transfer to the desktop and grant it permanent access. Only continue if you started this recovery.'
+              : 'Make sure the six-digit code matches on both devices. Your aitaco identity will transfer to this device. Only continue if you started this pairing from your desktop.',
           textAlign: TextAlign.center,
           style: context.textTheme.bodyMedium?.copyWith(
             color: _onboardingMutedInk,

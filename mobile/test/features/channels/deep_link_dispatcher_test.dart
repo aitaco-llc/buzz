@@ -228,7 +228,7 @@ void main() {
 
   testWidgets('retains invite and surfaces prepare failure', (tester) async {
     const link = InviteDeepLink(
-      relayUrl: 'wss://relay.example.com',
+      relayUrl: 'wss://buzz.aitaco.co',
       code: 'invite-code',
     );
     final container = ProviderContainer(
@@ -266,7 +266,7 @@ void main() {
     tester,
   ) async {
     const link = InviteDeepLink(
-      relayUrl: 'wss://relay.example.com',
+      relayUrl: 'wss://buzz.aitaco.co',
       code: 'invite-code',
     );
     final storage = _CountingCommunityStorage();
@@ -294,14 +294,14 @@ void main() {
 
     expect(storage.loadCalls, 1);
     expect(pending.consumeCalls, 1);
-    expect(find.text('Join this Buzz community?'), findsOneWidget);
+    expect(find.text('Join this aitaco community?'), findsOneWidget);
   });
 
   testWidgets('opens retry setup after durable starter recovery fails', (
     tester,
   ) async {
     const link = InviteDeepLink(
-      relayUrl: 'wss://relay.example.com',
+      relayUrl: 'wss://buzz.aitaco.co',
       code: 'invite-code',
     );
     final container = ProviderContainer(
@@ -334,7 +334,7 @@ void main() {
   testWidgets(
     'shows saved starter recovery progress, then opens welcome-everyone',
     (tester) async {
-      const relayUrl = 'wss://relay.example.com';
+      const relayUrl = 'wss://buzz.aitaco.co';
       const welcomeId = 'welcome-everyone-id';
       final storage = CommunityStorage(secure: FakeSecureStorage());
       await storage.save(
@@ -409,7 +409,7 @@ void main() {
   testWidgets('renders setup-specific recovery failures after membership', (
     tester,
   ) async {
-    const relayUrl = 'wss://relay.example.com';
+    const relayUrl = 'wss://buzz.aitaco.co';
     final storage = CommunityStorage(secure: FakeSecureStorage());
     await storage.save(
       Community(
@@ -465,11 +465,11 @@ void main() {
     tester,
   ) async {
     const first = InviteDeepLink(
-      relayUrl: 'wss://relay.example.com',
+      relayUrl: 'wss://buzz.aitaco.co',
       code: 'invite-one',
     );
     const second = InviteDeepLink(
-      relayUrl: 'wss://relay.example.com',
+      relayUrl: 'wss://buzz.aitaco.co',
       code: 'invite-two',
     );
     final pending = _QueuedPendingDeepLinkNotifier([first, second]);
@@ -496,7 +496,7 @@ void main() {
     expect(pending.consumeCalls, 1);
     expect(pending.current, same(second));
     expect(container.read(inviteJoinProvider).invite, same(first));
-    expect(find.text('Join this Buzz community?'), findsOneWidget);
+    expect(find.text('Join this aitaco community?'), findsOneWidget);
 
     await tester.tap(find.widgetWithText(OutlinedButton, 'Cancel'));
     await tester.pumpAndSettle();
@@ -504,14 +504,14 @@ void main() {
     expect(pending.consumeCalls, 2);
     expect(pending.current, isNull);
     expect(container.read(inviteJoinProvider).invite, same(second));
-    expect(find.text('Join this Buzz community?'), findsOneWidget);
+    expect(find.text('Join this aitaco community?'), findsOneWidget);
   });
 
   testWidgets('dispatches a queued channel after preparing an invite', (
     tester,
   ) async {
     const invite = InviteDeepLink(
-      relayUrl: 'wss://relay.example.com',
+      relayUrl: 'wss://buzz.aitaco.co',
       code: 'invite-code',
     );
     const channelLink = ChannelDeepLink(channelId: 'channel-1');
@@ -541,7 +541,7 @@ void main() {
 
     expect(pending.consumeCalls, 1);
     expect(pending.current, same(channelLink));
-    expect(find.text('Join this Buzz community?'), findsOneWidget);
+    expect(find.text('Join this aitaco community?'), findsOneWidget);
     expect(find.byType(_CapturedDestination), findsNothing);
 
     await tester.tap(find.widgetWithText(OutlinedButton, 'Cancel'));
@@ -565,7 +565,7 @@ void main() {
           pendingDeepLinkProvider.overrideWith(
             () => _FakePendingDeepLinkNotifier(
               const InviteDeepLink(
-                relayUrl: 'wss://relay.example.com',
+                relayUrl: 'wss://buzz.aitaco.co',
                 code: 'invite-code',
               ),
             ),
@@ -587,7 +587,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.text('Join this Buzz community?'), findsOneWidget);
+      expect(find.text('Join this aitaco community?'), findsOneWidget);
       expect(inviteContainer.read(pendingDeepLinkProvider), isNull);
 
       final messageContainer = ProviderContainer(
@@ -628,7 +628,7 @@ void main() {
     tester,
   ) async {
     const invite = InviteDeepLink(
-      relayUrl: 'wss://relay.example.com',
+      relayUrl: 'wss://buzz.aitaco.co',
       code: 'invite-code',
     );
     final container = ProviderContainer(

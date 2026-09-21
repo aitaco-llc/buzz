@@ -21,7 +21,7 @@ class _ConnectionSection extends ConsumerWidget {
           AppListRow(
             icon: LucideIcons.scanQrCode,
             title: 'Send identity to desktop',
-            subtitle: 'Scan a recovery code shown by Buzz Desktop',
+            subtitle: 'Scan a recovery code shown by aitaco Desktop',
             trailing: const _RowChevron(),
             onTap: () async {
               final pairing = ref.read(pairingProvider.notifier);
@@ -47,7 +47,7 @@ class _ConnectionSection extends ConsumerWidget {
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(
                         content: Text(
-                          'Buzz did not return to the foreground. Try again.',
+                          'aitaco did not return to the foreground. Try again.',
                         ),
                       ),
                     );

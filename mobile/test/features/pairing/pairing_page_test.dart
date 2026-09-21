@@ -12,7 +12,7 @@ import 'package:buzz/shared/security/sensitive_action_authorizer.dart';
 import 'package:buzz/shared/theme/theme.dart';
 import 'package:buzz/shared/widgets/buzz_loading_indicator.dart';
 import 'package:buzz/shared/widgets/ios_glass_navigation_button.dart';
-import 'package:buzz/shared/widgets/tappable_flapping_bee.dart';
+import 'package:buzz/shared/widgets/aitaco_mark.dart';
 
 import '../../helpers/widget_helpers.dart';
 
@@ -25,8 +25,8 @@ void main() {
         WidgetHelpers.testable(child: const PairingPage()),
       );
 
-      expect(find.byType(TappableFlappingBee), findsOneWidget);
-      expect(find.text('Welcome to Buzz'), findsOneWidget);
+      expect(find.byType(AitacoMark), findsOneWidget);
+      expect(find.text('Welcome to aitaco'), findsOneWidget);
       expect(find.text('Scan a QR code'), findsOneWidget);
       expect(find.text('Use pairing code'), findsOneWidget);
       expect(find.text('Connect'), findsNothing);
@@ -92,8 +92,8 @@ void main() {
       final backgroundGradient =
           backgroundDecoration.gradient! as LinearGradient;
       expect(backgroundGradient.colors, const [
-        Color(0xFFD7D72E),
-        Color(0xFFD7E7F6),
+        Color(0xFF71BEC4),
+        Color(0xFFE6F4F5),
       ]);
       expect(
         tester.widget<Scaffold>(find.byType(Scaffold)).backgroundColor,
@@ -102,7 +102,7 @@ void main() {
       expect(find.text('Confirm desktop code'), findsOneWidget);
       expect(
         find.text(
-          'Make sure the six-digit code matches on both devices. Your Buzz identity will transfer to this device. Only continue if you started this pairing from your desktop.',
+          'Make sure the six-digit code matches on both devices. Your aitaco identity will transfer to this device. Only continue if you started this pairing from your desktop.',
         ),
         findsOneWidget,
       );
@@ -122,7 +122,7 @@ void main() {
       );
 
       expect(find.byType(AppBar), findsNothing);
-      expect(find.text('Add Community'), findsNothing);
+      expect(find.text('Pair with Desktop'), findsNothing);
       expect(find.byIcon(LucideIcons.arrowLeft), findsNothing);
       expect(find.byKey(const Key('pairing-pop-scope')), findsOneWidget);
 
@@ -136,7 +136,7 @@ void main() {
       );
 
       expect(find.byType(AppBar), findsOneWidget);
-      expect(find.text('Add Community'), findsOneWidget);
+      expect(find.text('Pair with Desktop'), findsOneWidget);
       expect(find.byIcon(LucideIcons.arrowLeft), findsOneWidget);
     });
 
@@ -424,7 +424,7 @@ void main() {
         ),
       );
 
-      expect(find.textContaining('full Buzz identity'), findsOneWidget);
+      expect(find.textContaining('full aitaco identity'), findsOneWidget);
       expect(find.textContaining('permanent access'), findsOneWidget);
       expect(find.textContaining('started this recovery'), findsOneWidget);
       expect(find.text('Codes match'), findsOneWidget);
@@ -446,7 +446,7 @@ void main() {
       expect(find.text('Confirm desktop code'), findsOneWidget);
       expect(
         find.text(
-          'Make sure the six-digit code matches on both devices. Your Buzz identity will transfer to this device. Only continue if you started this pairing from your desktop.',
+          'Make sure the six-digit code matches on both devices. Your aitaco identity will transfer to this device. Only continue if you started this pairing from your desktop.',
         ),
         findsOneWidget,
       );
@@ -466,7 +466,7 @@ void main() {
 
       const onboardingInk = Color(0xFF111111);
       const onboardingMutedInk = Color(0xB3111111);
-      const onboardingCtaLabel = Color(0xFFD7E6F0);
+      const onboardingCtaLabel = Color(0xFFE6F4F5);
       final theme = AppTheme.dark();
       final protectionTile = tester.widget<CheckboxListTile>(
         find.byKey(const Key('protect-sensitive-actions-checkbox')),
@@ -563,7 +563,7 @@ void main() {
     ) async {
       const errorMessage = 'Identity confirmation failed. Nothing transferred.';
       const errorInk = Color(0xFF7A1025);
-      const gradientColors = [Color(0xFFD7D72E), Color(0xFFD7E7F6)];
+      const gradientColors = [Color(0xFF71BEC4), Color(0xFFE6F4F5)];
 
       for (final theme in [AppTheme.light(), AppTheme.dark()]) {
         await tester.pumpWidget(
@@ -620,7 +620,7 @@ void main() {
       expect(find.text('Confirm desktop code'), findsOneWidget);
       expect(find.textContaining('matches on both devices'), findsOneWidget);
       expect(
-        find.textContaining('Buzz identity will transfer'),
+        find.textContaining('aitaco identity will transfer'),
         findsOneWidget,
       );
       expect(find.text('Codes match'), findsOneWidget);

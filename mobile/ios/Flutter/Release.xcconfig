@@ -5,7 +5,7 @@
 // enterprise-signed distribution) override these without patching tracked
 // files by writing `mobile/ios/Flutter/AppOverrides.xcconfig` (gitignored).
 BUNDLE_IDENTIFIER = co.aitaco.buzz
-APP_DISPLAY_NAME = Buzz
+APP_DISPLAY_NAME = aitaco
 CODE_SIGN_STYLE = Automatic
 CODE_SIGN_IDENTITY = iPhone Developer
 BUZZ_DEVELOPMENT_TEAM = 5F7YLJS4YR
