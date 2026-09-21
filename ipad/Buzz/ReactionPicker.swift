@@ -137,7 +137,8 @@ struct ReactionPicker: View {
         selecting = false
       }
     } label: {
-      ReactionGlyph(value: value, url: url).frame(maxWidth: .infinity, minHeight: 48)
+      ReactionGlyph(value: value, url: url, auth: workspace.media).frame(
+        maxWidth: .infinity, minHeight: 48)
     }
     .buttonStyle(.bordered)
     .disabled(selecting)

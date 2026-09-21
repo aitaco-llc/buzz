@@ -37,7 +37,8 @@ struct PulseView: View {
                 showingComposer = true
               } label: {
                 VStack(alignment: .leading, spacing: 5) {
-                  HStack {
+                  HStack(spacing: 8) {
+                    Avatar(workspace: workspace, pubkey: note.pubkey, size: 24)
                     Text(workspace.name(note.pubkey)).font(.headline)
                     Spacer()
                     Text(

@@ -174,7 +174,8 @@ final class AppModel {
         community: account.community, identity: identity, authTag: credentials.authTag)
       let next = Workspace(
         account: account, identity: identity, store: store, relay: relay,
-        live: LiveRelay(community: account.community, identity: identity))
+        live: LiveRelay(community: account.community, identity: identity),
+        authTag: credentials.authTag)
       await next.reload()
       await NativePushBridge.refresh(workspace: next)
       guard generation == token else { return }
@@ -197,6 +198,11 @@ final class Workspace {
   let outbox: Outbox
   let live: (any LiveEventTransport)?
   let membershipManager: MembershipManager
+  /// Fetches relay-hosted media with Blossom `t=get` auth. Every image in the
+  /// app goes through this: the relay 401s an unauthenticated `/media/` read.
+  let media: MediaLoader
+  /// Resolves kind:0 into name, avatar and the verified agent marker.
+  let profiles = ProfileIndex()
   var events: [Event] = []
   var pulseEvents: [Event] = []
   var pulseLoading = false
@@ -235,7 +241,7 @@ final class Workspace {
 
   init(
     account: Account, identity: Identity, store: LocalStore, relay: any RelayTransport,
-    live: (any LiveEventTransport)? = nil
+    live: (any LiveEventTransport)? = nil, authTag: String? = nil
   ) {
     self.account = account
     self.identity = identity
@@ -244,6 +250,8 @@ final class Workspace {
     self.live = live
     outbox = Outbox(store: store, relay: relay)
     membershipManager = MembershipManager(store: store, relay: relay)
+    media = MediaLoader(
+      community: account.community, identity: identity, authTag: authTag)
     let key = "buzz.followed-threads.\(account.community.id).\(identity.pubkey)"
     followedThreads = Set(UserDefaults.standard.stringArray(forKey: key) ?? [])
   }
