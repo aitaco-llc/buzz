@@ -160,8 +160,12 @@ LAB_ANSWER_DELAY_S="${LAB_ANSWER_DELAY_S:-0}"
 # Lloyd's call 3e9686d6 — a seat that could not run — and it is the only way to
 # make the bridge's "has not picked this up yet" line happen on a real call
 # path rather than in a unit test.
+# LAB_SEAT=limited leaves the opt-in in place — the seat DOES wake — but its
+# agent refuses every turn the way a provider usage limit does. That exercises
+# the other half: buzz-acp must hold the trigger instead of retrying it to
+# death, and say so once in the ask's own thread.
 LAB_SEAT="${LAB_SEAT:-live}"
-case "${LAB_SEAT}" in live|silent) ;; *) echo "LAB_SEAT must be live or silent" >&2; exit 2;; esac
+case "${LAB_SEAT}" in live|silent|limited) ;; *) echo "LAB_SEAT must be live, silent or limited" >&2; exit 2;; esac
 LAB_PROGRESS_S="${LAB_PROGRESS_S:-10}"
 echo "${LAB_ANSWER_DELAY_S}" > "${RUN_DIR}/answer_delay_s"
 echo "${LAB_SEAT}" > "${RUN_DIR}/seat_mode"
@@ -203,6 +207,10 @@ TOML
 # be name=value"), and the seat we want is one that never opted in at all.
 SEAT_WAKE=(BUZZ_ACP_SELF_WAKE_TAG=voice-bridge=ask)
 [[ "${LAB_SEAT}" == "silent" ]] && SEAT_WAKE=()
+# Far enough out that the run never reaches it: this lab is about the hold
+# being taken and announced, not about the release.
+SEAT_RATE_LIMIT=""
+[[ "${LAB_SEAT}" == "limited" ]] && SEAT_RATE_LIMIT="$(( $(date +%s) + 3600 ))"
 NONCE="$(head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 echo "${NONCE}" > "${RUN_DIR}/nonce"
 env -i HOME="${HOME}" USER="${USER}" PATH="$(dirname "${BUZZ_BIN}"):/usr/bin:/bin" NO_COLOR=1 \
@@ -215,6 +223,7 @@ env -i HOME="${HOME}" USER="${USER}" PATH="$(dirname "${BUZZ_BIN}"):/usr/bin:/bi
   BUZZ_ACP_TURN_LOG_DIR="${RUN_DIR}/turnlog" \
   STUB_SEAT_LOG="${RUN_DIR}/seat-prompts.jsonl" STUB_SEAT_NONCE="${NONCE}" \
   STUB_SEAT_DELAY_SECS="${LAB_ANSWER_DELAY_S}" \
+  STUB_SEAT_RATE_LIMIT="${SEAT_RATE_LIMIT}" \
   RUST_LOG=buzz_acp=info \
   "${ACP_BIN}" >"${RUN_DIR}/seat.log" 2>&1 &
 PIDS+=($!)
