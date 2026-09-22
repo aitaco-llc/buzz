@@ -19,7 +19,9 @@ Run: python3 test_watchdog.py
 """
 
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -60,6 +62,67 @@ def skip(name: str, why: str) -> None:
 def judge(path: Path) -> list[dict]:
     sheet = json.loads(path.read_text())
     return watchdog.evaluate(sheet, {"keys": {}, "restarts": {}}, watchdog.roster())
+
+
+def check_ordering() -> None:
+    """Two turn files whose UUID order is the reverse of their mtime order.
+
+    `zzz...` sorts last by name but is written first and back-dated; `aaa...`
+    sorts first by name and is the newer file. A collector that trusts the name
+    reads the stale `allowed` report and concludes the fleet is fine while the
+    provider is refusing it.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "seat" / "turns" / "2026-09-22"
+        root.mkdir(parents=True)
+        # seats_on_disk() identifies a seat by its index/ directory, so a seat
+        # without one is invisible — which is itself worth knowing: a turn
+        # directory alone is not a seat.
+        (Path(tmp) / "seat" / "index").mkdir(parents=True)
+
+        def write(name: str, ts: str, status: str, resets: int, mtime: float) -> None:
+            rec = {
+                "kind": "acp_read",
+                "timestamp": ts,
+                "payload": {
+                    "params": {
+                        "update": {
+                            "sessionUpdate": "usage_update",
+                            "_meta": {
+                                "_claude/rateLimit": {
+                                    "status": status,
+                                    "rateLimitType": "five_hour",
+                                    "resetsAt": resets,
+                                }
+                            },
+                        }
+                    }
+                },
+            }
+            path = root / name
+            path.write_text(json.dumps(rec) + "\n")
+            os.utime(path, (mtime, mtime))
+
+        newest = watchdog.parse_ts("2026-09-22T00:40:00Z")
+        older = watchdog.parse_ts("2026-09-21T20:00:00Z")
+        # name-last, time-oldest, and quiet
+        write("zzzzzzzz.jsonl", "2026-09-21T20:00:00+00:00", "allowed", 1, older)
+        # name-first, time-newest, and refusing
+        write("aaaaaaaa.jsonl", "2026-09-22T00:40:00+00:00", "rejected", 1790038200, newest)
+
+        prev_root = watchdog.TURN_ROOT
+        watchdog.TURN_ROOT = Path(tmp)
+        try:
+            got = watchdog.latest_limit_report(watchdog.parse_ts("2026-09-22T00:52:00Z"))
+        finally:
+            watchdog.TURN_ROOT = prev_root
+
+    check(
+        "ordering: the newest file wins even when its name sorts first",
+        got is not None and got["report"].get("status") == "rejected",
+        f"picked {got['report'].get('status') if got else None} "
+        f"({watchdog.iso(got['ts']) if got else None})",
+    )
 
 
 def main() -> int:
@@ -290,6 +353,14 @@ def main() -> int:
                 if d.get("limitTurns")
             },
         )
+
+    # --- file ordering, which real bytes happen not to exercise -------------
+    # Turn files are named by UUID, so ordering them by name is not ordering
+    # them by time. On hip's actual logs the two orders agree by coincidence —
+    # the UUID-highest file is also the newest — so the mutation that restores
+    # the original bug survives every test above. The property is about
+    # ordering, so the case for it is constructed rather than captured.
+    check_ordering()
 
     # --- suppression must bound the blast radius ----------------------------
     state = {"keys": {}, "restarts": {}}

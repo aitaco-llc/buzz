@@ -116,6 +116,20 @@ returns — the reply landed at 15:22:35 and the turn closed at 15:22:44.9. The
 test deletes that reply from the same bytes and requires the detector to fire,
 so the fix cannot be "widen the grace until it goes quiet".
 
+### Proving the tests can fail
+
+    python3 mutants.py
+
+Breaks one thing at a time and requires the suite to go red for each: eight
+mutants, including both collection bugs from the first draft. A suite that has
+never seen the fault it guards is a clean sheet, not evidence.
+
+Two of those mutants survived the whole fixture suite when they were first
+re-introduced, which is why `test_watchdog.py` also tests `collect()` directly
+and carries one constructed ordering case: on hip's real logs the UUID-highest
+turn file happens also to be the newest, so real bytes cannot exercise the
+ordering at all.
+
 ## Install (hip)
 
     install -Dm755 watchdog.py ~/.local/libexec/fleet-watchdog/watchdog.py
