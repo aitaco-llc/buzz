@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The metal half of the watchdog.
+
+  Each body watches itself. This one reads the Mac's own turn logs and posts
+  into the same #fleet-health channel, so findings cross bodies as messages
+  rather than as SSH. That is not a stylistic choice: ~/.buzz is per-body, and
+  a path written on hip cannot be opened from the Mac or the reverse.
+
+  A sleeping Mac has a sleeping watchdog. That gap is covered from hip, whose
+  BODY_OFFLINE class reads relay presence — which is why the hip copy runs with
+  --relay and this one does not have to.
+
+  Install:
+    cp co.aitaco.fleet-watchdog.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/co.aitaco.fleet-watchdog.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>co.aitaco.fleet-watchdog</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string>
+    <string>bash</string>
+    <string>-lc</string>
+    <!-- launchd gives a job almost no environment, and it does not read an
+         EnvironmentFile the way systemd does. Sourcing the same 0600 file the
+         systemd unit uses keeps one secret in one place on both bodies. -->
+    <string>set -a; . "$HOME/.config/aitaco/fleet-watchdog.env"; set +a; exec "$HOME/.local/libexec/fleet-watchdog/watchdog.py" --post --body metal</string>
+  </array>
+
+  <key>StartInterval</key>
+  <integer>600</integer>
+
+  <!-- Do not fire at load: the same reason the systemd timer waits five
+       minutes after boot. -->
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>LowPriorityIO</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/fleet-watchdog.out</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/fleet-watchdog.err</string>
+</dict>
+</plist>

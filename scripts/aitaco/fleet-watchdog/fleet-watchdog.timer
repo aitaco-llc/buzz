@@ -1,0 +1,21 @@
+[Unit]
+Description=Run fleet-watchdog every 10 minutes
+
+[Timer]
+# Five minutes after boot, not immediately: a reboot leaves every seat's
+# last turn orphaned by definition, and the watchdog would report the reboot
+# to a rock that is itself still starting.
+OnBootSec=5min
+OnUnitActiveSec=10min
+
+# The tick does not need to be on the minute, and letting systemd batch it
+# keeps it out of the way of whatever the seats are doing.
+AccuracySec=30s
+RandomizedDelaySec=60s
+
+# A laptop that was asleep should check once on waking rather than replay every
+# tick it missed.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
