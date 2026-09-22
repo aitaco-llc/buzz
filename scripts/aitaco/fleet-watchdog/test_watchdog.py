@@ -38,12 +38,23 @@ CLEAN = HERE / "fixtures" / "sheet-live-clean.json"
 RELAY = HERE / "fixtures" / "sheet-live-relay.json"
 
 failures: list[str] = []
+skipped: list[str] = []
 
 
 def check(name: str, ok: bool, detail: str = "") -> None:
     print(f"{'PASS' if ok else 'FAIL'}  {name}" + (f" — {detail}" if detail and not ok else ""))
     if not ok:
         failures.append(name)
+
+
+def skip(name: str, why: str) -> None:
+    """Announce a skip loudly and count it.
+
+    A test that silently skips when its inputs are absent reads exactly like a
+    test that passed, which is how a green sheet comes to mean nothing.
+    """
+    print(f"SKIP  {name} — {why}")
+    skipped.append(name)
 
 
 def judge(path: Path) -> list[dict]:
@@ -206,6 +217,57 @@ def main() -> int:
             ),
         )
 
+    # --- collect() itself, which no fixture can exercise --------------------
+    # The fixtures are sheets, so they test evaluate() and nothing else. Both
+    # of the real collection bugs — UUID ordering, and reading only the last
+    # record of a file — live in collect() and survived the entire fixture
+    # suite untouched. These read the body's own logs, so they only run where
+    # those logs are.
+    if not (watchdog.TURN_ROOT / "aldrin" / "turns" / "2026-09-22").is_dir():
+        skip("collect(): finds the 2026-09-22 limit report", "hip turn logs not present")
+    else:
+        at = watchdog.parse_ts("2026-09-22T00:52:00Z")
+        report = watchdog.latest_limit_report(at)
+        check("collect(): a rate-limit report is found at all", report is not None)
+        if report:
+            check(
+                "collect(): it is the refusal, not an earlier quiet report",
+                report["report"].get("status") == "rejected",
+                str(report["report"].get("status")),
+            )
+            check(
+                "collect(): with the real resetsAt",
+                report["report"].get("resetsAt") == 1790038200,
+                str(report["report"].get("resetsAt")),
+            )
+            check(
+                "collect(): dated inside the outage, not after it",
+                at - 21600 <= report["ts"] <= at,
+                watchdog.iso(report["ts"]),
+            )
+        # A live collection must agree with the fixture that was captured from
+        # it, or --check is replaying something the collector no longer emits.
+        live = watchdog.collect(at, "hip", historical=True)
+        saved = json.loads(OUTAGE.read_text())
+        check(
+            "collect(): a fresh capture still matches the saved sheet",
+            (live.get("limitReport") or {}).get("report")
+            == (saved.get("limitReport") or {}).get("report"),
+        )
+        check(
+            "collect(): the same seats are still seen as refused",
+            {
+                s_: len(d.get("limitTurns", []))
+                for s_, d in live["seats"].items()
+                if d.get("limitTurns")
+            }
+            == {
+                s_: len(d.get("limitTurns", []))
+                for s_, d in saved["seats"].items()
+                if d.get("limitTurns")
+            },
+        )
+
     # --- suppression must bound the blast radius ----------------------------
     state = {"keys": {}, "restarts": {}}
     first = watchdog.suppress(judge(OUTAGE), state, 1790000000.0)
@@ -214,10 +276,12 @@ def main() -> int:
     check("an unchanged second tick raises nothing", second == [], str(len(second)))
 
     print()
+    if skipped:
+        print(f"{len(skipped)} SKIPPED (not passed): {', '.join(skipped)}")
     if failures:
         print(f"{len(failures)} failed: {', '.join(failures)}")
         return 1
-    print("all checks passed")
+    print(f"all {len(sys.argv) and 'checks'} passed" if not skipped else "no failures")
     return 0
 
 
