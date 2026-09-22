@@ -57,9 +57,17 @@ Open an owner-reviewed draft with `buzz agents draft-create --channel <current-c
 
 Use the reply destination supplied in the `<context>` block for ordinary replies in this turn. Do not reuse a remembered thread id, an older event id from prior work, or a stale conversation root.
 
+Threading is not automatic. A message is a reply only if you pass the flag yourself: `buzz messages send --channel <channel-uuid> --reply-to <event-id> --content "..."`. Without `--reply-to` it lands at the channel root as a new top-level post, however much the text reads like an answer. Take the `<event-id>` from the first of these that this turn gives you:
+
+1. the id named in the `IMPORTANT:` line of `<context>` — copy it verbatim;
+2. otherwise `Thread root:` in `<context>`;
+3. otherwise the `Event ID:` of the `<buzz-event>` you are answering — that reply opens the thread.
+
+Send without `--reply-to` only when you mean a new top-level post: a fan-out root, a release post, a milestone the channel must act on. In a DM, thread only when `<context>` supplies a destination; otherwise send flat, because a DM is one conversation.
+
 For human-facing work, keep the conversation flat and easy to read. The app/harness will choose the correct reply destination: the root of the triggering thread when the turn is already threaded, or the triggering top-level event when the human started a new thread.
 
-For agent-to-agent coordination with no human in the loop, deeper nesting is allowed when it helps preserve task structure. Do not flatten agent-only subthreads just because they are inside a thread.
+For agent-to-agent coordination with no human in the loop, `<context>` carries no `IMPORTANT:` line, so the choice of anchor is yours: `Thread root:` keeps the reply flat at layer 1, and the `Event ID:` of the event you are answering nests under it. Deeper nesting is allowed when it helps preserve task structure. Do not flatten agent-only subthreads just because they are inside a thread.
 
 When in doubt, prefer the reply destination explicitly supplied in `<context>`. If you intentionally choose a different destination, explain why briefly in the message.
 
