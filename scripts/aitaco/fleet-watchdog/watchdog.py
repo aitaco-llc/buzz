@@ -103,6 +103,15 @@ TAIL_BYTES = _secs("WATCHDOG_TAIL_BYTES", 262144)
 # triggers.
 LIMIT_TURN_LOOKBACK_SECS = _secs("WATCHDOG_LIMIT_TURN_LOOKBACK_SECS", 21600)
 
+# How long after boot to stay quiet. A reboot orphans every in-flight turn by
+# definition, so the first tick after one would report the reboot — to a chief
+# of staff whose own seat has not finished starting. A mention that lands
+# before a seat is listening is lost: buzz-acp replays only the five seconds
+# before its process start. The grace lives here rather than in the timer
+# because a timer's OnBootSec silently schedules nothing when the timer is
+# enabled after it has already elapsed.
+MIN_UPTIME_SECS = _secs("WATCHDOG_MIN_UPTIME_SECS", 300)
+
 TURN_ROOT = Path(os.environ.get("WATCHDOG_TURN_ROOT", Path.home() / ".local/state/buzz-turns"))
 STATE_PATH = Path(
     os.environ.get("WATCHDOG_STATE", Path.home() / ".local/state/fleet-watchdog/state.json")
@@ -127,6 +136,24 @@ LIMIT_HOLD_MARKER = "holding the seat on a provider usage limit"
 # ---------------------------------------------------------------------------
 # Time
 # ---------------------------------------------------------------------------
+
+
+def uptime_secs() -> float | None:
+    """Seconds since boot, or None where that cannot be read (macOS)."""
+    try:
+        return float(Path("/proc/uptime").read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        out = subprocess.run(
+            ["sysctl", "-n", "kern.boottime"], capture_output=True, text=True, timeout=10
+        ).stdout
+        sec = re.search(r"sec\s*=\s*(\d+)", out)
+        if sec:
+            return dt.datetime.now(dt.timezone.utc).timestamp() - float(sec.group(1))
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pass
+    return None
 
 
 def parse_ts(value: str | None) -> float | None:
@@ -1312,6 +1339,10 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--pulse", action="store_true", help="post a no-mention line when clean")
     ap.add_argument("--no-state", action="store_true", help="ignore and do not write state")
     ap.add_argument("--json", action="store_true", help="print findings as JSON")
+    ap.add_argument(
+        "--min-uptime", type=int, default=MIN_UPTIME_SECS,
+        help="stay quiet for this many seconds after boot (0 disables)",
+    )
     args = ap.parse_args(argv)
 
     people = roster()
@@ -1331,6 +1362,15 @@ def main(argv: list[str]) -> int:
         state = {"keys": {}, "restarts": {}}
         findings = evaluate(sheet, state, people)
         return report(findings, sheet, args, post_ok=False)
+
+    if args.post and args.min_uptime:
+        up = uptime_secs()
+        if up is not None and up < args.min_uptime:
+            print(
+                f"watchdog: {int(up)}s since boot, under the {args.min_uptime}s grace — "
+                "a reboot orphans every in-flight turn and the seats are still starting"
+            )
+            return 0
 
     now = dt.datetime.now(dt.timezone.utc).timestamp()
     historical = False

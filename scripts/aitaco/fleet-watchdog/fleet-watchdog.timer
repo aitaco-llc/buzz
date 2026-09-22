@@ -2,11 +2,11 @@
 Description=Run fleet-watchdog every 10 minutes
 
 [Timer]
-# Five minutes after boot, not immediately: a reboot leaves every seat's
-# last turn orphaned by definition, and the watchdog would report the reboot
-# to a rock that is itself still starting.
-OnBootSec=5min
-OnUnitActiveSec=10min
+# OnCalendar rather than OnBootSec+OnUnitActiveSec. The pair looks tidier and
+# schedules nothing when the timer is enabled after OnBootSec has already
+# elapsed — `systemctl list-timers` then prints NEXT as "-" and the watchdog
+# silently never runs, which is the exact failure it exists to catch.
+OnCalendar=*:0/10
 
 # The tick does not need to be on the minute, and letting systemd batch it
 # keeps it out of the way of whatever the seats are doing.

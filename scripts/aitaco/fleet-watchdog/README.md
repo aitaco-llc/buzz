@@ -82,7 +82,19 @@ leaving it to be remembered.
     watchdog.py --check FILE         judge a saved sheet offline
     watchdog.py --at ISO8601         reconstruct the sheet as of a past instant
 
-Exit codes: 0 clean, 10 findings raised, 1 bad input.
+Exit codes: 0 clean, 10 findings raised, 1 bad input. The systemd unit sets
+`SuccessExitStatus=10`, or every tick that found something would be logged as a
+failed unit and the watchdog would become the noisiest thing in the journal.
+
+`--post` stays quiet for the first five minutes after boot
+(`--min-uptime`). A reboot orphans every in-flight turn by definition, so the
+first tick after one would report the reboot to a chief of staff whose own seat
+has not finished starting — and a mention that lands before a seat is listening
+is lost, because `buzz-acp` replays only the five seconds before its process
+start. That grace is in the script rather than in the timer on purpose: a
+timer's `OnBootSec` silently schedules nothing when the timer is enabled after
+it has already elapsed, and `systemctl list-timers` then prints `NEXT` as `-`
+while the watchdog never runs. Which is the exact failure it exists to catch.
 
 `--at` is the one worth knowing about. Turn logs are timestamped, so the sheet
 for any past instant is reconstructible, and a detector can be shown firing on

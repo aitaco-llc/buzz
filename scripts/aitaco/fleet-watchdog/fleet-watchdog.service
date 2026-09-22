@@ -18,6 +18,11 @@ EnvironmentFile=%h/.config/aitaco/fleet-watchdog.env
 # mistaken for a harness rollout.
 ExecStart=%h/.local/libexec/fleet-watchdog/watchdog.py --post --relay
 
+# 10 means "findings were raised", which is a normal outcome and not a failure.
+# Without this systemd marks every tick that found something as failed, and the
+# watchdog's own unit becomes the noisiest thing in the journal.
+SuccessExitStatus=10
+
 # A tick that cannot finish in four minutes has found something pathological,
 # and a hung watchdog is worse than none: systemd would hold the slot and the
 # next tick would never run.
