@@ -245,6 +245,29 @@ def main() -> int:
                 at - 21600 <= report["ts"] <= at,
                 watchdog.iso(report["ts"]),
             )
+        # The invariant the UUID-ordering bug actually breaks is not "a report
+        # is found" — a stale one is still a report, and inside one window the
+        # status and resetsAt of every report are identical, so asserting those
+        # cannot see the difference. What the bug changes is WHICH report, and
+        # a stale one is how a lifted limit goes on being reported as in force.
+        # So: brute-force the true newest and require an exact match.
+        newest = None
+        for seat_dir in sorted(watchdog.TURN_ROOT.iterdir()):
+            for path in (seat_dir / "turns").glob("*/*.jsonl"):
+                hit = watchdog.report_in_file(path, at)
+                if hit and (newest is None or hit["ts"] > newest["ts"]):
+                    newest = hit | {"seat": seat_dir.name}
+        check(
+            "collect(): the report is the NEWEST one on the body, not merely one of them",
+            newest is not None
+            and report is not None
+            and abs(report["ts"] - newest["ts"]) < 0.001,
+            f"picked {watchdog.iso(report['ts']) if report else None} "
+            f"({report['seat'] if report else None}), newest is "
+            f"{watchdog.iso(newest['ts']) if newest else None} "
+            f"({newest['seat'] if newest else None})",
+        )
+
         # A live collection must agree with the fixture that was captured from
         # it, or --check is replaying something the collector no longer emits.
         live = watchdog.collect(at, "hip", historical=True)
