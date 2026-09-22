@@ -354,6 +354,126 @@ def main() -> int:
             },
         )
 
+    # --- the two classes a healthy fleet can never exercise -----------------
+    # DROPPED_TRIGGER and BODY_OFFLINE only fire on a fleet that is already
+    # broken, so the live fixture contains no instance of either. Untested,
+    # they would be two detectors nobody has ever seen work — which is the same
+    # as not having them. Each case is made by editing the real sheet in the
+    # one way that produces the fault.
+    people = watchdog.roster()
+
+    # 1. the p tag is stripped from a real mention: the client-side bug where a
+    #    follow-up in a thread renders @name and drops the tag.
+    sheet = json.loads(RELAY.read_text())
+    target = None
+    for ch, rows in sheet["relay"]["messages"].items():
+        for m in rows:
+            for name in watchdog.NAME_RE.findall(m.get("content", "")):
+                pub = (people.get(name) or {}).get("pubkey")
+                if pub and pub in watchdog.tags_of(m, "p") and m.get("pubkey") != pub:
+                    m["tags"] = [t for t in m["tags"] if not (t[0] == "p" and t[1] == pub)]
+                    target = name
+                    break
+            if target:
+                break
+        if target:
+            break
+    check("a dropped-tag case could be built from the live sheet", bool(target))
+    if target:
+        got = [
+            f
+            for f in watchdog.evaluate(sheet, {"keys": {}, "restarts": {}}, people)
+            if f["class"] == "DROPPED_TRIGGER"
+        ]
+        check(
+            f"stripping the p tag for @{target} raises DROPPED_TRIGGER",
+            any(
+                f["evidence"]["seat"] == target and f["evidence"]["reason"] == "no p tag"
+                for f in got
+            ),
+            str([(f["evidence"]["seat"], f["evidence"]["reason"]) for f in got]),
+        )
+
+    # 2. the tag is there and the seat never turned it into a turn.
+    sheet = json.loads(RELAY.read_text())
+    victim = None
+    for ch, rows in sheet["relay"]["messages"].items():
+        for m in rows:
+            for name in watchdog.NAME_RE.findall(m.get("content", "")):
+                pub = (people.get(name) or {}).get("pubkey")
+                if not (pub and pub in watchdog.tags_of(m, "p")) or name not in sheet["seats"]:
+                    continue
+                d = sheet["seats"][name]
+                d["decisions"] = [x for x in d["decisions"] if x["eventId"] != m["id"]]
+                for t in d["recentTurns"] + d["openTurns"]:
+                    t["triggeringEventIds"] = [
+                        e for e in t["triggeringEventIds"] if e != m["id"]
+                    ]
+                victim = name
+                break
+            if victim:
+                break
+        if victim:
+            break
+    check("a silently-dropped-trigger case could be built", bool(victim))
+    if victim:
+        got = [
+            f
+            for f in watchdog.evaluate(sheet, {"keys": {}, "restarts": {}}, people)
+            if f["class"] == "DROPPED_TRIGGER"
+        ]
+        check(
+            f"a p-tag to @{victim} that never became a turn raises DROPPED_TRIGGER",
+            any(
+                f["evidence"]["seat"] == victim
+                and f["evidence"]["reason"] == "p tag present, no turn"
+                for f in got
+            ),
+            str([(f["evidence"]["seat"], f["evidence"]["reason"]) for f in got]),
+        )
+
+    # 3. a Mac that went to sleep with a mention waiting.
+    sheet = json.loads(RELAY.read_text())
+    mac = next(iter(sheet["relay"]["presence"]))
+    mac_pub = sheet["relay"]["presence"][mac]["pubkey"]
+    sheet["relay"]["presence"][mac] = {
+        "pubkey": mac_pub,
+        "status": "offline",
+        "updated_at": sheet["now"] - 4000,
+    }
+    channel = next(iter(sheet["relay"]["messages"]))
+    sheet["relay"]["messages"][channel].append(
+        {
+            "id": "f" * 64,
+            "pubkey": "0" * 64,
+            "created_at": int(sheet["now"] - 3000),
+            "content": f"@{mac}",
+            "tags": [["h", channel], ["p", mac_pub]],
+        }
+    )
+    got = [
+        f
+        for f in watchdog.evaluate(sheet, {"keys": {}, "restarts": {}}, people)
+        if f["class"] == "BODY_OFFLINE"
+    ]
+    check(
+        f"a sleeping {mac} with an unanswered mention raises BODY_OFFLINE",
+        any(f["evidence"]["seat"] == mac for f in got),
+        str([f["evidence"]["seat"] for f in got]),
+    )
+
+    # And the half that stops it being an alarm clock: offline with NOTHING
+    # waiting is somebody's evening, not an incident.
+    sheet["relay"]["messages"][channel] = [
+        m for m in sheet["relay"]["messages"][channel] if m["id"] != "f" * 64
+    ]
+    quiet = [
+        f
+        for f in watchdog.evaluate(sheet, {"keys": {}, "restarts": {}}, people)
+        if f["class"] == "BODY_OFFLINE"
+    ]
+    check("a sleeping body with no work waiting raises nothing", quiet == [])
+
     # --- file ordering, which real bytes happen not to exercise -------------
     # Turn files are named by UUID, so ordering them by name is not ordering
     # them by time. On hip's actual logs the two orders agree by coincidence —

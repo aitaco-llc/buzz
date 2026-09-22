@@ -121,6 +121,15 @@ Both fixtures are real captures, not fabrications:
   message keeps its id, pubkey, timestamp and tags, and its prose is reduced to
   the `@`-tokens the dropped-trigger detector actually reads.
 
+`DROPPED_TRIGGER` and `BODY_OFFLINE` only fire on a fleet that is already
+broken, so no healthy capture contains either. Untested they would be two
+detectors nobody had ever seen work, which is the same as not having them —
+each case is made by editing the real sheet in the one way that produces the
+fault: strip a `p` tag from a real mention, delete a real trigger from the
+seat's decision log, put a Mac to sleep with a mention waiting. `BODY_OFFLINE`
+carries its negative too: offline with nothing waiting is somebody's evening,
+not an incident.
+
 The relay fixture also carries the one false positive found in testing.
 `STRANDED_HANDOFF` fired on a seat that had in fact answered, because a seat
 publishes in the MIDDLE of its turn while its index row is written after it
@@ -132,7 +141,7 @@ so the fix cannot be "widen the grace until it goes quiet".
 
     python3 mutants.py
 
-Breaks one thing at a time and requires the suite to go red for each: eight
+Breaks one thing at a time and requires the suite to go red for each: twelve
 mutants, including both collection bugs from the first draft. A suite that has
 never seen the fault it guards is a clean sheet, not evidence.
 
