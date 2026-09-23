@@ -5257,6 +5257,14 @@ fn handle_prompt_result(
             &result.agent,
             &crate::config::normalize_agent_command_identity(&config.agent_command),
         );
+        // A turn that was cut off owes the room a line. Built here, where the
+        // stop reason is; published only if the relay says the turn left the
+        // thread empty (`spawn_turn_completion`). No model writes it, so a
+        // model that has run out of tool calls cannot fail to send it.
+        let early_stop = match &result.outcome {
+            PromptOutcome::Ok(stop_reason) => pool::EarlyStop::for_stop_reason(stop_reason),
+            _ => None,
+        };
         pool::spawn_turn_completion(
             rest,
             pool::TurnCompletion {
@@ -5264,6 +5272,7 @@ fn handle_prompt_result(
                 channel_id: result.source.channel_id(),
                 earns_answered: pool::earns_answered_reaction(&result.outcome),
                 receipt,
+                early_stop,
             },
         );
     }
