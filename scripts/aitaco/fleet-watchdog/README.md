@@ -213,7 +213,11 @@ Three rungs, and the message says which one it is on.
 3. **the owner** when there is no seat left to tell. Two conditions, either
    sufficient: a `WAKE_DEAD` names the escalation seat *itself* — a second
    fallback seat would not help, because every allowlist comes from the same
-   generator — or one has been standing, posted and unanswered, for two ticks.
+   generator — or one has been standing for two ticks **and is still losing
+   posts**. That last clause is load-bearing: the post dropped before a repair
+   stays in the two-hour relay window and the seat's routing log remembers
+   `author_gate` for it forever, so without it a fixed wake edge escalates to a
+   person twenty minutes after it was fixed.
    The message states the decision being asked for, because an allowlist change
    only takes effect on a seat's next start and nothing automated will do it.
 
@@ -240,7 +244,8 @@ Five rules, all in `suppress()` and `report()`:
 1. At most one message per tick.
 2. Each incident key is raised once, and again only when its severity climbs
    from notice to wake — the only change that asks for a different action. One
-   exception: a `WAKE_DEAD` still standing two ticks after it was posted is
+   exception: a `WAKE_DEAD` still standing two ticks after it was posted, and still
+   losing posts, is
    raised a second time, and only a second time.
 3. A limit still in force is a notice, not a wake. There is nothing to do until
    the window resets, because a re-kick cannot run either. The wake fires at

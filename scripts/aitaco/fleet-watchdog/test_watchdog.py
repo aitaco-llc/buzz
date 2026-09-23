@@ -859,18 +859,36 @@ def main() -> int:
     # rock's rung: raised to a seat that CAN read it, and still true two ticks
     # later. One extra message per incident, not one per tick.
     live = [f for f in wake_sheet() if f["class"] == "WAKE_DEAD"]
-    st = {"keys": {}, "restarts": {}}
     t0 = 1790000000.0
-    first = watchdog.suppress([dict(f) for f in live], st, t0)
-    quiet = watchdog.suppress([dict(f) for f in live], st, t0 + 600)
-    again = watchdog.suppress([dict(f) for f in live], st, t0 + 1200)
-    third = watchdog.suppress([dict(f) for f in live], st, t0 + 2400)
+
+    def ticks(last_lost):
+        """Raise the same incident four times, with a given newest loss."""
+        st = {"keys": {}, "restarts": {}}
+        out = []
+        for t in (t0, t0 + 600, t0 + 1200, t0 + 2400):
+            items = [dict(f, evidence=dict(f["evidence"], lastLostAt=last_lost(t)))
+                     for f in live]
+            out.append(watchdog.suppress(items, st, t))
+        return out
+
+    # Still losing: something p-tagged for that seat has gone missing since the
+    # alarm went out.
+    _first, quiet, again, third = ticks(lambda t: t - 30)
     check("a standing wake-dead is quiet on the next tick", quiet == [], str(len(quiet)))
     check("and comes back two ticks after it was posted",
           len(again) == 1 and again[0].get("ownerEscalation"), str(again))
     check("and only once", third == [], str(len(third)))
     check("the second raise is the one that reaches the owner",
           watchdog.owner_escalation(again))
+
+    # Repaired: the only lost post predates the alarm, and nothing has been
+    # lost since. This is the live case on 2026-09-23 — the drop at 20:10:57Z
+    # stays in the two-hour relay window, and the seat's routing log remembers
+    # `author_gate` for it forever, long after the allowlist was fixed. Waking
+    # a person about that is the one thing this rung must not do.
+    _f2, q2, a2, t3 = ticks(lambda t: t0 - 600)
+    check("a wake-dead that has stopped losing does not reach the owner",
+          (q2, a2, t3) == ([], [], []), str((len(q2), len(a2), len(t3))))
 
     # --- state is committed only by a run that delivered --------------------
     # `suppress` retires a key for a day the moment it hands it back, so the

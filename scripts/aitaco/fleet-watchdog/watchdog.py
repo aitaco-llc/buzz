@@ -1391,6 +1391,7 @@ def eval_wake_dead(sheet: dict, people: dict, now: float) -> list[dict]:
                 wakeIds=[m["id"] for m in posts],
                 firstLostIso=iso(posts[0].get("created_at")),
                 lastLostIso=iso(posts[-1].get("created_at")),
+                lastLostAt=posts[-1].get("created_at"),
                 link=(
                     f"buzz://message?channel={HEALTH_CHANNEL}&id={posts[-1]['id']}"
                 ),
@@ -1489,9 +1490,16 @@ def suppress(findings: list[dict], state: dict, now: float) -> list[dict]:
             item["class"] == "WAKE_DEAD"
             and not prior.get("escalatedToOwner")
             and now - (prior.get("posted") or now) >= WAKE_DEAD_ESCALATE_SECS
+            and (item["evidence"].get("lastLostAt") or 0) >= (prior.get("posted") or 0)
         ):
-            # Raised to a seat that can read it, and still true two ticks
-            # later. Nothing in the fleet is acting on it, so ask a person.
+            # Raised to a seat that can read it, still true two ticks later,
+            # and STILL LOSING: at least one post has gone missing since the
+            # alarm went out. Without that last clause a fixed wake edge keeps
+            # escalating, because the post that was dropped before the repair
+            # stays in the two-hour relay window and the seat's routing log
+            # remembers `author_gate` for it forever. Waking a person about a
+            # fault that has already been fixed is the one thing this rung
+            # must not do.
             item["firstSeen"] = prior.get("firstSeen", now)
             item["escalated"] = True
             item["ownerEscalation"] = True

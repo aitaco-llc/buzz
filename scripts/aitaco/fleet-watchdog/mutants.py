@@ -106,6 +106,11 @@ MUTANTS = [
  ("escalation: decide to wake the owner and then mention the seat anyway",
   None, None,
   ('            target = OWNER_PUBKEY', '            target = ESCALATE_PUBKEY')),
+ ("escalation: escalate a wake edge that has stopped losing — a person woken "
+  "about a fault that was already repaired",
+  None, None,
+  ('            and (item["evidence"].get("lastLostAt") or 0) >= (prior.get("posted") or 0)',
+   '            and True')),
 ]
 
 fails = 0
