@@ -84,6 +84,17 @@ STRANDED_SECS = _secs("WATCHDOG_STRANDED_SECS", 900)
 DROPPED_SECS = _secs("WATCHDOG_DROPPED_SECS", 300)
 # A remote body whose presence has been stale this long.
 BODY_OFFLINE_SECS = _secs("WATCHDOG_BODY_OFFLINE_SECS", 1800)
+# An open task with nobody accountable for it. Short on purpose: an unassigned
+# task is a tracker fault, not a queue position, and it is cheap to fix.
+TASK_UNASSIGNED_SECS = _secs("WATCHDOG_TASK_UNASSIGNED_SECS", 600)
+# The repository the tracker lives in. `buzz tasks board` derives every state
+# from public events; this script never reads `kind:44200`, which is
+# owner-scoped and would show every peer's task as Up Next forever.
+TASKS_REPO_OWNER = os.environ.get(
+    "WATCHDOG_TASKS_REPO_OWNER",
+    "41243293dd98372825e2c57bb2b44a100c36809a4339cf9bd564c9c33f8d5d0c",
+)
+TASKS_REPO_ID = os.environ.get("WATCHDOG_TASKS_REPO_ID", "aitaco-tasks")
 # How far back to read turn logs. Findings older than this are somebody's
 # history, not this tick's business.
 WINDOW_SECS = _secs("WATCHDOG_WINDOW_SECS", 7200)
@@ -684,7 +695,26 @@ def collect_relay(sheet: dict, people: dict[str, dict]) -> None:
         rows = buzz_json(["messages", "get", "--channel", channel, "--since", str(cutoff)])
         if isinstance(rows, list):
             messages[channel] = rows
-    sheet["relay"] = {"messages": messages, "presence": {}}
+    sheet["relay"] = {
+        "messages": messages,
+        "presence": {},
+        # `buzz tasks board --json` is the ONE derivation of board state
+        # (`crates/buzz-core/src/task_board.rs`, shared with Desktop through
+        # `test-fixtures/task-board-state.json`). A port of the rule into this
+        # script would be a third copy, and the one nobody would remember to
+        # update. An unreachable relay or an older `buzz` on PATH yields no
+        # rows and the task classes go quiet, which is the right failure: this
+        # script must never invent a finding out of its own ignorance.
+        "tasks": buzz_json(
+            [
+                "tasks", "board",
+                "--repo-owner", TASKS_REPO_OWNER,
+                "--repo-id", TASKS_REPO_ID,
+                "--json",
+            ]
+        )
+        or [],
+    }
 
     remote = [
         name
@@ -740,6 +770,7 @@ def evaluate(sheet: dict, state: dict, people: dict[str, dict]) -> list[dict]:
         out += eval_stranded(sheet, people, now)
         out += eval_dropped(sheet, people, now)
         out += eval_body_offline(sheet, people, now)
+        out += eval_tasks(sheet, people, now)
     return out
 
 
@@ -1081,6 +1112,102 @@ def eval_dropped(sheet: dict, people: dict, now: float) -> list[dict]:
                         )
                     )
     return out
+
+
+def eval_tasks(sheet: dict, people: dict, now: float) -> list[dict]:
+    """The two task classes: nobody accountable, and nobody moving.
+
+    Board state is not derived here. `buzz tasks board --json` already did it
+    with `buzz_core::task_board`, the same reducer Desktop reads, so this
+    function only applies the two things the board cannot know: whether the
+    assignee's seat is up, and whether it is mid-turn.
+
+    `stalledByClock` is the board's word and it is deliberately not the
+    finding. A seat that is down cannot answer a nudge — that is `UNIT_DOWN`,
+    raised separately — and a seat that is mid-turn is working, so nagging it
+    is the false alarm section 7 exists to avoid. Both suppressions are
+    readable only here, and only for hip seats: a Mac seat has no turn index
+    this body can see, so it gets no in-flight suppression and a nudge lands
+    behind its one slot.
+
+    Both findings post where the work is. The channel routing is the caller's;
+    this returns the finding and the thread it belongs in.
+    """
+    tasks = (sheet.get("relay") or {}).get("tasks") or []
+    if not tasks:
+        return []
+    by_pubkey = {
+        (info.get("pubkey") or "").lower(): name
+        for name, info in people.items()
+        if info.get("pubkey")
+    }
+    out = []
+    for task in tasks:
+        short = (task.get("id") or "")[:8]
+        subject = task.get("subject") or "(no subject)"
+        link = task_link(task)
+
+        if task.get("state") == "Unassigned":
+            if task.get("quietForSecs", 0) < TASK_UNASSIGNED_SECS:
+                continue
+            out.append(
+                finding(
+                    "TASK_UNASSIGNED", f"task-unassigned:{task.get('id')}", "wake",
+                    f"task {short} has had nobody accountable for "
+                    f"{int(task.get('quietForSecs', 0) / 60)} min: {subject}",
+                    taskId=task.get("id"), subject=subject, link=link,
+                )
+            )
+            continue
+
+        if not task.get("stalledByClock"):
+            continue
+        assignee = (task.get("assignee") or "").lower()
+        seat = by_pubkey.get(assignee)
+        # An assignee this body has never heard of is not a stall we can judge:
+        # we cannot see their seat, so we cannot tell working from stopped.
+        if seat is None:
+            continue
+        data = sheet["seats"].get(seat)
+        if data is None:
+            # A seat with no turn logs on this body — a Mac seat read from the
+            # roster. No suppression is available, so the clock stands.
+            pass
+        elif data.get("openTurns"):
+            # Mid-turn. It has published nothing yet, which is exactly why the
+            # board still reads Up Next; nagging it would be the false alarm.
+            continue
+        elif (data.get("unit") or {}).get("available") and (
+            data["unit"].get("activeState") != "active"
+        ):
+            # Down. UNIT_DOWN already says so, and a nudge it cannot read is
+            # noise on top of an outage.
+            continue
+        out.append(
+            finding(
+                "TASK_STALLED", f"task-stalled:{task.get('id')}", "wake",
+                f"{seat} has not moved task {short} for "
+                f"{int(task.get('quietForSecs', 0) / 3600)} h: {subject}",
+                taskId=task.get("id"), seat=seat, subject=subject, link=link,
+                quietForSecs=task.get("quietForSecs"),
+            )
+        )
+    return out
+
+
+def task_link(task: dict) -> str | None:
+    """An openable link to the task itself.
+
+    The `buzz://issue?...` form `buzz issues create` returns, which Buzz
+    Desktop and the phone render as a card. Lloyd asked for references a client
+    linkifies (`#buzz-platform` 94c61dfc), and a task id in backticks is not
+    one. Pointing at the issue rather than its thread needs no channel binding,
+    which a board row does not carry.
+    """
+    task_id = task.get("id")
+    if not task_id:
+        return None
+    return f"buzz://issue?id={task_id}&owner={TASKS_REPO_OWNER}&d={TASKS_REPO_ID}"
 
 
 def eval_body_offline(sheet: dict, people: dict, now: float) -> list[dict]:
