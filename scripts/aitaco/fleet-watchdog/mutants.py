@@ -85,6 +85,15 @@ MUTANTS = [
  ("wake-dead: report the silence without its cause",
   None, None,
   ('            return WAKE_LOST_DECISIONS.get(', '            return {}.get(')),
+ ("preflight: run half-blind when the CLI is missing, the way the unit did "
+  "before it carried its own PATH",
+  None, None,
+  ('    if (args.relay or args.post) and not args.check and buzz_on_path() is None:',
+   '    if False:')),
+ ("state: commit the suppression ladder whether or not anything was delivered "
+  "— the bug that ate the first real WAKE_DEAD",
+  None, None,
+  ('    if keeps_state and delivered:', '    if keeps_state:')),
 ]
 
 fails = 0
