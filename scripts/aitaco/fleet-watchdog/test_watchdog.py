@@ -71,6 +71,59 @@ def judge(path: Path) -> list[dict]:
     return watchdog.evaluate(sheet, {"keys": {}, "restarts": {}}, watchdog.roster())
 
 
+def check_health_channel_collected() -> None:
+    """The health channel is fetched even when no seat has a turn in it.
+
+    Every fixture here is an already-collected sheet, so a bug in what
+    `collect_relay` asks the relay for is invisible to all of them — the same
+    reason `check_ordering` exists. And this particular bug is self-concealing:
+    the channel goes uncollected exactly when no seat has run a turn in it,
+    which is the state a dead wake edge produces. The mutation run caught the
+    gap; this is the case that closes it.
+    """
+    asked: list[str] = []
+    real = watchdog.buzz_json
+
+    def fake(args, timeout=45):
+        if args[:2] == ["messages", "get"]:
+            asked.append(args[3])
+            return []
+        if args[:1] == ["users"]:
+            return [{"pubkey": "f0" * 32}]
+        return []
+
+    sheet = {
+        "now": 1790159400.0,
+        "seats": {
+            "rock": {
+                "recentTurns": [{"channelId": "11111111-1111-1111-1111-111111111111"}],
+                "openTurns": [],
+            }
+        },
+    }
+    watchdog.buzz_json = fake
+    try:
+        watchdog.collect_relay(sheet, {})
+    finally:
+        watchdog.buzz_json = real
+
+    check(
+        "the health channel is collected with no seat turn in it",
+        watchdog.HEALTH_CHANNEL in asked,
+        f"asked for {asked}",
+    )
+    check(
+        "and the seats' own channels still are",
+        "11111111-1111-1111-1111-111111111111" in asked,
+        f"asked for {asked}",
+    )
+    check(
+        "and our own pubkey is read back from the relay",
+        sheet["relay"]["self"] == "f0" * 32,
+        str(sheet["relay"].get("self")),
+    )
+
+
 def check_ordering() -> None:
     """Two turn files whose UUID order is the reverse of their mtime order.
 
@@ -613,6 +666,7 @@ def main() -> int:
     # the original bug survives every test above. The property is about
     # ordering, so the case for it is constructed rather than captured.
     check_ordering()
+    check_health_channel_collected()
 
     # --- WAKE_DEAD: the posts this script made that nobody ever read --------
     def wake_sheet(edit=None) -> list[dict]:
@@ -668,12 +722,19 @@ def main() -> int:
         # from the newest leaves the earlier one already past it. The first
         # draft of this control did exactly that and failed, which is the only
         # reason it is known to be able to.
+        #
+        # 600s is written out rather than derived from WAKE_DEAD_SECS. A
+        # control expressed in terms of the constant it is testing moves with
+        # that constant and can never catch a change to it — the second draft
+        # said `oldest + WAKE_DEAD_SECS - 60` and survived the mutant that sets
+        # the grace to zero. One timer tick is the property: a seat that is
+        # mid-turn has not had a chance yet.
         oldest = min(
             m["created_at"] for m in sheet["relay"]["messages"][watchdog.HEALTH_CHANNEL]
         )
-        sheet["now"] = oldest + watchdog.WAKE_DEAD_SECS - 60
+        sheet["now"] = oldest + 600
 
-    check("a wake younger than the grace is not judged",
+    check("a wake one tick old is not yet judged",
           not [f for f in wake_sheet(too_young) if f["class"] == "WAKE_DEAD"])
 
     def not_ours(sheet):
