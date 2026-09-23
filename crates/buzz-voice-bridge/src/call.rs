@@ -1092,6 +1092,32 @@ fn elide_audio(value: &Value) -> Value {
 /// One human-readable line about the call, with the transcript under it, in the
 /// parent channel. This is the artifact someone reads after a bad call, so it
 /// is posted whether the call ended cleanly or failed, and it names the log.
+/// The label a call-end post carries when it holds what was said.
+///
+/// A reader of the channel treats a tagged post as the humans' own words,
+/// spoken rather than typed — the only place huddle speech reaches the relay.
+/// An untagged call-end post is the bridge's own stats line and nothing more,
+/// so the tag goes on only when there is a transcript under it: a call nobody
+/// spoke in must not offer an empty transcript as if it were input.
+const HUDDLE_TRANSCRIPT_TAG: &str = "huddle-transcript";
+
+/// The call-end post, tagged when it carries the transcript.
+///
+/// Split out from [`post_outcome`] so the tagging rule can be tested without a
+/// relay, a room or a Gemini session.
+fn outcome_message(
+    parent: Uuid,
+    body: &str,
+    carries_transcript: bool,
+) -> std::result::Result<nostr::EventBuilder, buzz_sdk::SdkError> {
+    let builder = buzz_sdk::build_message(parent, body, None, &[], false, &[], &[])?;
+    if carries_transcript {
+        Ok(builder.tag(nostr::Tag::parse(["t", HUDDLE_TRANSCRIPT_TAG]).expect("static tag")))
+    } else {
+        Ok(builder)
+    }
+}
+
 async fn post_outcome(
     params: &CallParams,
     log: &mut CallLog,
@@ -1138,7 +1164,7 @@ async fn post_outcome(
         ));
     }
     let body: String = body.chars().take(60 * 1024).collect();
-    match buzz_sdk::build_message(params.parent, &body, None, &[], false, &[], &[]) {
+    match outcome_message(params.parent, &body, !transcript.is_empty()) {
         Ok(builder) => match params
             .publisher
             .publish(builder, Provenance::Transcript)
@@ -1794,5 +1820,43 @@ mod tests {
         assert_eq!(counts["timeouts"], 1);
         assert_eq!(counts["reconnects"], 3);
         assert_eq!(counts["errors"], 4);
+    }
+
+    /// The tag a task extractor keys on. A call-end post that carries the
+    /// transcript is huddle speech; one that does not is a stats line, and
+    /// tagging it would hand the extractor a message with nothing in it.
+    #[test]
+    fn only_a_call_end_post_with_words_under_it_is_tagged_as_huddle_speech() {
+        let keys = Keys::generate();
+        let parent = Uuid::new_v4();
+        let tags = |carries| {
+            outcome_message(parent, "Voice call ended", carries)
+                .expect("build")
+                .sign_with_keys(&keys)
+                .expect("sign")
+                .tags
+                .iter()
+                .map(|t| t.clone().to_vec())
+                .collect::<Vec<Vec<String>>>()
+        };
+
+        let with = tags(true);
+        assert!(
+            with.contains(&vec!["t".to_owned(), HUDDLE_TRANSCRIPT_TAG.to_owned()]),
+            "a post carrying the transcript must be findable by its label: {with:?}"
+        );
+        let without = tags(false);
+        assert!(
+            !without
+                .iter()
+                .any(|t| t.first().map(String::as_str) == Some("t")),
+            "a stats-only post must carry no label at all: {without:?}"
+        );
+        assert!(
+            without
+                .iter()
+                .any(|t| t.first().map(String::as_str) == Some("h")),
+            "both forms are still ordinary channel messages: {without:?}"
+        );
     }
 }
