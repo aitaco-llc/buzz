@@ -25,9 +25,21 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-import watchdog  # noqa: E402
 
 HERE = Path(__file__).parent
+
+# watchdog.py resolves seat names from two files outside this repository:
+# `~/dev/agents/deploy/seats.conf` and `~/.config/buzz-agents/pubkeys.txt`.
+# Neither exists on a CI runner, and without them every relay-backed class
+# finds no seats — so the suite went red away from hip and metal, which meant
+# there was no gate on this script anywhere. Pin both to the frozen copies in
+# `fixtures/roster/`, unconditionally: the sheets here are instants captured in
+# the past and the roster that gives them meaning is the one from then, not
+# whatever is on the machine running the test.
+os.environ["WATCHDOG_SEATS_CONF"] = str(HERE / "fixtures" / "roster" / "seats.conf")
+os.environ["WATCHDOG_PUBKEYS"] = str(HERE / "fixtures" / "roster" / "pubkeys.txt")
+
+import watchdog  # noqa: E402
 OUTAGE = HERE / "fixtures" / "sheet-2026-09-22T0052Z-limit-outage.json"
 # The same outage twenty-two minutes earlier, while the provider was still
 # refusing. The distinction is the whole point of the restart veto: at 00:52Z
@@ -38,6 +50,13 @@ CLEAN = HERE / "fixtures" / "sheet-live-clean.json"
 # message keeps its id, pubkey, timestamp and tags, and its prose is reduced to
 # the @-tokens the dropped-trigger detector actually reads.
 RELAY = HERE / "fixtures" / "sheet-live-relay.json"
+# hip as of 2026-09-23T10:30:00Z, while the watchdog's own key was absent
+# from every seat allowlist. rock's routing log carries `author_gate` for both
+# of the findings this script had posted into #fleet-health in that window, so
+# the sheet holds the fault and its cause together. Nothing in it is
+# constructed: the seat half is `--capture --at`, and the relay half is the two
+# real posts, tags and timestamps intact.
+WAKE_DEAD = HERE / "fixtures" / "sheet-2026-09-23T1030Z-wake-dead.json"
 
 failures: list[str] = []
 skipped: list[str] = []
@@ -62,6 +81,59 @@ def skip(name: str, why: str) -> None:
 def judge(path: Path) -> list[dict]:
     sheet = json.loads(path.read_text())
     return watchdog.evaluate(sheet, {"keys": {}, "restarts": {}}, watchdog.roster())
+
+
+def check_health_channel_collected() -> None:
+    """The health channel is fetched even when no seat has a turn in it.
+
+    Every fixture here is an already-collected sheet, so a bug in what
+    `collect_relay` asks the relay for is invisible to all of them — the same
+    reason `check_ordering` exists. And this particular bug is self-concealing:
+    the channel goes uncollected exactly when no seat has run a turn in it,
+    which is the state a dead wake edge produces. The mutation run caught the
+    gap; this is the case that closes it.
+    """
+    asked: list[str] = []
+    real = watchdog.buzz_json
+
+    def fake(args, timeout=45):
+        if args[:2] == ["messages", "get"]:
+            asked.append(args[3])
+            return []
+        if args[:1] == ["users"]:
+            return [{"pubkey": "f0" * 32}]
+        return []
+
+    sheet = {
+        "now": 1790159400.0,
+        "seats": {
+            "rock": {
+                "recentTurns": [{"channelId": "11111111-1111-1111-1111-111111111111"}],
+                "openTurns": [],
+            }
+        },
+    }
+    watchdog.buzz_json = fake
+    try:
+        watchdog.collect_relay(sheet, {})
+    finally:
+        watchdog.buzz_json = real
+
+    check(
+        "the health channel is collected with no seat turn in it",
+        watchdog.HEALTH_CHANNEL in asked,
+        f"asked for {asked}",
+    )
+    check(
+        "and the seats' own channels still are",
+        "11111111-1111-1111-1111-111111111111" in asked,
+        f"asked for {asked}",
+    )
+    check(
+        "and our own pubkey is read back from the relay",
+        sheet["relay"]["self"] == "f0" * 32,
+        str(sheet["relay"].get("self")),
+    )
 
 
 def check_ordering() -> None:
@@ -606,6 +678,99 @@ def main() -> int:
     # the original bug survives every test above. The property is about
     # ordering, so the case for it is constructed rather than captured.
     check_ordering()
+    check_health_channel_collected()
+
+    # --- WAKE_DEAD: the posts this script made that nobody ever read --------
+    def wake_sheet(edit=None) -> list[dict]:
+        sheet = json.loads(WAKE_DEAD.read_text())
+        if edit:
+            edit(sheet)
+        return watchdog.evaluate(sheet, {"keys": {}, "restarts": {}}, watchdog.roster())
+
+    def rock_decisions(sheet) -> list[dict]:
+        return sheet["seats"]["rock"]["decisions"]
+
+    found = [f for f in wake_sheet() if f["class"] == "WAKE_DEAD"]
+    check("wake-dead fires on the real author-gate capture", len(found) == 1, str(len(found)))
+    if found:
+        ev = found[0]["evidence"]
+        check("wake-dead names the allowlist, not just the silence",
+              "allowlist" in ev["reason"], ev["reason"])
+        check("wake-dead folds both lost posts into one incident",
+              ev["lostWakes"] == 2, str(ev["lostWakes"]))
+        check("wake-dead blames the seat that was named", ev["seat"] == "rock", ev["seat"])
+
+    # One fault, one finding: DROPPED_TRIGGER would otherwise report the same
+    # two posts, addressed to the seat just shown to be deaf.
+    check("dropped-trigger yields the health channel to wake-dead",
+          not [f for f in wake_sheet() if f["class"] == "DROPPED_TRIGGER"])
+
+    # --- and four ways it must stop firing ----------------------------------
+    # A check that has never been seen to fail is not evidence. Each of these
+    # changes exactly one thing in the captured sheet.
+
+    def queued(sheet):
+        for row in rock_decisions(sheet):
+            if row["decision"] == "author_gate":
+                row["decision"] = "queued"
+
+    check("a queued decision is not a dead wake",
+          not [f for f in wake_sheet(queued) if f["class"] == "WAKE_DEAD"])
+
+    def ran_a_turn(sheet):
+        ids = [m["id"] for m in sheet["relay"]["messages"][watchdog.HEALTH_CHANNEL]]
+        sheet["seats"]["rock"]["recentTurns"].append(
+            {"turnId": "t", "outcome": "ok", "scope": "thread",
+             "channelId": watchdog.HEALTH_CHANNEL, "completedAt": sheet["now"] - 60,
+             "startedAt": sheet["now"] - 120, "triggeringEventIds": ids,
+             "path": None, "events": 1}
+        )
+
+    check("a turn carrying the trigger clears it",
+          not [f for f in wake_sheet(ran_a_turn) if f["class"] == "WAKE_DEAD"])
+
+    def too_young(sheet):
+        # The OLDEST post, not the newest: the grace is per post, so judging
+        # from the newest leaves the earlier one already past it. The first
+        # draft of this control did exactly that and failed, which is the only
+        # reason it is known to be able to.
+        #
+        # 600s is written out rather than derived from WAKE_DEAD_SECS. A
+        # control expressed in terms of the constant it is testing moves with
+        # that constant and can never catch a change to it — the second draft
+        # said `oldest + WAKE_DEAD_SECS - 60` and survived the mutant that sets
+        # the grace to zero. One timer tick is the property: a seat that is
+        # mid-turn has not had a chance yet.
+        oldest = min(
+            m["created_at"] for m in sheet["relay"]["messages"][watchdog.HEALTH_CHANNEL]
+        )
+        sheet["now"] = oldest + 600
+
+    check("a wake one tick old is not yet judged",
+          not [f for f in wake_sheet(too_young) if f["class"] == "WAKE_DEAD"])
+
+    def not_ours(sheet):
+        sheet["relay"]["self"] = "0" * 64
+
+    check("posts by another key are not ours to judge",
+          not [f for f in wake_sheet(not_ours) if f["class"] == "WAKE_DEAD"])
+
+    # A seat with no routing record at all is a different cause and must still
+    # be reported — silence is the one case where "no evidence" is the finding.
+    def no_record(sheet):
+        ids = {m["id"] for m in sheet["relay"]["messages"][watchdog.HEALTH_CHANNEL]}
+        sheet["seats"]["rock"]["decisions"] = [
+            r for r in rock_decisions(sheet) if r["eventId"] not in ids
+        ]
+
+    unseen = [f for f in wake_sheet(no_record) if f["class"] == "WAKE_DEAD"]
+    check("a seat with no routing record at all still reports",
+          len(unseen) == 1 and unseen[0]["evidence"]["reason"] == watchdog.WAKE_UNSEEN,
+          str([f["evidence"]["reason"] for f in unseen]))
+
+    # The healthy fleet must stay quiet, or this class is worthless.
+    check("wake-dead is silent on the clean relay sheet",
+          not [f for f in judge(RELAY) if f["class"] == "WAKE_DEAD"])
 
     # --- suppression must bound the blast radius ----------------------------
     state = {"keys": {}, "restarts": {}}

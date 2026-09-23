@@ -135,6 +135,28 @@ ROCK_PUBKEY = os.environ.get(
 )
 ROCK_NAME = os.environ.get("WATCHDOG_WAKE_NAME", "rock")
 
+# How long a wake post may go unanswered before it counts as undelivered. Two
+# ticks of the 10-minute timer: one tick is not evidence, because a seat that
+# is mid-turn picks the trigger up when that turn ends.
+WAKE_DEAD_SECS = _secs("WATCHDOG_WAKE_DEAD_SECS", 1200)
+
+# Who to mention when a wake is dead. NOT the seat that is not answering —
+# that mention travels the exact path this class exists to report as broken.
+# Default is aldrin, who owns crates/buzz-acp and deploy/fill-allowlists.sh in
+# aitaco-llc/agents, the two places a dead wake edge is ever fixed.
+ESCALATE_PUBKEY = os.environ.get(
+    "WATCHDOG_ESCALATE_PUBKEY",
+    "2c4a588af493bfe42eb50df429aed6f0945eaeb70034fc655df22e2e4bf138dc",
+)
+ESCALATE_NAME = os.environ.get("WATCHDOG_ESCALATE_NAME", "aldrin")
+
+# An out-of-band leg for the case where the escalation seat's own wake edge is
+# dead too. A DM conversation id, opened ONCE by a person (`buzz dms open
+# --pubkey <owner>` as this key) and pasted into fleet-watchdog.env. This
+# script will not open one itself: a DM is outward-facing and a timer should
+# not decide on its own to start a conversation in someone's client.
+OWNER_DM_CHANNEL = os.environ.get("WATCHDOG_OWNER_DM_CHANNEL", "").strip()
+
 # The marker string that only a binary carrying buzz#58 contains. Probing the
 # running binary for it beats keeping a sha-to-commit map: the map goes stale
 # silently, and `/proc/<pid>/exe` is still readable after the file it came from
@@ -690,14 +712,29 @@ def collect_relay(sheet: dict, people: dict[str, dict]) -> None:
         for t in seat["recentTurns"] + seat["openTurns"]
         if t.get("channelId")
     }
+    # Always the health channel, even when no seat has a turn in it — which is
+    # exactly the state a dead wake edge produces, so deriving the channel set
+    # from seat activity alone made this script blind to its own posts.
+    channels.add(HEALTH_CHANNEL)
     messages: dict[str, list] = {}
     for channel in sorted(channels):
         rows = buzz_json(["messages", "get", "--channel", channel, "--since", str(cutoff)])
         if isinstance(rows, list):
             messages[channel] = rows
+    # Our own pubkey, so WAKE_DEAD can pick this script's posts out of the
+    # health channel. Read from the relay rather than configured, so it cannot
+    # drift from the key the posts are actually signed with.
+    me = buzz_json(["users", "get"])
+    self_pubkey = None
+    if isinstance(me, list) and me:
+        self_pubkey = me[0].get("pubkey")
+    elif isinstance(me, dict):
+        self_pubkey = me.get("pubkey")
+
     sheet["relay"] = {
         "messages": messages,
         "presence": {},
+        "self": self_pubkey,
         # `buzz tasks board --json` is the ONE derivation of board state
         # (`crates/buzz-core/src/task_board.rs`, shared with Desktop through
         # `test-fixtures/task-board-state.json`). A port of the rule into this
@@ -771,6 +808,7 @@ def evaluate(sheet: dict, state: dict, people: dict[str, dict]) -> list[dict]:
         out += eval_dropped(sheet, people, now)
         out += eval_body_offline(sheet, people, now)
         out += eval_tasks(sheet, people, now)
+        out += eval_wake_dead(sheet, people, now)
     return out
 
 
@@ -1064,10 +1102,20 @@ def eval_dropped(sheet: dict, people: dict, now: float) -> list[dict]:
     decision log never turned it into a turn.
     """
     out = []
+    me = sheet["relay"].get("self")
     for channel, rows in sheet["relay"]["messages"].items():
         for msg in rows:
             age = now - msg.get("created_at", now)
             if age < DROPPED_SECS or age > WINDOW_SECS:
+                continue
+            if channel == HEALTH_CHANNEL and me and msg.get("pubkey") == me:
+                # Our own findings. They are a dropped trigger by this class's
+                # definition, and WAKE_DEAD reports them better: it names the
+                # routing decision that lost them instead of "no turn", folds a
+                # run of them into one incident, and mentions someone who can
+                # still hear us. Reporting both means two wake-ups for one
+                # fault, and the DROPPED_TRIGGER half would be addressed to the
+                # seat that has just been shown to be deaf.
                 continue
             ptags = tags_of(msg, "p")
             for name in set(NAME_RE.findall(msg.get("content", ""))):
@@ -1210,6 +1258,111 @@ def task_link(task: dict) -> str | None:
     return f"buzz://issue?id={task_id}&owner={TASKS_REPO_OWNER}&d={TASKS_REPO_ID}"
 
 
+# The four verdicts buzz-acp records for an inbound channel event
+# (`RoutingDecision`, crates/buzz-acp/src/turn_log.rs:81-84). `queued` means
+# the wake edge worked and anything after it belongs to another class here.
+WAKE_LOST_DECISIONS = {
+    "author_gate": "the seat's allowlist does not admit this key",
+    "no_rule_matched": "no subscription rule in the seat matched the post",
+    "dropped_scope_busy": "the seat was busy on that scope and dropped it",
+}
+WAKE_UNSEEN = "the seat has no routing record for it at all"
+
+
+def wake_landed(data: dict, event_id: str) -> bool:
+    """Did this post become, or is it becoming, a turn on that seat?"""
+    for turn in data.get("recentTurns", []) + data.get("openTurns", []):
+        if event_id in (turn.get("triggeringEventIds") or []):
+            return True
+    for row in data.get("decisions", []):
+        if row.get("eventId") == event_id and row.get("decision") == "queued":
+            return True
+    return False
+
+
+def wake_cause(data: dict, event_id: str) -> str:
+    for row in data.get("decisions", []):
+        if row.get("eventId") == event_id:
+            return WAKE_LOST_DECISIONS.get(
+                row.get("decision"), f"the seat recorded `{row.get('decision')}`"
+            )
+    return WAKE_UNSEEN
+
+
+def eval_wake_dead(sheet: dict, people: dict, now: float) -> list[dict]:
+    """A wake this script published that never reached the seat it named.
+
+    Detection is the cheap half of a watchdog and delivery is the half that
+    actually fails. Between 2026-09-22T16:18Z and 2026-09-23T14:51Z this
+    script posted 12 findings into #fleet-health, 11 of them p-tagging rock,
+    and rock ran zero turns in that channel on any day it has an index for.
+    Every post was accepted by the relay; every one was dropped by the seat's
+    author gate, because a service key is neither a seat nor a human and
+    `deploy/fill-allowlists.sh` in aitaco-llc/agents built allowlists out of
+    exactly those two categories. `post()` read the relay's `accepted: true`
+    as delivery, which it is not.
+
+    So this class closes the loop on the script's own output: read back what we
+    published, and for each post older than WAKE_DEAD_SECS ask the named seat's
+    own routing log what it did with it. Nothing here is remembered in state —
+    the relay is the record of what we posted and the seat's turn log is the
+    record of what it did, and both survive losing the state file.
+    """
+    relay = sheet.get("relay") or {}
+    me = relay.get("self")
+    if not me:
+        return []  # cannot tell our posts from anyone else's; say nothing
+
+    by_key = {
+        info["pubkey"]: name for name, info in people.items() if info.get("pubkey")
+    }
+
+    # (seat, cause) -> the posts it lost. One incident per seat per cause, not
+    # one per post: a wake edge that is down loses every post until it is
+    # fixed, and 12 identical findings is 12 wake-ups for one fault.
+    lost: dict[tuple[str, str], list[dict]] = {}
+    for post in relay.get("messages", {}).get(HEALTH_CHANNEL, []):
+        if post.get("pubkey") != me:
+            continue
+        created = post.get("created_at")
+        if created is None or now - created < WAKE_DEAD_SECS:
+            continue  # too young to judge; a mid-turn seat has not got to it
+        for target in tags_of(post, "p"):
+            seat = by_key.get(target)
+            if not seat:
+                continue  # not a seat we know; nothing to check it against
+            data = sheet["seats"].get(seat)
+            if data is None:
+                continue  # a seat on the other body — its own watchdog judges it
+            if wake_landed(data, post["id"]):
+                continue
+            lost.setdefault((seat, wake_cause(data, post["id"])), []).append(post)
+
+    out = []
+    for (seat, cause), posts in sorted(lost.items()):
+        posts.sort(key=lambda m: m.get("created_at") or 0)
+        out.append(
+            finding(
+                "WAKE_DEAD",
+                f"wake-dead:{seat}:{cause}",
+                "wake",
+                f"{len(posts)} wake post(s) naming `{seat}` never became a turn — "
+                f"{cause}. Every other finding in this channel addressed to that "
+                f"seat has been going nowhere too.",
+                seat=seat,
+                reason=cause,
+                lostWakes=len(posts),
+                wakeIds=[m["id"] for m in posts],
+                firstLostIso=iso(posts[0].get("created_at")),
+                lastLostIso=iso(posts[-1].get("created_at")),
+                link=(
+                    f"buzz://message?channel={HEALTH_CHANNEL}&id={posts[-1]['id']}"
+                ),
+            )
+        )
+    return out
+
+
 def eval_body_offline(sheet: dict, people: dict, now: float) -> list[dict]:
     """A body that is not there, with work waiting on it.
 
@@ -1335,6 +1488,9 @@ def rock_is_mid_turn(sheet: dict) -> bool:
 # ---------------------------------------------------------------------------
 
 ORDER = [
+    # WAKE_DEAD leads: if it is present, every other line in this message may
+    # be addressed to a seat that cannot hear it.
+    "WAKE_DEAD",
     "LIMIT_DEADLETTER", "LIMIT", "UNIT_DOWN", "ORPHAN", "STRANDED_HANDOFF",
     "DROPPED_TRIGGER", "BODY_OFFLINE", "UNIT_FLAPPING", "STALLED_TURN",
     "LIMIT_WARNING",
@@ -1351,9 +1507,14 @@ def render(findings: list[dict], sheet: dict) -> str:
     exactly one.
     """
     wake = [f for f in findings if f["severity"] == "wake"]
+    dead = [f for f in findings if f["class"] == "WAKE_DEAD"]
     lines = []
     head = f"**{len(findings)} finding(s)** on `{sheet['body']}` at {sheet['nowIso']}."
-    if wake:
+    if dead:
+        # Naming the silent seat here would send this down the one path we have
+        # just established does not work.
+        lines.append(f"@{ESCALATE_NAME} {head}")
+    elif wake:
         lines.append(f"@{ROCK_NAME} {head}")
     else:
         lines.append(head + " No action needed; posted without a mention.")
@@ -1368,6 +1529,19 @@ def render(findings: list[dict], sheet: dict) -> str:
         lines.append(f"**{item['class']}**{mark}{esc} — {item['summary']}")
         for line in evidence_lines(item):
             lines.append(f"  - {line}")
+        lines.append("")
+    if dead:
+        who = ", ".join(sorted({f["evidence"]["seat"] for f in dead}))
+        lines.append(
+            f"_Mentioning {ESCALATE_NAME} rather than {who}: a mention to {who} is "
+            f"the thing that is broken._"
+        )
+        if not OWNER_DM_CHANNEL:
+            lines.append(
+                "_No out-of-band escalation is configured. If "
+                f"{ESCALATE_NAME}'s wake edge is dead too, nothing here reaches a "
+                "human: set `WATCHDOG_OWNER_DM_CHANNEL` in fleet-watchdog.env._"
+            )
         lines.append("")
     lines.append(
         f"_Deterministic scan, no model involved. Key `{item_key_hint(findings)}`. "
@@ -1394,6 +1568,12 @@ def evidence_lines(item: dict) -> list[str]:
         if ev.get("ageSecs"):
             bits.append(f"open {human(ev['ageSecs'])}")
         out.append(", ".join(bits))
+    if ev.get("lostWakes"):
+        out.append(
+            f"{ev['lostWakes']} lost since {ev.get('firstLostIso')} "
+            "(relay accepted each one): "
+            + ", ".join(f"`{i[:8]}`" for i in ev.get("wakeIds", [])[:6])
+        )
     if ev.get("triggeringEventIds"):
         out.append(
             "triggers " + ", ".join(f"`{t[:8]}`" for t in ev["triggeringEventIds"][:4])
@@ -1439,10 +1619,21 @@ def evidence_lines(item: dict) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def post(text: str, mention: bool) -> dict | None:
-    args = ["messages", "send", "--channel", HEALTH_CHANNEL, "--content", "-"]
+def post(
+    text: str,
+    mention: bool,
+    mention_pubkey: str | None = None,
+    channel: str | None = None,
+) -> dict | None:
+    """Publish one message. `accepted` from the relay is NOT delivery.
+
+    Whether the seat named in the text ever ran a turn for it is the question
+    `eval_wake_dead` answers on a later tick, by reading this post back out of
+    the channel. Nothing here can tell.
+    """
+    args = ["messages", "send", "--channel", channel or HEALTH_CHANNEL, "--content", "-"]
     if mention:
-        args += ["--mention", ROCK_PUBKEY]
+        args += ["--mention", mention_pubkey or ROCK_PUBKEY]
     try:
         proc = subprocess.run(
             ["buzz", *args], input=text, capture_output=True, text=True, timeout=60
@@ -1579,9 +1770,14 @@ def report(findings: list[dict], sheet: dict, args, post_ok: bool) -> int:
 
     text = render(findings, sheet)
     wake = any(f["severity"] == "wake" for f in findings)
+    dead = [f for f in findings if f["class"] == "WAKE_DEAD"]
     if post_ok:
-        result = post(text, mention=wake)
+        result = post(text, mention=wake, mention_pubkey=ESCALATE_PUBKEY if dead else None)
         print(json.dumps(result) if result else "watchdog: post failed")
+        if dead and OWNER_DM_CHANNEL:
+            # suppress() has already decided this incident is worth one message,
+            # so this leg fires once per incident, not once per tick.
+            post(text, mention=False, channel=OWNER_DM_CHANNEL)
     elif not args.json:
         print(text)
     return 10
