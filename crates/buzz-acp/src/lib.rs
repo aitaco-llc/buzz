@@ -5986,6 +5986,20 @@ mod agent_draft_prompt_tests {
     }
 
     #[test]
+    fn shared_base_prompt_warns_that_double_quotes_expand_dollar_signs() {
+        // A model that writes `--content "the total is $5,328"` loses `$5` to
+        // the shell and delivers `,328`. Measured 3/3 reproducible on the k=3
+        // buzz-dataset `user-mention` task (RESEARCH/ROCK2_BAKEOFF_K3_2026-09-22.md),
+        // and the prompt warned only about the single-quote half of the hazard.
+        let prompt = include_str!("base_prompt.md");
+        assert!(prompt.contains("the shell expands `$` inside it"));
+        assert!(prompt.contains("$5,328"));
+        assert!(prompt.contains("`$5` is an unset positional parameter"));
+        assert!(prompt.contains("a backtick or `$(...)` there runs as a command"));
+        assert!(prompt.contains("quoted heredoc"));
+    }
+
+    #[test]
     fn shared_base_prompt_teaches_repo_context_and_learning_loop() {
         let prompt = include_str!("base_prompt.md");
         assert!(prompt.contains("read its root `AGENTS.md`"));
