@@ -38,6 +38,13 @@ CLEAN = HERE / "fixtures" / "sheet-live-clean.json"
 # message keeps its id, pubkey, timestamp and tags, and its prose is reduced to
 # the @-tokens the dropped-trigger detector actually reads.
 RELAY = HERE / "fixtures" / "sheet-live-relay.json"
+# hip as of 2026-09-23T10:30:00Z, while the watchdog's own key was absent
+# from every seat allowlist. rock's routing log carries `author_gate` for both
+# of the findings this script had posted into #fleet-health in that window, so
+# the sheet holds the fault and its cause together. Nothing in it is
+# constructed: the seat half is `--capture --at`, and the relay half is the two
+# real posts, tags and timestamps intact.
+WAKE_DEAD = HERE / "fixtures" / "sheet-2026-09-23T1030Z-wake-dead.json"
 
 failures: list[str] = []
 skipped: list[str] = []
@@ -606,6 +613,91 @@ def main() -> int:
     # the original bug survives every test above. The property is about
     # ordering, so the case for it is constructed rather than captured.
     check_ordering()
+
+    # --- WAKE_DEAD: the posts this script made that nobody ever read --------
+    def wake_sheet(edit=None) -> list[dict]:
+        sheet = json.loads(WAKE_DEAD.read_text())
+        if edit:
+            edit(sheet)
+        return watchdog.evaluate(sheet, {"keys": {}, "restarts": {}}, watchdog.roster())
+
+    def rock_decisions(sheet) -> list[dict]:
+        return sheet["seats"]["rock"]["decisions"]
+
+    found = [f for f in wake_sheet() if f["class"] == "WAKE_DEAD"]
+    check("wake-dead fires on the real author-gate capture", len(found) == 1, str(len(found)))
+    if found:
+        ev = found[0]["evidence"]
+        check("wake-dead names the allowlist, not just the silence",
+              "allowlist" in ev["reason"], ev["reason"])
+        check("wake-dead folds both lost posts into one incident",
+              ev["lostWakes"] == 2, str(ev["lostWakes"]))
+        check("wake-dead blames the seat that was named", ev["seat"] == "rock", ev["seat"])
+
+    # One fault, one finding: DROPPED_TRIGGER would otherwise report the same
+    # two posts, addressed to the seat just shown to be deaf.
+    check("dropped-trigger yields the health channel to wake-dead",
+          not [f for f in wake_sheet() if f["class"] == "DROPPED_TRIGGER"])
+
+    # --- and four ways it must stop firing ----------------------------------
+    # A check that has never been seen to fail is not evidence. Each of these
+    # changes exactly one thing in the captured sheet.
+
+    def queued(sheet):
+        for row in rock_decisions(sheet):
+            if row["decision"] == "author_gate":
+                row["decision"] = "queued"
+
+    check("a queued decision is not a dead wake",
+          not [f for f in wake_sheet(queued) if f["class"] == "WAKE_DEAD"])
+
+    def ran_a_turn(sheet):
+        ids = [m["id"] for m in sheet["relay"]["messages"][watchdog.HEALTH_CHANNEL]]
+        sheet["seats"]["rock"]["recentTurns"].append(
+            {"turnId": "t", "outcome": "ok", "scope": "thread",
+             "channelId": watchdog.HEALTH_CHANNEL, "completedAt": sheet["now"] - 60,
+             "startedAt": sheet["now"] - 120, "triggeringEventIds": ids,
+             "path": None, "events": 1}
+        )
+
+    check("a turn carrying the trigger clears it",
+          not [f for f in wake_sheet(ran_a_turn) if f["class"] == "WAKE_DEAD"])
+
+    def too_young(sheet):
+        # The OLDEST post, not the newest: the grace is per post, so judging
+        # from the newest leaves the earlier one already past it. The first
+        # draft of this control did exactly that and failed, which is the only
+        # reason it is known to be able to.
+        oldest = min(
+            m["created_at"] for m in sheet["relay"]["messages"][watchdog.HEALTH_CHANNEL]
+        )
+        sheet["now"] = oldest + watchdog.WAKE_DEAD_SECS - 60
+
+    check("a wake younger than the grace is not judged",
+          not [f for f in wake_sheet(too_young) if f["class"] == "WAKE_DEAD"])
+
+    def not_ours(sheet):
+        sheet["relay"]["self"] = "0" * 64
+
+    check("posts by another key are not ours to judge",
+          not [f for f in wake_sheet(not_ours) if f["class"] == "WAKE_DEAD"])
+
+    # A seat with no routing record at all is a different cause and must still
+    # be reported — silence is the one case where "no evidence" is the finding.
+    def no_record(sheet):
+        ids = {m["id"] for m in sheet["relay"]["messages"][watchdog.HEALTH_CHANNEL]}
+        sheet["seats"]["rock"]["decisions"] = [
+            r for r in rock_decisions(sheet) if r["eventId"] not in ids
+        ]
+
+    unseen = [f for f in wake_sheet(no_record) if f["class"] == "WAKE_DEAD"]
+    check("a seat with no routing record at all still reports",
+          len(unseen) == 1 and unseen[0]["evidence"]["reason"] == watchdog.WAKE_UNSEEN,
+          str([f["evidence"]["reason"] for f in unseen]))
+
+    # The healthy fleet must stay quiet, or this class is worthless.
+    check("wake-dead is silent on the clean relay sheet",
+          not [f for f in judge(RELAY) if f["class"] == "WAKE_DEAD"])
 
     # --- suppression must bound the blast radius ----------------------------
     state = {"keys": {}, "restarts": {}}

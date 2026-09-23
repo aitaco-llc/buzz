@@ -64,6 +64,27 @@ MUTANTS = [
  ("suppress: re-raise every finding on every tick",
   None, None,
   ('        prior = keys.get(item["key"])', '        prior = None')),
+ ("wake-dead: trust the relay's `accepted` and never check delivery",
+  None, None,
+  ('            if wake_landed(data, post["id"]):\n                continue',
+   '            if True:\n                continue')),
+ ("wake-dead: the original bug — derive channels from seat activity alone, "
+  "so a channel with no turns in it is invisible",
+  None, None,
+  ('    channels.add(HEALTH_CHANNEL)', '    pass')),
+ ("wake-dead: judge a post the instant it is made, before a mid-turn seat "
+  "could have got to it",
+  None, None,
+  ('WAKE_DEAD_SECS = _secs("WATCHDOG_WAKE_DEAD_SECS", 1200)',
+   'WAKE_DEAD_SECS = _secs("WATCHDOG_WAKE_DEAD_SECS", 0)')),
+ ("wake-dead: a queued decision counted as a loss",
+  None, None,
+  ('        if row.get("eventId") == event_id and row.get("decision") == "queued":\n'
+   '            return True',
+   '        if False:\n            return True')),
+ ("wake-dead: report the silence without its cause",
+  None, None,
+  ('            return WAKE_LOST_DECISIONS.get(', '            return {}.get(')),
 ]
 
 fails = 0
