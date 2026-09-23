@@ -201,6 +201,28 @@ per-body: a path written on hip cannot be opened from the Mac. A sleeping Mac
 has a sleeping watchdog, and that gap is covered from hip, whose `BODY_OFFLINE`
 class reads relay presence.
 
+### Who a finding is mentioned to
+
+Three rungs, and the message says which one it is on.
+
+1. **rock** for an ordinary wake. It sets priority and owns restarts.
+2. **aldrin** for a `WAKE_DEAD`, never the seat the finding is about — that
+   mention travels the exact path being reported as broken. aldrin owns
+   `crates/buzz-acp` and `deploy/fill-allowlists.sh`, the two places a wake
+   edge is ever repaired.
+3. **the owner** when there is no seat left to tell. Two conditions, either
+   sufficient: a `WAKE_DEAD` names the escalation seat *itself* — a second
+   fallback seat would not help, because every allowlist comes from the same
+   generator — or one has been standing, posted and unanswered, for two ticks.
+   The message states the decision being asked for, because an allowlist change
+   only takes effect on a seat's next start and nothing automated will do it.
+
+A DM leg (`WATCHDOG_OWNER_DM_CHANNEL`) still exists and still fires alongside
+rung 3 when configured. It is not required: rung 3 posts in `#fleet-health`,
+where the owner is a member, and a mention there notifies. The script will not
+open a DM conversation itself — that is outward-facing, and a timer should not
+start a conversation in someone's client.
+
 ## Identity
 
 The watchdog posts as its own key, minted on hip 2026-09-22, secret at
@@ -217,7 +239,9 @@ Five rules, all in `suppress()` and `report()`:
 
 1. At most one message per tick.
 2. Each incident key is raised once, and again only when its severity climbs
-   from notice to wake — the only change that asks for a different action.
+   from notice to wake — the only change that asks for a different action. One
+   exception: a `WAKE_DEAD` still standing two ticks after it was posted is
+   raised a second time, and only a second time.
 3. A limit still in force is a notice, not a wake. There is nothing to do until
    the window resets, because a re-kick cannot run either. The wake fires at
    `resetsAt + 60s` with the list of what was actually lost.

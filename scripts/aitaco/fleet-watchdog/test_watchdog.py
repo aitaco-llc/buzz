@@ -807,16 +807,77 @@ def main() -> int:
         os.environ["PATH"] = saved_path
         os.rmdir(blind)
 
+    # --- the last rung: when there is no seat left to tell ------------------
+    class Args:
+        json = False
+        pulse = False
+
+    # Nothing here is constructed. The two posts in the wake-dead fixture are
+    # `author_gate` in ALDRIN's routing log as well as rock's, because the
+    # watchdog's key was in no seat's allowlist at all — so retargeting the
+    # p tag to aldrin turns the same real capture into the case where the
+    # escalation seat is itself the one not answering.
+    ALDRIN = watchdog.ESCALATE_PUBKEY
+
+    def to_aldrin(sheet):
+        for m in sheet["relay"]["messages"][watchdog.HEALTH_CHANNEL]:
+            m["tags"] = [t if t[0] != "p" else ["p", ALDRIN] for t in m["tags"]]
+
+    self_named = [f for f in wake_sheet(to_aldrin) if f["class"] == "WAKE_DEAD"]
+    check("wake-dead fires on the escalation seat's own capture",
+          len(self_named) == 1 and self_named[0]["evidence"]["seat"] == "aldrin",
+          str([f["evidence"]["seat"] for f in self_named]))
+    check("a wake-dead naming the escalation seat goes to the owner",
+          watchdog.owner_escalation(self_named))
+    check("a wake-dead naming another seat does not",
+          not watchdog.owner_escalation([f for f in wake_sheet() if f["class"] == "WAKE_DEAD"]))
+
+    owner_sheet = json.loads(WAKE_DEAD.read_text())
+    text = watchdog.render(self_named, owner_sheet)
+    check("the owner message names the owner, not the deaf seat",
+          text.splitlines()[0].startswith(f"@{watchdog.OWNER_NAME} "), text.splitlines()[0])
+    check("and says what decision is owed", "decision you owe" in text)
+    check("and says an allowlist change needs a restart",
+          "next start" in text, text[-300:])
+
+    mentions = []
+    real_post = watchdog.post
+    try:
+        watchdog.post = lambda t, mention, mention_pubkey=None, channel=None: (
+            mentions.append(mention_pubkey) or {"accepted": True})
+        watchdog.report(self_named, owner_sheet, Args(), post_ok=True)
+        check("the owner is the pubkey actually mentioned",
+              mentions == [watchdog.OWNER_PUBKEY], str(mentions))
+        mentions.clear()
+        watchdog.report([f for f in wake_sheet() if f["class"] == "WAKE_DEAD"],
+                        owner_sheet, Args(), post_ok=True)
+        check("an ordinary wake-dead still goes to the escalation seat",
+              mentions == [watchdog.ESCALATE_PUBKEY], str(mentions))
+    finally:
+        watchdog.post = real_post
+
+    # rock's rung: raised to a seat that CAN read it, and still true two ticks
+    # later. One extra message per incident, not one per tick.
+    live = [f for f in wake_sheet() if f["class"] == "WAKE_DEAD"]
+    st = {"keys": {}, "restarts": {}}
+    t0 = 1790000000.0
+    first = watchdog.suppress([dict(f) for f in live], st, t0)
+    quiet = watchdog.suppress([dict(f) for f in live], st, t0 + 600)
+    again = watchdog.suppress([dict(f) for f in live], st, t0 + 1200)
+    third = watchdog.suppress([dict(f) for f in live], st, t0 + 2400)
+    check("a standing wake-dead is quiet on the next tick", quiet == [], str(len(quiet)))
+    check("and comes back two ticks after it was posted",
+          len(again) == 1 and again[0].get("ownerEscalation"), str(again))
+    check("and only once", third == [], str(len(third)))
+    check("the second raise is the one that reaches the owner",
+          watchdog.owner_escalation(again))
+
     # --- state is committed only by a run that delivered --------------------
     # `suppress` retires a key for a day the moment it hands it back, so the
     # state write is the act of retiring an incident. It used to happen on
     # every non-historical run, which meant a read-only `--relay` inspection
     # consumed the finding: at 2026-09-23T21:07:28Z one recorded the first real
     # WAKE_DEAD as posted, and the timer at 21:10:57Z published `clean`.
-    class Args:
-        json = False
-        pulse = False
-
     outage_sheet = json.loads(OUTAGE.read_text())
     outage_findings = judge(OUTAGE)
     assert outage_findings
