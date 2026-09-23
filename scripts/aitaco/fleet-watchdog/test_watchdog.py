@@ -314,6 +314,97 @@ def main() -> int:
             str(len(still_running)),
         )
 
+    # --- the two task classes ----------------------------------------------
+    # No fixture carries tasks: `aitaco-tasks` was minted empty on 2026-09-23
+    # and the board is the newest surface on the relay. So these build the
+    # sheet's `tasks` list directly — which is exactly what `buzz tasks board
+    # --json` returns, and the only thing this script reads about a task. The
+    # board's own derivation is tested against `test-fixtures/task-board-state.json`
+    # by `buzz-core` and by Desktop; what is under test HERE is the two
+    # suppressions the board cannot make.
+    def task_sheet(tasks, seat=None, **overrides):
+        # Patch the live sheet rather than replacing its `seats` map: the other
+        # detectors read fields a synthetic seat would not have, and a
+        # KeyError from one of them is not a task finding.
+        base = json.loads(RELAY.read_text())
+        base["relay"]["tasks"] = tasks
+        if seat is not None:
+            base["seats"].setdefault(seat, {"openTurns": [], "recentTurns": [],
+                                            "decisions": [], "unit": {"available": False}})
+            base["seats"][seat].update(overrides)
+        return base
+
+    def task_findings(sheet, cls):
+        return [
+            f
+            for f in watchdog.evaluate(sheet, {"keys": {}, "restarts": {}}, watchdog.roster())
+            if f["class"] == cls
+        ]
+
+    seat_name, seat_info = next(
+        ((n, i) for n, i in watchdog.roster().items() if i.get("pubkey")),
+        (None, None),
+    )
+    if seat_name is None:
+        skip("task classes", "no seat in the roster has a pubkey")
+    else:
+        pub = seat_info["pubkey"]
+
+        unassigned = {
+            "id": "a" * 64, "subject": "nobody owns this", "state": "Unassigned",
+            "assignee": None, "blockedBy": None, "createdAt": 0,
+            "activityAt": None, "quietForSecs": 3600,
+            "stalledByClock": False, "linkedThreads": [],
+        }
+        found = task_findings(task_sheet([unassigned]), "TASK_UNASSIGNED")
+        check("an open task with nobody accountable raises TASK_UNASSIGNED", len(found) == 1,
+              str(found))
+        check("the finding carries an openable link to the task",
+              found and found[0]["evidence"]["link"].startswith("buzz://issue?id="),
+              str(found[0]["evidence"].get("link")) if found else "no finding")
+
+        fresh = dict(unassigned, quietForSecs=60)
+        check("an unassigned task younger than the grace is left alone",
+              task_findings(task_sheet([fresh]), "TASK_UNASSIGNED") == [])
+
+        stalled = {
+            "id": "b" * 64, "subject": "nobody is moving this", "state": "Up Next",
+            "assignee": pub, "blockedBy": None, "createdAt": 0,
+            "activityAt": None, "quietForSecs": 6 * 3600,
+            "stalledByClock": True, "linkedThreads": [],
+        }
+        idle = dict(seat=seat_name, openTurns=[], unit={"available": False})
+        found = task_findings(task_sheet([stalled], **idle), "TASK_STALLED")
+        check(f"a stalled task on an idle seat raises TASK_STALLED ({seat_name})",
+              len(found) == 1, str(found))
+
+        # The two suppressions, which are the whole reason this lives here and
+        # not in the board command.
+        check("a seat mid-turn is not nudged — it has published nothing YET",
+              task_findings(
+                  task_sheet([stalled], seat=seat_name, openTurns=[{"turnId": "t", "triggeringEventIds": [], "startedAt": 0}]),
+                  "TASK_STALLED",
+              ) == [])
+
+        check("a seat that is down is not nudged — UNIT_DOWN already said so",
+              task_findings(
+                  task_sheet([stalled], seat=seat_name, openTurns=[],
+                             unit={"available": True, "activeState": "inactive"}),
+                  "TASK_STALLED",
+              ) == [])
+
+        check("a task the board did not call stalled is left alone",
+              task_findings(task_sheet([dict(stalled, stalledByClock=False)], **idle),
+                            "TASK_STALLED") == [])
+
+        unknown = dict(stalled, assignee="f" * 64)
+        check("a task assigned to a pubkey this body cannot see is not judged",
+              task_findings(task_sheet([unknown], **idle), "TASK_STALLED") == [])
+
+        check("an empty board raises nothing",
+              task_findings(task_sheet([]), "TASK_STALLED") == []
+              and task_findings(task_sheet([]), "TASK_UNASSIGNED") == [])
+
     # --- collect() itself, which no fixture can exercise --------------------
     # The fixtures are sheets, so they test evaluate() and nothing else. Both
     # of the real collection bugs — UUID ordering, and reading only the last
