@@ -997,7 +997,7 @@ test("project issue author rollover matches pull requests", async ({
   await installMockBridge(page);
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
-  await page.getByRole("button", { name: "Tasks", exact: true }).click();
+  await page.getByTestId("projects-section-issues").click();
   await page.getByRole("button", { name: "List layout" }).click();
 
   const row = page.locator('[data-testid^="projects-issue-row-"]').first();
@@ -1059,7 +1059,7 @@ test("project issues preserve partial results from aggregate queries", async ({
   await installMockBridge(page);
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
-  await page.getByRole("button", { name: "Tasks", exact: true }).click();
+  await page.getByTestId("projects-section-issues").click();
 
   await expect(
     page.getByRole("button", { name: /^View / }).first(),
@@ -2349,7 +2349,7 @@ test("selecting overview list rows switches the context pod to the cluster", asy
   await installMockBridge(page);
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
-  await page.getByRole("button", { name: "Tasks", exact: true }).click();
+  await page.getByTestId("projects-section-issues").click();
   await page.getByRole("button", { name: "List layout" }).click();
 
   const rows = page.locator('[data-testid^="projects-issue-row-"]');
@@ -2443,7 +2443,7 @@ test("selection restores a previously collapsed Projects context drawer", async 
   await installMockBridge(page);
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
-  await page.getByRole("button", { name: "Tasks", exact: true }).click();
+  await page.getByTestId("projects-section-issues").click();
   await page.getByRole("button", { name: "List layout" }).click();
 
   const toggle = page.getByTestId("projects-overview-context-toggle");

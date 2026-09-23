@@ -189,7 +189,7 @@ test("top-level project lists show metadata and overflow actions", async ({
     page.getByTestId("create-pull-request-repository"),
   ).toBeVisible();
   await page.keyboard.press("Escape");
-  await page.getByRole("button", { name: "Tasks", exact: true }).click();
+  await page.getByTestId("projects-section-issues").click();
   await page.getByTestId("projects-overview-create-issue").click();
   await expect(page.getByTestId("create-issue-repository")).toBeVisible();
   await page.keyboard.press("Escape");
@@ -208,7 +208,7 @@ test("top-level project lists show metadata and overflow actions", async ({
   ).toBeVisible();
   await page.keyboard.press("Escape");
 
-  await page.getByRole("button", { name: "Tasks", exact: true }).click();
+  await page.getByTestId("projects-section-issues").click();
   await expect(page.getByRole("button", { name: "Filter tasks" })).toHaveCount(
     0,
   );
