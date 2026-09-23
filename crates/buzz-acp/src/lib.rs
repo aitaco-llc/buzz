@@ -14,6 +14,7 @@ mod relay;
 pub mod relevance;
 mod scope;
 mod setup_mode;
+pub mod task_extract;
 mod turn_log;
 mod usage;
 
