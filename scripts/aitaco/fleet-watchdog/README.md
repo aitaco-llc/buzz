@@ -137,11 +137,16 @@ returns — the reply landed at 15:22:35 and the turn closed at 15:22:44.9. The
 test deletes that reply from the same bytes and requires the detector to fire,
 so the fix cannot be "widen the grace until it goes quiet".
 
-The suite must pass both with and without `buzz` on `PATH`, because the
-preflight in `main()` changes what a `--post` run does. CI is the without half
-— a runner has no fleet CLI — and hip is the with half. A test that reaches
-`main()` stubs `buzz_on_path` rather than trusting the machine it runs on; the
-first push of that test was green on hip and red on CI for exactly this.
+    python3 ci-sim.py
+
+runs the same suite in a runner-shaped environment: no fleet `buzz` on `PATH`,
+and a machine booted thirty seconds ago. Both are ambient facts about hip that
+a test can read by accident instead of reading the code — `main()`'s preflight
+refuses a `--post` run without the CLI, and its `--min-uptime` grace returns
+before anything is written. One pull request cost two red pushes to those two,
+neither visible from a passing local run. A test that reaches `main()` stubs
+`buzz_on_path` and passes `--min-uptime 0`; `ci-sim.py` is how you find out
+beforehand that it did not.
 
 ### Proving the tests can fail
 

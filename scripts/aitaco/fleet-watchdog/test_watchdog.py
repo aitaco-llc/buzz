@@ -868,7 +868,10 @@ def main() -> int:
         check("a dry run writes no state", writes == [], f"{len(writes)} write(s)")
         with contextlib.redirect_stdout(io.StringIO()):
             watchdog.post = lambda *a, **k: {"accepted": True}
-            watchdog.main(["--post"])
+            # --min-uptime 0: a CI runner booted minutes ago, and the grace
+            # would return before save_state. Second ambient dependency in one
+            # test; neither was visible from hip.
+            watchdog.main(["--post", "--min-uptime", "0"])
         check("a posting run writes state", len(writes) == 1, f"{len(writes)} write(s)")
     finally:
         watchdog.collect, watchdog.collect_relay = saved["collect"], saved["relay"]
