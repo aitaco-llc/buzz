@@ -3980,7 +3980,11 @@ async fn tokio_main() -> Result<()> {
                 // outcome should force someone to decide how it reads in the
                 // log rather than silently landing in an "other" bucket.
                 let outcome = match &result.outcome {
-                    PromptOutcome::Ok(_) => "ok",
+                    // Not a wildcard: `Ok` carries the stop reason, and four of
+                    // the five are not "ok". See `pool::ok_outcome_label` — an
+                    // exhausted turn recorded as `ok` is why three of Lloyd's
+                    // asks were dropped without anyone being able to see it.
+                    PromptOutcome::Ok(stop_reason) => pool::ok_outcome_label(stop_reason),
                     PromptOutcome::Error(_) => "error",
                     PromptOutcome::ProjectContextIndeterminate(_) => {
                         "project_context_indeterminate"
@@ -5253,6 +5257,14 @@ fn handle_prompt_result(
             &result.agent,
             &crate::config::normalize_agent_command_identity(&config.agent_command),
         );
+        // A turn that was cut off owes the room a line. Built here, where the
+        // stop reason is; published only if the relay says the turn left the
+        // thread empty (`spawn_turn_completion`). No model writes it, so a
+        // model that has run out of tool calls cannot fail to send it.
+        let early_stop = match &result.outcome {
+            PromptOutcome::Ok(stop_reason) => pool::EarlyStop::for_stop_reason(stop_reason),
+            _ => None,
+        };
         pool::spawn_turn_completion(
             rest,
             pool::TurnCompletion {
@@ -5260,6 +5272,7 @@ fn handle_prompt_result(
                 channel_id: result.source.channel_id(),
                 earns_answered: pool::earns_answered_reaction(&result.outcome),
                 receipt,
+                early_stop,
             },
         );
     }
@@ -5492,7 +5505,7 @@ fn handle_prompt_result(
     }
 
     let outcome_label = match &result.outcome {
-        PromptOutcome::Ok(_) => "ok",
+        PromptOutcome::Ok(stop_reason) => pool::ok_outcome_label(stop_reason),
         PromptOutcome::Error(_) => "error",
         PromptOutcome::ProjectContextIndeterminate(_) => "project_context_indeterminate",
         PromptOutcome::Timeout(TimeoutKind::Idle) => "idle_timeout",

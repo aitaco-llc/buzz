@@ -1280,7 +1280,7 @@ impl Default for EventQueue {
 }
 
 /// Parsed thread relationship from NIP-10 `e` tags.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ThreadTags {
     /// Root event ID (hex). Present for all thread replies.
     pub root_event_id: Option<String>,

@@ -1,0 +1,35 @@
+{
+  "_meta": {
+    "rebrand": {
+      "durationMs": 90642,
+      "inferenceMs": 79896,
+      "iterations": 40,
+      "model": "gemini-3.8-flash",
+      "sources": [],
+      "termination": {
+        "kind": "budget_exhausted",
+        "reason": "iteration limit reached (40)"
+      },
+      "toolCalls": 40,
+      "toolErrors": 0,
+      "toolMs": 10730,
+      "usage": {
+        "cachedReadTokens": 2083460,
+        "costUsd": 0.328479,
+        "inputTokens": 2275156,
+        "outputTokens": 1471,
+        "thoughtTokens": 6115,
+        "totalTokens": 2282742
+      }
+    }
+  },
+  "stopReason": "max_turn_requests",
+  "usage": {
+    "cachedReadTokens": 2083460,
+    "costUsd": 0.328479,
+    "inputTokens": 2275156,
+    "outputTokens": 1471,
+    "thoughtTokens": 6115,
+    "totalTokens": 2282742
+  }
+}

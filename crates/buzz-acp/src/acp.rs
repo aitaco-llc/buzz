@@ -4788,7 +4788,7 @@ mod tests {
         let script = r#"
             read -r REQ
             ID=$(printf '%s' "$REQ" | sed -E 's/.*"id":([0-9]+).*/\1/')
-            echo '{"jsonrpc":"2.0","id":'"$ID"',"result":{"stopReason":"end_turn","usage":{"inputTokens":5000,"outputTokens":200,"thoughtTokens":800,"cachedReadTokens":4096,"totalTokens":6000}}}'
+            echo '{"jsonrpc":"2.0","id":'"$ID"',"result":{"stopReason":"end_turn","usage":{"inputTokens":5000,"outputTokens":200,"thoughtTokens":800,"cachedReadTokens":4096,"totalTokens":6000,"costUsd":0.0123}}}'
             sleep 1
         "#;
         let (mut client, dir) = spawn_named_script("rebrand-acp", script).await;
@@ -4811,9 +4811,21 @@ mod tests {
         assert_eq!(usage.turn_output_tokens, Some(1_000));
         assert_eq!(usage.turn_total_tokens, Some(6_000));
         assert_eq!(usage.turn_cache_read_tokens, Some(4_096));
+        // `rebrand-acp` DOES send `usage.costUsd`, and has since rebrand
+        // `fcd9f15` (2026-09-21) — `crates/of-acp/src/outcome.rs` `usage()`.
+        // `PromptResponseUsage` has no field for it, so serde drops it and
+        // every rebrand seat's NIP-AM metric and NIP-AR receipt carries no
+        // cost. That is deliberate for now, not an oversight: the number is
+        // computed inside `of-acp` by `of::pricing::calculate_cost` against a
+        // hardcoded per-million table (`of/src/pricing.rs`), so it is
+        // manifest-estimated, and NIP-AM §Numeric validity forbids merging a
+        // manifest-estimated cost with a wire-reported one in an unlabeled
+        // field — which `TokenCounts::cost_usd` is. Ingesting it needs a
+        // provenance field first. The fixture carries `costUsd` so this stays
+        // a decision on the record rather than a field nobody noticed.
         assert_eq!(
             usage.turn_cost_usd, None,
-            "rebrand-acp reports no cost; a reader prices the tokens itself"
+            "rebrand-acp's own price estimate is dropped until cost carries provenance"
         );
         let _ = std::fs::remove_dir_all(dir);
     }

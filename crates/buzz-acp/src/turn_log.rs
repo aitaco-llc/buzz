@@ -241,6 +241,17 @@ impl TurnLog {
     }
 
     /// Record the harness's outcome label for a finished turn.
+    ///
+    /// The label is what an audit, the fleet watchdog and a post-mortem read,
+    /// and it is the only record of the turn's fate outside the raw JSONL. The
+    /// vocabulary the harness writes today: `ok` (and only for a turn that
+    /// reached `end_turn`), `exhausted`, `limited`, `refused`, `cancelled`,
+    /// `error`, `project_context_indeterminate`, `agent_exited`, `timeout`,
+    /// `cancel_drain_timeout`, plus `harness_exit`, which
+    /// [`finalize_all`](Writer::finalize_all) writes for every turn still open
+    /// when the process exits under it. `pool::ok_outcome_label` owns the first
+    /// five. Nothing here validates the string — a caller that invents a label
+    /// silently teaches every reader a word it does not know.
     pub fn outcome(&self, turn_id: &str, outcome: &str, scope: Option<String>) {
         self.sender.send(Msg::Outcome(Outcome {
             turn_id: turn_id.to_owned(),

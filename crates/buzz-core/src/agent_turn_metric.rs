@@ -59,6 +59,21 @@ pub enum StopReason {
     Cancelled,
     /// Turn ended with an error.
     Error,
+    /// The turn exhausted its per-turn request/iteration budget before the
+    /// model reached an end of turn.
+    ///
+    /// Fork extension beyond the five values NIP-AM names. It is safe by the
+    /// spec's own forward-compatibility rule — a consumer that has not heard of
+    /// it MUST read it as [`Unknown`](Self::Unknown), which is exactly what this
+    /// value used to be reported as. It earns its own name because an exhausted
+    /// turn is the one failure that looks identical to success from outside:
+    /// the harness returns `Ok`, and the seat may never have said a word.
+    MaxTurnRequests,
+    /// The model refused the turn.
+    ///
+    /// Fork extension, same compatibility argument as
+    /// [`MaxTurnRequests`](Self::MaxTurnRequests).
+    Refusal,
     /// Stop reason is unknown or unrecognized.
     Unknown,
 }
@@ -71,6 +86,8 @@ impl<'de> Deserialize<'de> for StopReason {
             "max_tokens" => StopReason::MaxTokens,
             "cancelled" => StopReason::Cancelled,
             "error" => StopReason::Error,
+            "max_turn_requests" => StopReason::MaxTurnRequests,
+            "refusal" => StopReason::Refusal,
             "unknown" => StopReason::Unknown,
             _ => StopReason::Unknown,
         })
