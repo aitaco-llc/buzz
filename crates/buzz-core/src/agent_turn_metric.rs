@@ -174,6 +174,28 @@ pub struct AgentTurnMetricPayload {
     /// treat omission as "price unknown".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pricing_identity: Option<PricingIdentity>,
+
+    /// The thread this turn served: the triggering message's NIP-10 root, or
+    /// the trigger itself when it was top-level.
+    ///
+    /// Fork extension. NIP-AM says a consumer MUST ignore unknown fields, so an
+    /// older reader is unaffected. It exists because a metric that says what a
+    /// turn cost and nothing about what it was for cannot be attributed: this
+    /// is the key that joins a turn to the task whose thread it ran in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_root: Option<String>,
+
+    /// The event that triggered the turn. Fork extension, same contract as
+    /// [`thread_root`](Self::thread_root).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub triggering_event_id: Option<String>,
+
+    /// Wall-clock milliseconds from the turn's start to this metric. Fork
+    /// extension. A turn that publishes more than one metric (an initial
+    /// message, then the turn proper) reports elapsed-so-far on each, so these
+    /// are not additive within a turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
 }
 
 fn default_delta_reliable() -> bool {
@@ -273,6 +295,9 @@ mod tests {
             delta_reliable: true,
             stop_reason: Some(StopReason::EndTurn),
             pricing_identity: None,
+            thread_root: None,
+            triggering_event_id: None,
+            duration_ms: None,
         }
     }
 
@@ -419,6 +444,9 @@ mod tests {
             delta_reliable: true,
             stop_reason: None,
             pricing_identity: None,
+            thread_root: None,
+            triggering_event_id: None,
+            duration_ms: None,
         }
     }
 
@@ -443,6 +471,9 @@ mod tests {
             delta_reliable: true,
             stop_reason: None,
             pricing_identity: None,
+            thread_root: None,
+            triggering_event_id: None,
+            duration_ms: None,
         }
     }
 
