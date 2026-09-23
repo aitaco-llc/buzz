@@ -137,6 +137,12 @@ returns — the reply landed at 15:22:35 and the turn closed at 15:22:44.9. The
 test deletes that reply from the same bytes and requires the detector to fire,
 so the fix cannot be "widen the grace until it goes quiet".
 
+The suite must pass both with and without `buzz` on `PATH`, because the
+preflight in `main()` changes what a `--post` run does. CI is the without half
+— a runner has no fleet CLI — and hip is the with half. A test that reaches
+`main()` stubs `buzz_on_path` rather than trusting the machine it runs on; the
+first push of that test was green on hip and red on CI for exactly this.
+
 ### Proving the tests can fail
 
     python3 mutants.py

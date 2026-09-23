@@ -851,13 +851,18 @@ def main() -> int:
 
     # End to end through main(): a --dry-run must leave the state file alone.
     saved = {"collect": watchdog.collect, "relay": watchdog.collect_relay,
-             "save": watchdog.save_state, "load": watchdog.load_state}
+             "save": watchdog.save_state, "load": watchdog.load_state,
+             "which": watchdog.buzz_on_path}
     writes = []
     try:
         watchdog.collect = lambda *a, **k: json.loads(OUTAGE.read_text())
         watchdog.collect_relay = lambda *a, **k: None
         watchdog.load_state = lambda: {"keys": {}, "restarts": {}}
         watchdog.save_state = lambda state: writes.append(state)
+        # A CI runner has no `buzz`, so the preflight above would refuse the
+        # --post run and this would test the refusal instead of the commit.
+        # It did, on the first push: green on hip, red on CI.
+        watchdog.buzz_on_path = lambda: "/nonexistent/buzz"
         with contextlib.redirect_stdout(io.StringIO()):
             watchdog.main(["--dry-run"])
         check("a dry run writes no state", writes == [], f"{len(writes)} write(s)")
@@ -868,6 +873,7 @@ def main() -> int:
     finally:
         watchdog.collect, watchdog.collect_relay = saved["collect"], saved["relay"]
         watchdog.save_state, watchdog.load_state = saved["save"], saved["load"]
+        watchdog.buzz_on_path = saved["which"]
         watchdog.post = real_post
 
     # --- suppression must bound the blast radius ----------------------------
