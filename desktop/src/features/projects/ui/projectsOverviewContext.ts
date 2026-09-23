@@ -315,7 +315,7 @@ export function projectsOverviewContext(
         {
           count: tasks.total,
           icon: "tasks",
-          label: "Tasks",
+          label: "Issues",
           section: "issues",
         },
         {
@@ -331,7 +331,7 @@ export function projectsOverviewContext(
           section: "issues",
         },
       ],
-      title: "Tasks",
+      title: "Issues",
     };
   }
 

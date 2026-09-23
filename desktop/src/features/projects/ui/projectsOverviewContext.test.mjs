@@ -207,12 +207,12 @@ test("tasks pod breaks down active and completed work", () => {
     pullRequests: [],
   });
 
-  assert.equal(context.title, "Tasks");
+  assert.equal(context.title, "Issues");
   assert.equal(context.action?.label, "Create task");
   assert.deepEqual(
     context.stats.map((stat) => [stat.label, stat.count]),
     [
-      ["Tasks", 3],
+      ["Issues", 3],
       ["Active", 1],
       ["Completed", 2],
     ],

@@ -2934,7 +2934,7 @@ test("project subsections do not paint backgrounds behind list or grid items", a
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
 
-  for (const section of ["Repositories", "Reviews", "Tasks"] as const) {
+  for (const section of ["Repositories", "Reviews", "Issues"] as const) {
     await page.getByRole("button", { name: section, exact: true }).click();
     await page.getByRole("button", { name: "List layout" }).click();
 
