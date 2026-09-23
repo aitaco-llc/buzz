@@ -1289,6 +1289,73 @@ fn build_git_issue_assignee_operation(
     Ok(EventBuilder::new(Kind::Custom(1), content).tags(tags))
 }
 
+/// What a task link note says about the thing it points at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitIssueLinkKind {
+    /// The turns in this thread belong to this issue. Written for the thread
+    /// an issue was created from, and by any seat that opens a fan-out for it.
+    TaskThread,
+    /// This issue waits on another issue. The blocker is named in the `mention`
+    /// tag, and the blocked issue leaves the default board to render under it.
+    BlockedBy,
+}
+
+impl GitIssueLinkKind {
+    /// The `t` label a reader keys on.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::TaskThread => "task-thread",
+            Self::BlockedBy => "blocked-by",
+        }
+    }
+}
+
+/// Build an issue link note (kind:1) — a labeled comment that points an issue
+/// at a working thread, or at the issue blocking it.
+///
+/// Tag layout, deliberately the same shape as an assignment note
+/// ([`build_git_issue_assignment`]): `["e", <issue>, "", "root"]`,
+/// `["a", <repo>]`, `["t", <label>]`, and `["e", <target>, "", "mention"]`.
+/// Same shape means the same trust rule — an issue's author, its repository's
+/// owner, or one of that repository's declared maintainers — and the same
+/// reducers, rather than a second parallel notion of a labeled note.
+///
+/// Carries no `h` tag, so it never enters a channel timeline: a link note is
+/// structure, not conversation, and the iPad's strict kind allowlist reads only
+/// what a channel page carries.
+///
+/// `target` is the thread root for [`TaskThread`](GitIssueLinkKind::TaskThread)
+/// and the blocking issue for [`BlockedBy`](GitIssueLinkKind::BlockedBy). It
+/// must not be the issue itself: an issue that links its own thread to itself,
+/// or blocks on itself, is a cycle a reader cannot resolve.
+pub fn build_git_issue_link(
+    repo: &GitRepoCoord,
+    issue_id: &str,
+    target_id: &str,
+    kind: GitIssueLinkKind,
+    content: &str,
+) -> Result<EventBuilder, SdkError> {
+    check_content(content, 64 * 1024)?;
+    let issue = check_hex_exact(issue_id, 64, "issue")?;
+    let target = check_hex_exact(target_id, 64, "link target")?;
+    if issue == target {
+        return Err(SdkError::InvalidInput(format!(
+            "an issue cannot be {} to itself",
+            kind.label()
+        )));
+    }
+    let a_value = repo.to_a_tag_value()?;
+
+    let tags = vec![
+        tag(&["e", &issue, "", "root"])?,
+        tag(&["a", &a_value])?,
+        tag(&["t", kind.label()])?,
+        tag(&["e", &target, "", "mention"])?,
+    ];
+
+    Ok(EventBuilder::new(Kind::Custom(1), content).tags(tags))
+}
+
 /// Status to apply to a patch or issue root (kind:1630/1631/1632/1633, NIP-34).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GitStatus {
@@ -3728,6 +3795,115 @@ mod tests {
         assert_eq!(vals.len(), 2);
         assert_eq!(vals[0], "https://relay.example.com/git/abc/multi-clone");
         assert_eq!(vals[1], "ssh://git@github.com/org/multi-clone.git");
+    }
+
+    /// A link note is read by the same trust rule and the same reducers as an
+    /// assignment, so it must carry the same shape: the issue as `root`, the
+    /// repo coordinate, the label, and the target as `mention`.
+    #[test]
+    fn git_issue_link_carries_the_assignment_shape() {
+        let owner = "a".repeat(64);
+        let repo = GitRepoCoord {
+            owner: owner.clone(),
+            id: "tasks".to_string(),
+        };
+        let issue = "b".repeat(64);
+        let thread = "c".repeat(64);
+
+        let ev = sign(
+            build_git_issue_link(
+                &repo,
+                &issue,
+                &thread,
+                GitIssueLinkKind::TaskThread,
+                "Working thread for this task",
+            )
+            .unwrap(),
+        );
+
+        assert_eq!(ev.kind.as_u16(), 1);
+        assert!(has_tag(&ev, "a", &format!("30617:{owner}:tasks")));
+        assert!(has_tag(&ev, "t", "task-thread"));
+        let e_tags: Vec<Vec<String>> = ev
+            .tags
+            .iter()
+            .map(|t| t.clone().to_vec())
+            .filter(|t| t.first().map(String::as_str) == Some("e"))
+            .collect();
+        assert_eq!(
+            e_tags,
+            vec![
+                vec!["e".into(), issue.clone(), String::new(), "root".into()],
+                vec!["e".into(), thread, String::new(), "mention".into()],
+            ],
+            "the issue is the root and the target is a mention, in that order"
+        );
+        assert!(
+            !ev.tags
+                .iter()
+                .any(|t| t.clone().to_vec().first().map(String::as_str) == Some("h")),
+            "a link note is structure, not conversation: no channel tag, so no \
+             channel timeline and nothing for the iPad's kind allowlist to read"
+        );
+    }
+
+    #[test]
+    fn git_issue_link_labels_a_blocker_differently() {
+        let repo = GitRepoCoord {
+            owner: "a".repeat(64),
+            id: "tasks".to_string(),
+        };
+        let ev = sign(
+            build_git_issue_link(
+                &repo,
+                &"b".repeat(64),
+                &"c".repeat(64),
+                GitIssueLinkKind::BlockedBy,
+                "waits on the relay deploy",
+            )
+            .unwrap(),
+        );
+        assert!(has_tag(&ev, "t", "blocked-by"));
+        assert!(!has_tag(&ev, "t", "task-thread"));
+    }
+
+    /// A self-link is a cycle no reader can resolve: a task blocked on itself
+    /// never leaves the board, and a thread that is its own task has no turns.
+    #[test]
+    fn git_issue_link_refuses_to_point_at_itself() {
+        let repo = GitRepoCoord {
+            owner: "a".repeat(64),
+            id: "tasks".to_string(),
+        };
+        let issue = "b".repeat(64);
+        for kind in [GitIssueLinkKind::TaskThread, GitIssueLinkKind::BlockedBy] {
+            let err = build_git_issue_link(&repo, &issue, &issue, kind, "").unwrap_err();
+            assert!(
+                format!("{err}").contains("cannot be"),
+                "{kind:?} produced {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn git_issue_link_rejects_a_target_that_is_not_an_event_id() {
+        let repo = GitRepoCoord {
+            owner: "a".repeat(64),
+            id: "tasks".to_string(),
+        };
+        for bad in ["", "not-hex", &"c".repeat(63), &"c".repeat(65)] {
+            assert!(
+                build_git_issue_link(
+                    &repo,
+                    &"b".repeat(64),
+                    bad,
+                    GitIssueLinkKind::TaskThread,
+                    ""
+                )
+                .is_err(),
+                "{bad:?} must not build"
+            );
+        }
     }
 
     #[test]

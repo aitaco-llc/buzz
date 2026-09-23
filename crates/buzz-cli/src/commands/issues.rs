@@ -374,6 +374,49 @@ pub async fn cmd_unassign_issue(
     .await
 }
 
+/// Publish a task link note: a thread whose turns belong to this issue, or the
+/// issue this one waits on.
+///
+/// Trust is the reader's problem, not this command's: the note is the same
+/// labeled kind:1 shape as an assignment, so a client applies the same rule to
+/// it (issue author, repo owner, or a declared maintainer) and ignores it
+/// otherwise. Publishing one you are not trusted for is therefore harmless and
+/// is not refused here — the same posture `buzz issues assign` takes.
+pub async fn cmd_link_issue(
+    client: &BuzzClient,
+    issue: &str,
+    repo_owner: &str,
+    repo_id: &str,
+    kind: buzz_sdk::GitIssueLinkKind,
+    target: &str,
+    content: Option<&str>,
+) -> Result<(), CliError> {
+    validate_hex64(issue)?;
+    validate_hex64(repo_owner)?;
+    validate_repo_id(repo_id)?;
+    validate_hex64(target)?;
+
+    let content = match content {
+        Some(value) => read_or_stdin(value)?,
+        None => match kind {
+            buzz_sdk::GitIssueLinkKind::TaskThread => "Working thread for this task".to_string(),
+            buzz_sdk::GitIssueLinkKind::BlockedBy => {
+                format!("Blocked by {}", &target[..8])
+            }
+        },
+    };
+    let repo = GitRepoCoord {
+        owner: repo_owner.to_string(),
+        id: repo_id.to_string(),
+    };
+    let builder =
+        buzz_sdk::build_git_issue_link(&repo, issue, target, kind, &content).map_err(sdk_err)?;
+    let event = client.sign_event(builder)?;
+    let resp = client.submit_event(event).await?;
+    println!("{resp}");
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn publish_issue_assignment_operation(
     client: &BuzzClient,
@@ -750,6 +793,28 @@ pub async fn dispatch(cmd: crate::IssuesCmd, client: &BuzzClient) -> Result<(), 
                 &repo_id,
                 &assignee,
                 label.as_deref(),
+            )
+            .await
+        }
+        IssuesCmd::Link {
+            issue,
+            repo_owner,
+            repo_id,
+            kind,
+            target,
+            content,
+        } => {
+            cmd_link_issue(
+                client,
+                &issue,
+                &repo_owner,
+                &repo_id,
+                match kind {
+                    crate::IssueLinkKindArg::Thread => buzz_sdk::GitIssueLinkKind::TaskThread,
+                    crate::IssueLinkKindArg::BlockedBy => buzz_sdk::GitIssueLinkKind::BlockedBy,
+                },
+                &target,
+                content.as_deref(),
             )
             .await
         }
