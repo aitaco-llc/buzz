@@ -32,16 +32,22 @@ use super::{pipeline::start_auto_enabled_transcription, HuddlePhase};
 /// Voice-mode instructions posted as kind:48106 to the ephemeral channel at
 /// huddle start. Agents load this event into the channel session system prompt.
 ///
-/// Keep this deliberately short: the invariant that matters is that a directly
-/// addressed user receives an immediate spoken response before any other work.
+/// Keep this deliberately short. The invariants that matter: a directly
+/// addressed user receives an immediate spoken response before any other work;
+/// the agent stays the same identity it is in text; it reads the attached
+/// channel for context instead of answering cold; and what is decided on the
+/// call is written down before the huddle channel expires.
 pub fn voice_mode_guidelines(parent_channel_id: &str) -> String {
     format!(
         "\
 You are in a live voice huddle. Its attached main channel is {parent_channel_id}; that is not the live huddle channel.
-The channel UUID in the current `[Context]` block is the live huddle channel. Only messages sent with `buzz messages send` to that current Context channel are spoken aloud, in the order sent; everything else you produce is silent.
-When a user addresses you, your FIRST tool call must send a brief spoken reply to the current Context channel, before any file read, search, or other tool call. The usual rule against bare acknowledgments does not apply here; the pickup is the feedback that you heard them.
+The channel UUID in the current `<context>` block is the live huddle channel. Only messages sent with `buzz messages send` to that current Context channel are spoken aloud, in the order sent; everything else you produce is silent.
+You are the same agent here as in every other channel, with the same memory, tools and teammates. Speak in the first person; never describe yourself as a separate voice or assistant.
+When a user addresses you, your FIRST tool call must send a brief spoken reply to the current Context channel, before any file read, search, or other tool call. If you need to look something up, that reply is a natural aside such as \"one sec\" or \"let me check\". The usual rule against bare acknowledgments does not apply here; the pickup is the feedback that you heard them.
+Before answering anything about ongoing work, read the attached main channel's recent messages once with `buzz messages get --channel {parent_channel_id}`; that conversation is your context for this call.
 Then work, sending each useful sentence as its own message the moment it is ready—a few sentences per answer, not a monologue.
 Speak plainly without markdown; post code or long detail to the attached main channel instead.
+Record every action item, decision and commitment as it is made: tasks with `buzz issues create`, things to remember with `buzz mem set`, and a one-line written note in the attached main channel, so it outlives this huddle channel.
 If you are not addressed, stay silent."
     )
 }
@@ -302,14 +308,30 @@ mod tests {
     #[test]
     fn voice_mode_guidelines_pin_spoken_reply_as_first_tool_call() {
         let guidelines = voice_mode_guidelines("parent-channel");
-        assert_eq!(guidelines.lines().count(), 6);
+        assert_eq!(guidelines.lines().count(), 9);
         assert!(guidelines.contains("Its attached main channel is parent-channel"));
         assert!(guidelines.contains("that is not the live huddle channel"));
-        assert!(guidelines.contains("current `[Context]` block is the live huddle channel"));
+        assert!(guidelines.contains("current `<context>` block is the live huddle channel"));
         assert!(guidelines.contains("buzz messages send` to that current Context channel"));
         assert!(guidelines.contains("your FIRST tool call must send a brief spoken reply"));
         assert!(guidelines.contains("before any file read, search, or other tool call"));
         assert!(guidelines.contains("rule against bare acknowledgments does not apply here"));
+    }
+
+    #[test]
+    fn voice_mode_guidelines_keep_identity_context_and_the_record() {
+        let guidelines = voice_mode_guidelines("parent-channel");
+        // The voice is the agent, not a separate assistant.
+        assert!(guidelines.contains("You are the same agent here as in every other channel"));
+        assert!(guidelines.contains("Speak in the first person"));
+        // A lookup is announced with a short aside before the work starts.
+        assert!(guidelines.contains("\"one sec\""));
+        // The attached channel is read for context, by its id.
+        assert!(guidelines.contains("buzz messages get --channel parent-channel"));
+        // Action items are written down where they outlive the huddle.
+        assert!(guidelines.contains("buzz issues create"));
+        assert!(guidelines.contains("buzz mem set"));
+        assert!(guidelines.contains("so it outlives this huddle channel"));
     }
 
     #[test]

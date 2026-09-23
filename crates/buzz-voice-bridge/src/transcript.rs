@@ -109,6 +109,30 @@ impl Transcript {
         self.lines.is_empty()
     }
 
+    /// The last `n` lines, labelled, without times, plus whatever the human
+    /// has said that is not yet a line: what the seat needs to know what a
+    /// request is about. A request is handed over while the human's words
+    /// are still pending, so without them the tail would stop one line short.
+    pub fn tail(&self, n: usize) -> String {
+        let current = normalize(&self.pending_human);
+        let take_lines = if current.is_empty() {
+            n
+        } else {
+            n.saturating_sub(1)
+        };
+        let skip = self.lines.len().saturating_sub(take_lines);
+        let mut out: Vec<String> = self
+            .lines
+            .iter()
+            .skip(skip)
+            .map(|line| self.render(line))
+            .collect();
+        if !current.is_empty() && n > 0 {
+            out.push(format!("{}: {current}", self.human_label));
+        }
+        out.join("\n")
+    }
+
     fn flush(&mut self, speaker: Speaker, interrupted: bool) -> Option<Line> {
         let pending = match speaker {
             Speaker::Human => &mut self.pending_human,
@@ -186,6 +210,28 @@ mod tests {
         t.human("   ");
         assert!(t.turn_complete().is_empty());
         assert!(t.is_empty());
+    }
+
+    #[test]
+    fn tail_keeps_the_last_lines_only() {
+        let mut t = Transcript::new("Lloyd", "rock (voice)");
+        for i in 0..5 {
+            t.human(&format!("q{i}"));
+            t.voice(&format!("a{i}"));
+            t.turn_complete();
+        }
+        assert_eq!(t.tail(3), "rock (voice): a3\nLloyd: q4\nrock (voice): a4");
+        assert_eq!(t.tail(0), "");
+        assert_eq!(Transcript::new("a", "b").tail(3), "");
+        // The question being asked is still pending when the tool fires.
+        t.human(" what about ");
+        t.human("the build");
+        assert_eq!(t.tail(2), "rock (voice): a4\nLloyd: what about the build");
+        assert_eq!(t.tail(0), "");
+        assert!(
+            t.lines.len() == 10,
+            "the tail does not flush the pending words"
+        );
     }
 
     #[test]

@@ -2,9 +2,10 @@
 """Scripted stand-in for the Gemini Live API, for the voice-bridge lab only.
 
 Session 1: greets on the bridge's first user turn; once it has heard about half
-a second of the caller's tone, it transcribes a question and calls ask_rock;
-it acknowledges the tool response; when "rock answered" arrives it speaks and
-sends goAway. Session 2 must come back with session 1's resumption handle.
+a second of the caller's tone, it transcribes a question and calls `work`,
+saying "one sec" when the bridge's immediate tool response lands; when "Your
+work came back" arrives it speaks the answer in the first person and sends
+goAway. Session 2 must come back with session 1's resumption handle.
 Every step is appended to $FAKE_GEMINI_LOG as JSON.
 """
 import asyncio
@@ -48,8 +49,13 @@ async def handler(ws):
     sessions += 1
     me = sessions
     setup = json.loads(await ws.recv())["setup"]
+    # websockets >= 13 exposes the handshake as `ws.request`; the legacy
+    # server (12 and below, still what macOS's python3 ships) as
+    # `ws.request_headers`.
+    request = getattr(ws, "request", None)
+    headers = request.headers if request is not None else ws.request_headers
     log(event="setup", session=me,
-        key_ok=ws.request.headers.get("x-goog-api-key") == KEY,
+        key_ok=headers.get("x-goog-api-key") == KEY,
         model=setup["model"],
         tools=[f["name"] for t in setup["tools"] for f in t["functionDeclarations"]],
         handle=setup.get("sessionResumption", {}).get("handle"),
@@ -74,15 +80,15 @@ async def handler(ws):
                 if "just joined" in text:
                     for m in speak(tone(0.6, 440), "Hi Lloyd, rock here."):
                         await ws.send(json.dumps(m))
-                elif text.startswith("rock is still working"):
+                elif text.startswith("You are still working"):
                     # Speak back only what the bridge counted, as the persona
-                    # now requires; the scorer reads the number out of this.
+                    # requires; the scorer reads the number out of this.
                     seconds = re.search(r"been (\d+) seconds", text)
-                    said = f"rock is still working, it has been {seconds.group(1) if seconds else '?'} seconds."
+                    said = f"Still on it, it has been {seconds.group(1) if seconds else '?'} seconds."
                     for m in speak(tone(0.3, 300), said):
                         await ws.send(json.dumps(m))
-                elif text.startswith("rock answered"):
-                    for m in speak(tone(0.8, 660), "rock says the build is green."):
+                elif text.startswith("Your work came back"):
+                    for m in speak(tone(0.8, 660), "The build is green."):
                         await ws.send(json.dumps(m))
                     await ws.send(json.dumps({"goAway": {"timeLeft": "1s"}}))
             elif "realtimeInput" in message:
@@ -100,11 +106,11 @@ async def handler(ws):
                     log(event="heard_caller", session=me, loud_chunks=loud)
                     await ws.send(json.dumps({"serverContent": {"inputTranscription": {"text": "what is the build status"}}}))
                     await ws.send(json.dumps({"toolCall": {"functionCalls": [
-                        {"id": "call-1", "name": "ask_rock", "args": {"request": "what is the build status"}}]}}))
+                        {"id": "call-1", "name": "work", "args": {"request": "what is the build status"}}]}}))
             elif "toolResponse" in message:
                 log(event="tool_response", session=me,
                     response=message["toolResponse"]["functionResponses"][0])
-                for m in speak(tone(0.4, 520), "Checking with rock."):
+                for m in speak(tone(0.4, 520), "One sec, let me check."):
                     await ws.send(json.dumps(m))
     except websockets.ConnectionClosed:
         pass

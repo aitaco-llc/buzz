@@ -14,7 +14,7 @@
 
 use anyhow::{Context, Result};
 use buzz_voice_bridge::jsonl::{self, JsonlLog, RateLimit};
-use buzz_voice_bridge::{call, config, gemini, relay_io, BUILD_SHA, VERSION};
+use buzz_voice_bridge::{call, config, recovery, relay_io, BUILD_SHA, VERSION};
 use buzz_ws_client::{NostrWsConnection, RelayMessage, WsClientError};
 use clap::Parser;
 use nostr::Event;
@@ -159,11 +159,45 @@ async fn main() -> Result<()> {
         build_sha = BUILD_SHA,
         "voice bridge up"
     );
+    // The names the voice speaks with: flags first, then the relay's kind:0
+    // profiles for the seat and the first starter, then plain fallbacks. One
+    // bounded lookup at start; a relay that cannot answer it cannot stop the
+    // bridge from coming up.
+    let names = resolve_names(&args, &publisher, &mut watcher).await;
+    info!(agent = %names.agent, human = %names.human, "speaking as");
     watcher.log.record(
         "identity",
-        json!({ "pubkey": keys.public_key().to_hex(), "log_dir": log_dir.display().to_string() }),
+        json!({
+            "pubkey": keys.public_key().to_hex(),
+            "log_dir": log_dir.display().to_string(),
+            "names": names.as_json(),
+        }),
     );
     let mut last_sweep = sweep(&mut watcher, &log_dir, args.retention_days, &bridge_path);
+
+    // Calls that ended while the bridge was down still owe the channel their
+    // transcript. Posted in the background: with the relay down each one costs
+    // the publish retries, and that must not hold up watching for huddles.
+    {
+        let (dir, keep, publisher, names) = (
+            log_dir.clone(),
+            bridge_path.clone(),
+            publisher.clone(),
+            names.clone(),
+        );
+        tokio::spawn(async move {
+            // Its own handle on the watcher's log; each record is one line.
+            let mut log = JsonlLog::open(&keep);
+            let recovered =
+                recovery::post_unposted(&dir, &keep, &publisher, &names, &mut log).await;
+            if recovered > 0 {
+                info!(
+                    recovered,
+                    "posted the endings of calls the bridge could not finish"
+                );
+            }
+        });
+    }
 
     let shutdown = CancellationToken::new();
     {
@@ -287,6 +321,7 @@ async fn main() -> Result<()> {
                     handle_event(
                         &event,
                         &args,
+                        &names,
                         &parents,
                         &starters,
                         &publisher,
@@ -366,6 +401,48 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// How long the profile lookup may take at start.
+const NAMES_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// Resolve the call's names from the flags and the relay's profiles.
+async fn resolve_names(
+    args: &config::Args,
+    publisher: &relay_io::Publisher,
+    watcher: &mut Watcher,
+) -> config::Names {
+    let me = publisher.keys().public_key().to_hex();
+    let first_starter = args.starters.first().cloned();
+    let need_lookup = args.agent_name.is_none() || args.human_label.is_none();
+    let mut found = HashMap::new();
+    if need_lookup {
+        let mut wanted = vec![me.clone()];
+        wanted.extend(first_starter.clone());
+        match tokio::time::timeout(NAMES_TIMEOUT, publisher.profile_names(&wanted)).await {
+            Ok(Ok(names)) => found = names,
+            Ok(Err(error)) => {
+                warn!(%error, "profile names unavailable; using flags and fallbacks");
+                watcher
+                    .log
+                    .record("names_lookup_failed", json!({ "error": error.to_string() }));
+            }
+            Err(_) => {
+                warn!("profile lookup timed out; using flags and fallbacks");
+                watcher
+                    .log
+                    .record("names_lookup_failed", json!({ "error": "timed out" }));
+            }
+        }
+    }
+    config::Names::resolve(
+        args,
+        found.get(&me).map(String::as_str),
+        first_starter
+            .as_ref()
+            .and_then(|starter| found.get(starter))
+            .map(String::as_str),
+    )
+}
+
 /// Expire call logs past the retention window and say how many went.
 fn sweep(
     watcher: &mut Watcher,
@@ -417,6 +494,7 @@ fn parent_of(event: &Event) -> Option<Uuid> {
 fn handle_event(
     event: &Event,
     args: &config::Args,
+    names: &config::Names,
     parents: &HashSet<Uuid>,
     starters: &HashSet<String>,
     publisher: &relay_io::Publisher,
@@ -491,13 +569,8 @@ fn handle_event(
                 publisher: publisher.clone(),
                 gemini_url: args.gemini_url.clone(),
                 gemini_key: gemini_key.to_owned(),
-                session: gemini::SessionConfig {
-                    model: args.model.clone(),
-                    system_instruction: args.system_instruction(),
-                    voice: args.voice.clone(),
-                },
-                human_label: args.human_label.clone(),
-                voice_label: args.voice_label.clone(),
+                args: args.clone(),
+                names: names.clone(),
                 log_path: log_path.clone(),
                 ask_timeout: Duration::from_secs(args.ask_timeout_secs),
                 progress_every: Duration::from_secs(args.progress_secs.max(1)),

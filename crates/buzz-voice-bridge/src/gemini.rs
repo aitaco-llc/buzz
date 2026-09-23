@@ -20,15 +20,26 @@ pub const DEFAULT_URL: &str = "wss://generativelanguage.googleapis.com/ws/google
 pub const INPUT_RATE: u32 = 16_000;
 pub const OUTPUT_RATE: u32 = 24_000;
 
-/// The one tool Gemini gets. It hands a request to the rock seat and returns at
-/// once; the answer comes back later as a user turn (see [`user_turn`]).
-pub const ASK_ROCK: &str = "ask_rock";
+/// The one tool Gemini gets: the agent's own hands. It hands a request to the
+/// seat and returns at once; the answer comes back later as a user turn (see
+/// [`user_turn`]). Declared `NON_BLOCKING` so the voice can say "one sec" and
+/// keep the conversation while the seat works, instead of freezing on the
+/// call until the tool response lands.
+pub const WORK_TOOL: &str = "work";
+
+/// The prefix of the user turn that carries the seat's answer. The persona
+/// (`config.rs`) teaches the voice to expect it, so the two must agree.
+pub const ANSWER_PREFIX: &str = "Your work came back";
+/// The prefix of a progress line about a turn the bridge has evidence of.
+pub const PROGRESS_PREFIX: &str = "You are still working";
 
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
     pub model: String,
     pub system_instruction: String,
     pub voice: Option<String>,
+    /// How the human is named in the tool's parameter description.
+    pub human: String,
 }
 
 pub fn setup_message(config: &SessionConfig, resume_handle: Option<&str>) -> Value {
@@ -52,13 +63,19 @@ pub fn setup_message(config: &SessionConfig, resume_handle: Option<&str>) -> Val
             "generationConfig": generation,
             "systemInstruction": { "parts": [{ "text": config.system_instruction }] },
             "tools": [{ "functionDeclarations": [{
-                "name": ASK_ROCK,
-                "description": "Hand a request to rock, the Claude seat with tools, repos, memory and the team. Use it for anything that needs a lookup, a decision, an action or a delegation, or that you are not sure of. It returns at once; rock's answer arrives later as a message that starts with \"rock answered\".",
+                "name": WORK_TOOL,
+                "behavior": "NON_BLOCKING",
+                "description": format!(
+                    "Your own hands and memory: tools, repositories, files, messages, and teammates. Use it for \
+                     anything that needs a lookup, a real fact, an action, a decision on real information, or a \
+                     delegation. It runs in the background: say a short aside such as \"one sec\" or \"let me \
+                     check\", then wait. The result arrives later as a message that starts with \"{ANSWER_PREFIX}\"."
+                ),
                 "parameters": {
                     "type": "OBJECT",
                     "properties": { "request": {
                         "type": "STRING",
-                        "description": "Lloyd's request in his own words, with every detail he gave."
+                        "description": format!("{}'s request in their own words, with every detail they gave.", config.human)
                     } },
                     "required": ["request"]
                 }
@@ -91,7 +108,33 @@ pub fn user_turn(text: &str) -> Value {
     } })
 }
 
-pub fn tool_response(id: &str, name: &str, response: Value) -> Value {
+/// When a non-blocking tool's response may reach the model: now, cutting it
+/// off (`INTERRUPT`); after its current turn (`WHEN_IDLE`); or quietly, as
+/// context only (`SILENT`). The bridge's answers travel as user turns so they
+/// survive a reconnect, and the tool response itself is always `SILENT`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scheduling {
+    Interrupt,
+    WhenIdle,
+    Silent,
+}
+
+impl Scheduling {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Interrupt => "INTERRUPT",
+            Self::WhenIdle => "WHEN_IDLE",
+            Self::Silent => "SILENT",
+        }
+    }
+}
+
+/// A response to a tool call. `scheduling` goes inside `response`, which is
+/// where the Live API reads it for a `NON_BLOCKING` function.
+pub fn tool_response(id: &str, name: &str, mut response: Value, scheduling: Scheduling) -> Value {
+    if let Some(object) = response.as_object_mut() {
+        object.insert("scheduling".into(), json!(scheduling.as_str()));
+    }
     json!({ "toolResponse": { "functionResponses": [{
         "id": id, "name": name, "response": response
     }] } })
@@ -273,6 +316,7 @@ mod tests {
             model: "gemini-3.8-live".into(),
             system_instruction: "be brief".into(),
             voice: Some("Charon".into()),
+            human: "Lloyd".into(),
         };
         let setup = setup_message(&config, None);
         let s = &setup["setup"];
@@ -287,7 +331,22 @@ mod tests {
             .as_array()
             .expect("tools");
         assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0]["name"], ASK_ROCK);
+        assert_eq!(tools[0]["name"], WORK_TOOL);
+        assert_eq!(
+            tools[0]["behavior"], "NON_BLOCKING",
+            "the voice must not freeze while the seat works"
+        );
+        let description = tools[0]["description"].as_str().expect("description");
+        assert!(description.contains(ANSWER_PREFIX));
+        assert!(
+            !description.contains("rock"),
+            "the tool is the agent's own, whoever the agent is"
+        );
+        assert!(
+            tools[0]["parameters"]["properties"]["request"]["description"]
+                .as_str()
+                .is_some_and(|d| d.starts_with("Lloyd's request"))
+        );
         assert!(s["inputAudioTranscription"].is_object());
         assert!(s["outputAudioTranscription"].is_object());
         assert_eq!(s["sessionResumption"], json!({}));
@@ -329,13 +388,13 @@ mod tests {
     #[test]
     fn parses_tool_calls_resumption_and_go_away() {
         let call = json!({ "toolCall": { "functionCalls": [
-            { "id": "c1", "name": "ask_rock", "args": { "request": "status?" } }
+            { "id": "c1", "name": "work", "args": { "request": "status?" } }
         ] } });
         assert_eq!(
             parse_server_message(&call),
             vec![ServerEvent::ToolCall(vec![FunctionCall {
                 id: "c1".into(),
-                name: "ask_rock".into(),
+                name: "work".into(),
                 args: json!({ "request": "status?" })
             }])]
         );
@@ -360,12 +419,26 @@ mod tests {
     #[test]
     fn user_turn_and_tool_response_shapes() {
         assert_eq!(
-            user_turn("rock answered: ok")["clientContent"]["turns"][0]["parts"][0]["text"],
-            "rock answered: ok"
+            user_turn("Your work came back: ok")["clientContent"]["turns"][0]["parts"][0]["text"],
+            "Your work came back: ok"
         );
-        let response = tool_response("c1", "ask_rock", json!({ "status": "asked" }));
+        let response = tool_response(
+            "c1",
+            "work",
+            json!({ "status": "started" }),
+            Scheduling::Silent,
+        );
         let r = &response["toolResponse"]["functionResponses"][0];
         assert_eq!(r["id"], "c1");
-        assert_eq!(r["response"]["status"], "asked");
+        assert_eq!(r["response"]["status"], "started");
+        assert_eq!(
+            r["response"]["scheduling"], "SILENT",
+            "scheduling rides inside response"
+        );
+        assert_eq!(
+            tool_response("c2", "work", json!({}), Scheduling::WhenIdle)["toolResponse"]
+                ["functionResponses"][0]["response"]["scheduling"],
+            "WHEN_IDLE"
+        );
     }
 }
