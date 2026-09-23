@@ -198,17 +198,26 @@ test("keeps an open status draft when the saved status expires", async ({
 }) => {
   await page.goto("/");
   const nowSeconds = Math.floor(Date.now() / 1_000);
+  // The window has to contain two things in order: the dialog opening, and
+  // then the saved status expiring while it is open. At `+2` a loaded CI
+  // runner could spend the whole margin on the click and the fill, so the
+  // status expired before the dialog was up, the dialog never saw the
+  // transition, and the alert below never appeared — two red shards on
+  // unrelated PRs on 2026-09-23. Widen both ends: four seconds of head room
+  // for the dialog, and a tail long enough that a slow runner still observes
+  // the expiry rather than timing out just before it.
   await seedMockStatus(page, {
     text: "Original draft",
     emoji: "📝",
-    expiresAt: nowSeconds + 2,
+    expiresAt: nowSeconds + 4,
     createdAt: nowSeconds,
   });
   await page.getByTestId("profile-popover-set-status").click();
   const dialog = page.getByTestId("set-status-dialog");
+  await expect(dialog).toBeVisible();
   await dialog.getByTestId("set-status-input").fill("Unsaved draft");
   await expect(page.getByTestId("sidebar-profile-user-status")).toHaveCount(0, {
-    timeout: 5_000,
+    timeout: 15_000,
   });
 
   await expect(dialog.getByTestId("set-status-input")).toHaveValue(
