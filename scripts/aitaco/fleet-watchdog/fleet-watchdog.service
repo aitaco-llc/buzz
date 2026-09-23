@@ -11,6 +11,13 @@ Type=oneshot
 # Its own identity, and only its own. A watchdog that inherited a seat's key
 # would post as that seat, and a seat that cannot run is exactly the one it
 # would be impersonating.
+# The user manager's PATH does not contain ~/.local/bin, where the fleet CLI
+# lives, and every relay read below is a bare `buzz`. Without this line the
+# watchdog finds no CLI, reads an empty relay, and prints `clean: N seats, no
+# findings` — a green sheet from a process that cannot see the fleet. The
+# preflight in watchdog.py now refuses that run; this line is what stops it
+# happening in the first place.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=%h/.config/aitaco/fleet-watchdog.env
 
 # Not %h/.local/bin: writing there is the fleet deploy path, and this is not a

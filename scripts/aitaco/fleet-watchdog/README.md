@@ -75,7 +75,7 @@ leaving it to be remembered.
 
 ## Modes
 
-    watchdog.py --dry-run            collect, evaluate, print (posts nothing)
+    watchdog.py --dry-run            collect, evaluate, print (posts and writes nothing)
     watchdog.py --post --relay       the timer's mode
     watchdog.py --seed-state         record what is wrong now without posting
     watchdog.py --capture FILE       save a sheet, judge nothing
@@ -156,6 +156,15 @@ ordering at all.
     install -Dm755 watchdog.py ~/.local/libexec/fleet-watchdog/watchdog.py
     install -Dm644 fleet-watchdog.service ~/.config/systemd/user/
     install -Dm644 fleet-watchdog.timer   ~/.config/systemd/user/
+
+The unit carries its own `Environment=PATH=` with `~/.local/bin` first. The
+systemd user manager's PATH does not have it, every relay read here is a bare
+`buzz`, and `buzz_json` swallows the OSError a missing binary raises — so
+without that line the watchdog read an empty relay and printed `clean: N seats,
+no findings`. A preflight in `main()` now refuses a `--relay` or `--post` run
+with no `buzz` on PATH; exit 1 is not `SuccessExitStatus=10`, so systemd marks
+the unit failed and the journal says why. macOS is unaffected: the plist runs
+`bash -lc`, which reads the profile.
     ~/.local/libexec/fleet-watchdog/watchdog.py --seed-state   # do not skip
     systemctl --user daemon-reload
     systemctl --user enable --now fleet-watchdog.timer
@@ -205,6 +214,13 @@ Five rules, all in `suppress()` and `report()`:
    health channel.
 5. Keys unseen for a day are dropped, so a closed incident cannot be re-raised
    by a later tick.
+6. The state file is written only by a run that delivered what it found. Rule 2
+   retires a key the moment `suppress()` hands it back, so the write is the act
+   of retiring the incident — and a `--dry-run`, a post the relay refused, or a
+   tick skipped by rule 4 has retired something nobody read. On
+   2026-09-23T21:07:28Z a `--relay` inspection recorded the first real
+   `WAKE_DEAD` as posted and the timer three minutes later published `clean`.
+   `report()` returns whether it delivered; `main()` commits on that alone.
 
 ## Thresholds
 

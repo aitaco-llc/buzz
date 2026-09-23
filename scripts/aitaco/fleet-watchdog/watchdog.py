@@ -43,6 +43,7 @@ import glob
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -677,6 +678,20 @@ def roster(repo_root: Path | None = None) -> dict[str, dict]:
 # ---------------------------------------------------------------------------
 # Relay layer (optional). Zero model calls; these are plain CLI reads.
 # ---------------------------------------------------------------------------
+
+
+def buzz_on_path() -> str | None:
+    """Where `buzz` resolves, or None.
+
+    Every relay read and every post below shells out to a bare `buzz`, and
+    `buzz_json` swallows the OSError a missing binary raises. That turns "the
+    CLI is not on PATH" into "the relay had nothing to say", and the run then
+    prints `clean: N seats, no findings` and exits 0 — a green sheet from a
+    watchdog with no eyes. The systemd unit is one `Environment=PATH=` line
+    away from exactly that: the user manager's PATH on hip does not contain
+    ~/.local/bin, where the fleet CLI lives.
+    """
+    return shutil.which("buzz")
 
 
 def buzz_json(args: list[str], timeout: int = 45):
@@ -1659,7 +1674,10 @@ def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--post", action="store_true", help="post findings (the timer's mode)")
-    mode.add_argument("--dry-run", action="store_true", help="print, post nothing")
+    mode.add_argument(
+        "--dry-run", action="store_true",
+        help="print; post nothing and write no state",
+    )
     mode.add_argument("--capture", metavar="FILE", help="save a sheet and judge nothing")
     mode.add_argument("--check", metavar="FILE", help="judge a saved sheet offline")
     mode.add_argument(
@@ -1679,6 +1697,20 @@ def main(argv: list[str]) -> int:
     )
     args = ap.parse_args(argv)
 
+    # Refuse to run half-blind. A relay read or a post without the CLI is not a
+    # degraded run, it is a run whose findings could not be delivered even if it
+    # had any — so fail loudly here rather than reporting a clean fleet. Exit 1
+    # is not SuccessExitStatus=10, so systemd marks the unit failed on every
+    # tick and the journal says why.
+    if (args.relay or args.post) and not args.check and buzz_on_path() is None:
+        print(
+            "watchdog: `buzz` is not on PATH, so the relay classes would read "
+            "nothing and any finding would be undeliverable. Refusing to report "
+            f"on a fleet this run cannot see. PATH={os.environ.get('PATH', '')}",
+            file=sys.stderr,
+        )
+        return 1
+
     people = roster()
 
     if args.check:
@@ -1695,7 +1727,7 @@ def main(argv: list[str]) -> int:
             )
         state = {"keys": {}, "restarts": {}}
         findings = evaluate(sheet, state, people)
-        return report(findings, sheet, args, post_ok=False)
+        return report(findings, sheet, args, post_ok=False)[0]
 
     if args.post and args.min_uptime:
         up = uptime_secs()
@@ -1743,14 +1775,30 @@ def main(argv: list[str]) -> int:
 
     state = {"keys": {}, "restarts": {}} if (args.no_state or historical) else load_state()
     findings = evaluate(sheet, state, people)
-    if not (args.no_state or historical):
+    keeps_state = not (args.no_state or historical)
+    if keeps_state:
         findings = suppress(findings, state, now)
         record_restarts(sheet, state)
+    rc, delivered = report(findings, sheet, args, post_ok=args.post and not historical)
+    # Commit the suppression ladder only for a run that actually delivered what
+    # it found. `suppress` retires a key for a day the moment it hands it back,
+    # so writing state after a dry run, a failed post, or a skipped tick makes
+    # the finding disappear without anyone having read it. That happened: a
+    # `--relay` inspection at 2026-09-23T21:07:28Z recorded the first real
+    # WAKE_DEAD as posted, and the timer three minutes later published nothing.
+    if keeps_state and delivered:
         save_state(state)
-    return report(findings, sheet, args, post_ok=args.post and not historical)
+    return rc
 
 
-def report(findings: list[dict], sheet: dict, args, post_ok: bool) -> int:
+def report(findings: list[dict], sheet: dict, args, post_ok: bool) -> tuple[int, bool]:
+    """Print or publish, and say whether this run delivered what it found.
+
+    The second half of the return is what gates the state write. It is the same
+    distinction `post()` cannot make one level down — there, `accepted` is the
+    relay's receipt and not the seat's; here, a run that printed to a terminal
+    or lost its post to a relay error has delivered nothing at all.
+    """
     if args.json:
         print(json.dumps(findings, indent=1, sort_keys=True))
     if not findings:
@@ -1762,11 +1810,14 @@ def report(findings: list[dict], sheet: dict, args, post_ok: bool) -> int:
             )
         if not args.json:
             print(f"clean: {len(sheet['seats'])} seats, no findings at {sheet['nowIso']}")
-        return 0
+        # Nothing was found, so nothing can be lost by committing: this is the
+        # tick that ages closed incidents out and records the restart counts.
+        return 0, True
 
     if post_ok and rock_is_mid_turn(sheet):
         print("watchdog: rock has a turn in flight in the health channel; skipping this tick")
-        return 10
+        # Skipped, not delivered. The next tick must raise it again.
+        return 10, False
 
     text = render(findings, sheet)
     wake = any(f["severity"] == "wake" for f in findings)
@@ -1778,9 +1829,10 @@ def report(findings: list[dict], sheet: dict, args, post_ok: bool) -> int:
             # suppress() has already decided this incident is worth one message,
             # so this leg fires once per incident, not once per tick.
             post(text, mention=False, channel=OWNER_DM_CHANNEL)
-    elif not args.json:
+        return 10, result is not None
+    if not args.json:
         print(text)
-    return 10
+    return 10, False
 
 
 if __name__ == "__main__":

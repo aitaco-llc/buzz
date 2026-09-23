@@ -18,6 +18,8 @@ with `watchdog.py --capture`:
 Run: python3 test_watchdog.py
 """
 
+import contextlib
+import io
 import json
 import os
 import sys
@@ -771,6 +773,102 @@ def main() -> int:
     # The healthy fleet must stay quiet, or this class is worthless.
     check("wake-dead is silent on the clean relay sheet",
           not [f for f in judge(RELAY) if f["class"] == "WAKE_DEAD"])
+
+    # --- the CLI the relay classes shell out to -----------------------------
+    # `buzz_json` swallows the OSError a missing binary raises, so a run with
+    # no `buzz` on PATH read an empty relay and printed `clean: N seats, no
+    # findings`. That is not hypothetical: the systemd unit in this directory
+    # shipped without an `Environment=PATH=` line, and the user manager's PATH
+    # on hip does not contain ~/.local/bin. hip's installed copy of the unit
+    # had been hand-patched; anyone installing it from the repository got a
+    # watchdog that reported a healthy fleet it could not see.
+    saved_path = os.environ.get("PATH", "")
+    blind = tempfile.mkdtemp(prefix="watchdog-no-buzz-")
+    try:
+        os.environ["PATH"] = blind
+        check("a stripped PATH really hides buzz", watchdog.buzz_on_path() is None)
+
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = watchdog.main(["--relay", "--dry-run", "--no-state"])
+        check("a relay run without buzz exits non-zero", rc != 0, f"rc={rc}")
+        check("and reports no fleet it cannot see",
+              "clean:" not in out.getvalue(), repr(out.getvalue()[:120]))
+        check("and says why on stderr",
+              "not on PATH" in err.getvalue(), repr(err.getvalue()[:120]))
+
+        # Offline judging of a saved sheet needs no CLI and must still work,
+        # or --check stops being the way a finding is re-read after the fact.
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            rc = watchdog.main(["--check", str(CLEAN), "--no-state"])
+        check("--check still runs with no buzz on PATH", rc == 0, f"rc={rc}")
+    finally:
+        os.environ["PATH"] = saved_path
+        os.rmdir(blind)
+
+    # --- state is committed only by a run that delivered --------------------
+    # `suppress` retires a key for a day the moment it hands it back, so the
+    # state write is the act of retiring an incident. It used to happen on
+    # every non-historical run, which meant a read-only `--relay` inspection
+    # consumed the finding: at 2026-09-23T21:07:28Z one recorded the first real
+    # WAKE_DEAD as posted, and the timer at 21:10:57Z published `clean`.
+    class Args:
+        json = False
+        pulse = False
+
+    outage_sheet = json.loads(OUTAGE.read_text())
+    outage_findings = judge(OUTAGE)
+    assert outage_findings
+
+    rc, delivered = watchdog.report([], outage_sheet, Args(), post_ok=True)
+    check("a clean tick commits", (rc, delivered) == (0, True), str((rc, delivered)))
+
+    rc, delivered = watchdog.report(outage_findings, outage_sheet, Args(), post_ok=False)
+    check("a dry run delivers nothing", (rc, delivered) == (10, False), str((rc, delivered)))
+
+    real_post = watchdog.post
+    try:
+        watchdog.post = lambda *a, **k: None          # relay refused / CLI gone
+        rc, delivered = watchdog.report(outage_findings, outage_sheet, Args(), post_ok=True)
+        check("a failed post does not retire the finding",
+              (rc, delivered) == (10, False), str((rc, delivered)))
+        watchdog.post = lambda *a, **k: {"accepted": True, "event_id": "x" * 64}
+        rc, delivered = watchdog.report(outage_findings, outage_sheet, Args(), post_ok=True)
+        check("a posted finding is retired", (rc, delivered) == (10, True), str((rc, delivered)))
+    finally:
+        watchdog.post = real_post
+
+    # A tick skipped because rock is already working the incident must come
+    # back next time; the sheet the fixture was captured from has rock's open
+    # turn in the health channel.
+    skip_sheet = json.loads(RELAY.read_text())
+    skip_sheet["seats"].setdefault("rock", {"openTurns": []})
+    skip_sheet["seats"]["rock"]["openTurns"] = [{"channelId": watchdog.HEALTH_CHANNEL}]
+    rc, delivered = watchdog.report(outage_findings, skip_sheet, Args(), post_ok=True)
+    check("a tick skipped for rock's own turn is not delivered",
+          (rc, delivered) == (10, False), str((rc, delivered)))
+
+    # End to end through main(): a --dry-run must leave the state file alone.
+    saved = {"collect": watchdog.collect, "relay": watchdog.collect_relay,
+             "save": watchdog.save_state, "load": watchdog.load_state}
+    writes = []
+    try:
+        watchdog.collect = lambda *a, **k: json.loads(OUTAGE.read_text())
+        watchdog.collect_relay = lambda *a, **k: None
+        watchdog.load_state = lambda: {"keys": {}, "restarts": {}}
+        watchdog.save_state = lambda state: writes.append(state)
+        with contextlib.redirect_stdout(io.StringIO()):
+            watchdog.main(["--dry-run"])
+        check("a dry run writes no state", writes == [], f"{len(writes)} write(s)")
+        with contextlib.redirect_stdout(io.StringIO()):
+            watchdog.post = lambda *a, **k: {"accepted": True}
+            watchdog.main(["--post"])
+        check("a posting run writes state", len(writes) == 1, f"{len(writes)} write(s)")
+    finally:
+        watchdog.collect, watchdog.collect_relay = saved["collect"], saved["relay"]
+        watchdog.save_state, watchdog.load_state = saved["save"], saved["load"]
+        watchdog.post = real_post
 
     # --- suppression must bound the blast radius ----------------------------
     state = {"keys": {}, "restarts": {}}
