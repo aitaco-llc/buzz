@@ -774,6 +774,192 @@ def main() -> int:
     check("wake-dead is silent on the clean relay sheet",
           not [f for f in judge(RELAY) if f["class"] == "WAKE_DEAD"])
 
+    # --- the repair, and what the dead edge swallowed -----------------------
+    # An author gate that admits us again says so plainly in the routing log,
+    # and until this read it the alarm went on firing about a fault that was
+    # already fixed: rock's gate came back at 2026-09-23T21:06Z and the
+    # 21:21:07Z tick still raised WAKE_DEAD, naming a drop from 20:10:57Z.
+    me = json.loads(WAKE_DEAD.read_text())["relay"]["self"]
+    ALDRIN = "2c4a588af493bfe42eb50df429aed6f0945eaeb70034fc655df22e2e4bf138dc"
+
+    def later_row(decision="no_rule_matched", after=60.0, author=None):
+        """One more routing row, placed relative to the newest drop."""
+
+        def edit(sheet):
+            rows = rock_decisions(sheet)
+            last = max(r["ts"] for r in rows if r["decision"] == "author_gate")
+            rows.append(
+                {"author": author or me, "channelId": watchdog.HEALTH_CHANNEL,
+                 "decision": decision, "eventId": "f" * 64, "kind": 9,
+                 "threadRoot": None, "ts": last + after}
+            )
+
+        return edit
+
+    check("a later verdict other than author_gate closes the wake-dead",
+          not [f for f in wake_sheet(later_row()) if f["class"] == "WAKE_DEAD"])
+
+    # Three ways it must NOT count as a repair. Each changes one thing about
+    # the same appended row, so a mutant that drops any one clause is caught.
+    check("another author gate is not a repair",
+          len([f for f in wake_sheet(later_row(decision="author_gate"))
+               if f["class"] == "WAKE_DEAD"]) == 1)
+    check("an admitted post from another key is not our repair",
+          len([f for f in wake_sheet(later_row(author=ALDRIN))
+               if f["class"] == "WAKE_DEAD"]) == 1)
+    check("an admission from before the last drop is not a repair",
+          len([f for f in wake_sheet(later_row(after=-60.0))
+               if f["class"] == "WAKE_DEAD"]) == 1)
+
+    # The captured sheet already carries a `queued` row from aldrin's key that
+    # postdates both drops, so the author scoping is exercised by the fixture
+    # itself and not only by the control above.
+    def repaired_sheet(edit=None):
+        sheet = json.loads(WAKE_DEAD.read_text())
+        later_row()(sheet)
+        if edit:
+            edit(sheet)
+        return sheet
+
+    lost_ids = [
+        m["id"] for m in
+        json.loads(WAKE_DEAD.read_text())["relay"]["messages"][watchdog.HEALTH_CHANNEL]
+    ]
+    revived_ids = watchdog.wake_repaired(
+        repaired_sheet(), watchdog.roster(), json.loads(WAKE_DEAD.read_text())["now"]
+    )
+    check("the repair hands back every post the dead gate swallowed",
+          sorted(revived_ids) == sorted(lost_ids), str(revived_ids))
+    check("a gate still shut hands back nothing",
+          not watchdog.wake_repaired(
+              json.loads(WAKE_DEAD.read_text()), watchdog.roster(),
+              json.loads(WAKE_DEAD.read_text())["now"]))
+
+    # `no_rule_matched` and `dropped_scope_busy` are properties of the post,
+    # not of the edge, so there is nothing there to come back: a later
+    # admission says nothing about them and they must keep alarming.
+    def per_post_cause(sheet):
+        for row in rock_decisions(sheet):
+            if row["decision"] == "author_gate":
+                row["decision"] = "no_rule_matched"
+
+    check("a per-post cause is not an edge that can reopen",
+          not watchdog.wake_repaired(
+              repaired_sheet(per_post_cause), watchdog.roster(),
+              json.loads(WAKE_DEAD.read_text())["now"]))
+    check("and it still reports",
+          len([f for f in wake_sheet(lambda sh: (later_row()(sh), per_post_cause(sh)))
+               if f["class"] == "WAKE_DEAD"]) == 1)
+
+    # --- the replay itself --------------------------------------------------
+    # `report` calls a post delivered when the relay accepts it, so every
+    # finding in a message the seat never read was retired as delivered. A key
+    # is evicted only after a day with no sighting and `lastSeen` is refreshed
+    # on every tick the condition still holds, so a finding that stays true
+    # stays silent for good. Five did on 2026-09-23.
+    carried = lost_ids[0]
+    stalled = watchdog.finding(
+        "TASK_STALLED", "task-stalled:deadbeef", "notice", "nobody has moved it"
+    )
+    t0 = 1790154600.0
+    st = {"keys": {}, "restarts": {}}
+    posted = watchdog.suppress([dict(stalled)], st, t0)
+    watchdog.stamp_delivery(posted, st, carried)
+    check("the key records which message carried it",
+          st["keys"][stalled["key"]]["postedEventId"] == carried,
+          str(st["keys"][stalled["key"]].get("postedEventId")))
+    check("an unchanged tick is still quiet",
+          not watchdog.suppress([dict(stalled)], st, t0 + 600))
+
+    check("the repair revives the key that went down the dead edge",
+          watchdog.replay_lost(st, [carried]) == [stalled["key"]])
+    back = watchdog.suppress([dict(stalled)], st, t0 + 1200)
+    check("and the next tick raises it, marked as a first delivery",
+          len(back) == 1 and back[0].get("replayed"), str(back))
+    check("the replay keeps the instant it was first seen",
+          back and back[0]["firstSeen"] == t0, str(back and back[0].get("firstSeen")))
+    check("and it does not raise a third time",
+          not watchdog.suppress([dict(stalled)], st, t0 + 1800))
+
+    read_it = {"keys": {}, "restarts": {}}
+    watchdog.stamp_delivery(
+        watchdog.suppress([dict(stalled)], read_it, t0), read_it, "a" * 64
+    )
+    check("a key delivered in a message that landed is left alone",
+          not watchdog.replay_lost(read_it, [carried]))
+    check("and a repair with nothing to replay revives nothing",
+          not watchdog.replay_lost(read_it, []))
+
+    # Only what this tick actually published gets stamped: a suppressed key
+    # must keep pointing at the message that really carried it.
+    two = {"keys": {}, "restarts": {}}
+    other = watchdog.finding("ORPHAN", "orphan:x", "notice", "an orphan")
+    watchdog.stamp_delivery(
+        watchdog.suppress([dict(stalled), dict(other)], two, t0), two, carried
+    )
+    watchdog.stamp_delivery(
+        watchdog.suppress([dict(stalled)], two, t0 + 600), two, "b" * 64
+    )
+    check("a suppressed key keeps the message that really carried it",
+          two["keys"][stalled["key"]]["postedEventId"] == carried,
+          str(two["keys"][stalled["key"]]["postedEventId"]))
+
+    replay_text = watchdog.render(
+        [dict(stalled, replayed=True)], json.loads(WAKE_DEAD.read_text())
+    )
+    check("the message says why a stale finding is only arriving now",
+          "first delivery" in replay_text, replay_text[:200])
+
+    # End to end through main(). The gate is back, so there is no wake edge to
+    # alarm about and the finding that went down it while it was shut is in
+    # the message instead — marked, because nobody has ever read it.
+    e2e = repaired_sheet()
+    e2e["seats"]["vinge"]["unit"] = {
+        "available": True, "activeState": "inactive", "nRestarts": 0,
+    }
+    seeded = {
+        "keys": {
+            "unit:vinge": {
+                "severity": "wake", "class": "UNIT_DOWN",
+                "firstSeen": e2e["now"] - 7200, "lastSeen": e2e["now"] - 600,
+                "posted": e2e["now"] - 7200, "escalatedToOwner": None,
+                "postedEventId": carried, "replay": False,
+            }
+        },
+        "restarts": {},
+    }
+    sent, wrote = [], []
+    keep = {"collect": watchdog.collect, "relay": watchdog.collect_relay,
+            "save": watchdog.save_state, "load": watchdog.load_state,
+            "which": watchdog.buzz_on_path, "post": watchdog.post}
+    try:
+        watchdog.collect = lambda *a, **k: json.loads(json.dumps(e2e))
+        watchdog.collect_relay = lambda *a, **k: None
+        watchdog.load_state = lambda: json.loads(json.dumps(seeded))
+        watchdog.save_state = lambda st: wrote.append(json.loads(json.dumps(st)))
+        watchdog.buzz_on_path = lambda: "/nonexistent/buzz"
+        watchdog.post = lambda text, mention, mention_pubkey=None, channel=None: (
+            sent.append(text) or {"accepted": True, "event_id": "c" * 64})
+        with contextlib.redirect_stdout(io.StringIO()):
+            watchdog.main(["--post", "--min-uptime", "0"])
+    finally:
+        watchdog.collect, watchdog.collect_relay = keep["collect"], keep["relay"]
+        watchdog.save_state, watchdog.load_state = keep["save"], keep["load"]
+        watchdog.buzz_on_path, watchdog.post = keep["which"], keep["post"]
+
+    check("a repaired edge re-raises what it swallowed, end to end",
+          len(sent) == 1 and "first delivery" in sent[0],
+          (sent[0][:300] if sent else "nothing was posted"))
+    check("and says nothing about a wake edge that is working again",
+          bool(sent) and "WAKE_DEAD" not in sent[0],
+          (sent[0][:300] if sent else "nothing was posted"))
+    check("the revived key is stamped with the message that carried it",
+          bool(wrote) and wrote[0]["keys"]["unit:vinge"]["postedEventId"] == "c" * 64,
+          str(wrote[:1]))
+    check("and its replay mark is cleared, so it is not raised forever",
+          bool(wrote) and not wrote[0]["keys"]["unit:vinge"]["replay"],
+          str(wrote[:1]))
+
     # --- the CLI the relay classes shell out to -----------------------------
     # `buzz_json` swallows the OSError a missing binary raises, so a run with
     # no `buzz` on PATH read an empty relay and printed `clean: N seats, no
@@ -900,20 +1086,20 @@ def main() -> int:
     outage_findings = judge(OUTAGE)
     assert outage_findings
 
-    rc, delivered = watchdog.report([], outage_sheet, Args(), post_ok=True)
+    rc, delivered, _sent = watchdog.report([], outage_sheet, Args(), post_ok=True)
     check("a clean tick commits", (rc, delivered) == (0, True), str((rc, delivered)))
 
-    rc, delivered = watchdog.report(outage_findings, outage_sheet, Args(), post_ok=False)
+    rc, delivered, _sent = watchdog.report(outage_findings, outage_sheet, Args(), post_ok=False)
     check("a dry run delivers nothing", (rc, delivered) == (10, False), str((rc, delivered)))
 
     real_post = watchdog.post
     try:
         watchdog.post = lambda *a, **k: None          # relay refused / CLI gone
-        rc, delivered = watchdog.report(outage_findings, outage_sheet, Args(), post_ok=True)
+        rc, delivered, _sent = watchdog.report(outage_findings, outage_sheet, Args(), post_ok=True)
         check("a failed post does not retire the finding",
               (rc, delivered) == (10, False), str((rc, delivered)))
         watchdog.post = lambda *a, **k: {"accepted": True, "event_id": "x" * 64}
-        rc, delivered = watchdog.report(outage_findings, outage_sheet, Args(), post_ok=True)
+        rc, delivered, _sent = watchdog.report(outage_findings, outage_sheet, Args(), post_ok=True)
         check("a posted finding is retired", (rc, delivered) == (10, True), str((rc, delivered)))
     finally:
         watchdog.post = real_post
@@ -924,7 +1110,7 @@ def main() -> int:
     skip_sheet = json.loads(RELAY.read_text())
     skip_sheet["seats"].setdefault("rock", {"openTurns": []})
     skip_sheet["seats"]["rock"]["openTurns"] = [{"channelId": watchdog.HEALTH_CHANNEL}]
-    rc, delivered = watchdog.report(outage_findings, skip_sheet, Args(), post_ok=True)
+    rc, delivered, _sent = watchdog.report(outage_findings, skip_sheet, Args(), post_ok=True)
     check("a tick skipped for rock's own turn is not delivered",
           (rc, delivered) == (10, False), str((rc, delivered)))
 

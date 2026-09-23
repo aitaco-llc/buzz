@@ -1297,6 +1297,14 @@ def task_link(task: dict) -> str | None:
 # The four verdicts buzz-acp records for an inbound channel event
 # (`RoutingDecision`, crates/buzz-acp/src/turn_log.rs:81-84). `queued` means
 # the wake edge worked and anything after it belongs to another class here.
+#
+# `author_gate` is the only one of the three that describes the edge rather
+# than the post: buzz-acp makes that drop before any subscription rule runs,
+# so it is the allowlist talking, and it is the same answer for every post
+# from the same key until the seat restarts. That is what makes it repairable,
+# and what `gate_reopened` below is able to check.
+AUTHOR_GATE = "author_gate"
+
 WAKE_LOST_DECISIONS = {
     "author_gate": "the seat's allowlist does not admit this key",
     "no_rule_matched": "no subscription rule in the seat matched the post",
@@ -1325,6 +1333,99 @@ def wake_cause(data: dict, event_id: str) -> str:
     return WAKE_UNSEEN
 
 
+def lost_wakes(
+    sheet: dict, people: dict, now: float
+) -> dict[tuple[str, str], list[dict]]:
+    """(seat, cause) -> our posts that seat never turned into a turn, oldest first.
+
+    Split out so the alarm and the replay cannot disagree about which posts
+    were lost. One group per (seat, cause), not one per post: an edge that is
+    down loses every post until it is fixed, and twelve identical findings is
+    twelve wake-ups for one fault.
+    """
+    relay = sheet.get("relay") or {}
+    me = relay.get("self")
+    if not me:
+        return {}  # cannot tell our posts from anyone else's; say nothing
+
+    by_key = {
+        info["pubkey"]: name for name, info in people.items() if info.get("pubkey")
+    }
+
+    lost: dict[tuple[str, str], list[dict]] = {}
+    for post in relay.get("messages", {}).get(HEALTH_CHANNEL, []):
+        if post.get("pubkey") != me:
+            continue
+        created = post.get("created_at")
+        if created is None or now - created < WAKE_DEAD_SECS:
+            continue  # too young to judge; a mid-turn seat has not got to it
+        for target in tags_of(post, "p"):
+            seat = by_key.get(target)
+            if not seat:
+                continue  # not a seat we know; nothing to check it against
+            data = sheet["seats"].get(seat)
+            if data is None:
+                continue  # a seat on the other body — its own watchdog judges it
+            if wake_landed(data, post["id"]):
+                continue
+            lost.setdefault((seat, wake_cause(data, post["id"])), []).append(post)
+    for posts in lost.values():
+        posts.sort(key=lambda m: m.get("created_at") or 0)
+    return lost
+
+
+def gate_reopened(data: dict, me: str, since: float) -> bool:
+    """Has this seat admitted a post of ours since `since`?
+
+    Any verdict other than `author_gate` for the same author is the allowlist
+    saying yes. The seat may still have had no rule that matched — that is a
+    different question, and a later line in the routing log — but the key got
+    in, which is the only positive evidence of repair this script can get.
+
+    Without it a fixed edge keeps alarming. On 2026-09-23 rock's gate was
+    repaired at 21:06Z and the drop it had made at 20:10:57Z stayed in the
+    two-hour relay window while the routing log went on remembering
+    `author_gate` for it forever, so the 21:21:07Z tick raised WAKE_DEAD about
+    an edge that had been working for a quarter of an hour.
+    """
+    for row in data.get("decisions", []):
+        if row.get("author") != me:
+            continue
+        ts = row.get("ts")
+        if ts is None or ts <= since:
+            continue
+        if row.get("decision") != AUTHOR_GATE:
+            return True
+    return False
+
+
+def wake_repaired(sheet: dict, people: dict, now: float) -> list[str]:
+    """Ids of our posts that a seat lost to an author gate which now admits us.
+
+    The repair is the trigger for the replay. What went down a dead edge was
+    not only a wake — it was the findings in that message, and `suppress`
+    retired every one of them as delivered, because `report` had nothing but
+    the relay's receipt to go on. A key is evicted only after a day with no
+    sighting and its `lastSeen` is refreshed on every tick the condition still
+    holds, so a finding that stays true stays silent forever. Five did: four
+    TASK_STALLED posted at 2026-09-23T12:40:47Z and one at 14:51:07Z, all in
+    posts the seat author-gated two seconds later, all still true nine hours
+    on, none of them ever raised again.
+    """
+    relay = sheet.get("relay") or {}
+    me = relay.get("self")
+    if not me:
+        return []
+    out: list[str] = []
+    for (seat, cause), posts in lost_wakes(sheet, people, now).items():
+        if cause != WAKE_LOST_DECISIONS[AUTHOR_GATE]:
+            continue  # per-post causes; there is no edge here to come back
+        data = sheet["seats"].get(seat) or {}
+        if gate_reopened(data, me, posts[-1].get("created_at") or 0):
+            out += [p["id"] for p in posts]
+    return out
+
+
 def eval_wake_dead(sheet: dict, people: dict, now: float) -> list[dict]:
     """A wake this script published that never reached the seat it named.
 
@@ -1349,34 +1450,14 @@ def eval_wake_dead(sheet: dict, people: dict, now: float) -> list[dict]:
     if not me:
         return []  # cannot tell our posts from anyone else's; say nothing
 
-    by_key = {
-        info["pubkey"]: name for name, info in people.items() if info.get("pubkey")
-    }
-
-    # (seat, cause) -> the posts it lost. One incident per seat per cause, not
-    # one per post: a wake edge that is down loses every post until it is
-    # fixed, and 12 identical findings is 12 wake-ups for one fault.
-    lost: dict[tuple[str, str], list[dict]] = {}
-    for post in relay.get("messages", {}).get(HEALTH_CHANNEL, []):
-        if post.get("pubkey") != me:
-            continue
-        created = post.get("created_at")
-        if created is None or now - created < WAKE_DEAD_SECS:
-            continue  # too young to judge; a mid-turn seat has not got to it
-        for target in tags_of(post, "p"):
-            seat = by_key.get(target)
-            if not seat:
-                continue  # not a seat we know; nothing to check it against
-            data = sheet["seats"].get(seat)
-            if data is None:
-                continue  # a seat on the other body — its own watchdog judges it
-            if wake_landed(data, post["id"]):
-                continue
-            lost.setdefault((seat, wake_cause(data, post["id"])), []).append(post)
-
     out = []
-    for (seat, cause), posts in sorted(lost.items()):
-        posts.sort(key=lambda m: m.get("created_at") or 0)
+    for (seat, cause), posts in sorted(lost_wakes(sheet, people, now).items()):
+        if cause == WAKE_LOST_DECISIONS[AUTHOR_GATE] and gate_reopened(
+            sheet["seats"].get(seat) or {}, me, posts[-1].get("created_at") or 0
+        ):
+            # The gate admits us again, so this is history and not an alarm.
+            # What the lost posts carried comes back through `wake_repaired`.
+            continue
         out.append(
             finding(
                 "WAKE_DEAD",
@@ -1482,6 +1563,15 @@ def suppress(findings: list[dict], state: dict, now: float) -> list[dict]:
         if prior is None:
             item["firstSeen"] = now
             fresh.append(item)
+        elif prior.get("replay"):
+            # Posted once, into a wake edge that was down, and retired as
+            # delivered because `report` had only the relay's receipt to go
+            # on. The edge is back: this is the first delivery this finding
+            # has ever had, and it outranks the ladder below because nobody
+            # has read it even once.
+            item["firstSeen"] = prior.get("firstSeen", now)
+            item["replayed"] = True
+            fresh.append(item)
         elif item["severity"] == "wake" and prior.get("severity") != "wake":
             item["firstSeen"] = prior.get("firstSeen", now)
             item["escalated"] = True
@@ -1515,11 +1605,54 @@ def suppress(findings: list[dict], state: dict, now: float) -> list[dict]:
                 if item.get("ownerEscalation")
                 else (prior or {}).get("escalatedToOwner")
             ),
+            # Which message carried this key, so a later tick can tell whether
+            # anyone was on the other end of it. Stamped by `stamp_delivery`
+            # once the relay has given us an id; cleared as soon as the replay
+            # it asked for is in a message.
+            "postedEventId": (prior or {}).get("postedEventId"),
+            "replay": bool((prior or {}).get("replay")) and item not in fresh,
         }
     # Keys nobody has seen for a day are closed incidents.
     for key in [k for k, v in keys.items() if now - (v.get("lastSeen") or 0) > 86400]:
         keys.pop(key, None)
     return fresh
+
+
+def replay_lost(state: dict, lost_ids: list[str]) -> list[str]:
+    """Un-retire every finding whose only delivery went down a dead wake edge.
+
+    Marks, rather than posts: the mark is read by `suppress` on this same
+    tick, so a revived finding is re-raised only if it is still true. One that
+    fixed itself while nobody could hear about it stays closed, which is the
+    right answer — the point is to deliver what is still wrong, not to replay
+    a transcript.
+    """
+    if not lost_ids:
+        return []
+    ids = set(lost_ids)
+    revived = []
+    for key, row in state.get("keys", {}).items():
+        if row.get("postedEventId") in ids and not row.get("replay"):
+            row["replay"] = True
+            revived.append(key)
+    return revived
+
+
+def stamp_delivery(findings: list[dict], state: dict, event_id: str | None) -> None:
+    """Record which message carried each key we just posted.
+
+    `post` gets an event id back from the relay and nothing else; whether the
+    seat read it is a question only the next tick can answer, by looking this
+    id up in that seat's routing log. Storing it here is what makes that
+    lookup possible.
+    """
+    if not event_id:
+        return
+    keys = state.get("keys", {})
+    for item in findings:
+        row = keys.get(item["key"])
+        if row is not None:
+            row["postedEventId"] = event_id
 
 
 def record_restarts(sheet: dict, state: dict) -> None:
@@ -1605,7 +1738,14 @@ def render(findings: list[dict], sheet: dict) -> str:
     for item in findings:
         mark = "" if item["severity"] == "wake" else " _(notice)_"
         esc = " _(escalated)_" if item.get("escalated") else ""
-        lines.append(f"**{item['class']}**{mark}{esc} — {item['summary']}")
+        # Say why a thirteen-hour-old finding is only arriving now, or the
+        # reader reasonably assumes the watchdog has been asleep.
+        again = (
+            " _(first delivery — the message that carried this was lost)_"
+            if item.get("replayed")
+            else ""
+        )
+        lines.append(f"**{item['class']}**{mark}{esc}{again} — {item['summary']}")
         for line in evidence_lines(item):
             lines.append(f"  - {line}")
         lines.append("")
@@ -1854,9 +1994,18 @@ def main(argv: list[str]) -> int:
     findings = evaluate(sheet, state, people)
     keeps_state = not (args.no_state or historical)
     if keeps_state:
+        revived = replay_lost(state, wake_repaired(sheet, people, sheet["now"]))
+        if revived:
+            print(
+                "watchdog: a wake edge is admitting us again; re-raising "
+                f"{len(revived)} finding(s) posted while it was down: "
+                + ", ".join(sorted(revived))
+            )
         findings = suppress(findings, state, now)
         record_restarts(sheet, state)
-    rc, delivered = report(findings, sheet, args, post_ok=args.post and not historical)
+    rc, delivered, event_id = report(
+        findings, sheet, args, post_ok=args.post and not historical
+    )
     # Commit the suppression ladder only for a run that actually delivered what
     # it found. `suppress` retires a key for a day the moment it hands it back,
     # so writing state after a dry run, a failed post, or a skipped tick makes
@@ -1864,17 +2013,22 @@ def main(argv: list[str]) -> int:
     # `--relay` inspection at 2026-09-23T21:07:28Z recorded the first real
     # WAKE_DEAD as posted, and the timer three minutes later published nothing.
     if keeps_state and delivered:
+        stamp_delivery(findings, state, event_id)
         save_state(state)
     return rc
 
 
-def report(findings: list[dict], sheet: dict, args, post_ok: bool) -> tuple[int, bool]:
-    """Print or publish, and say whether this run delivered what it found.
+def report(
+    findings: list[dict], sheet: dict, args, post_ok: bool
+) -> tuple[int, bool, str | None]:
+    """Print or publish; say whether this run delivered, and in which message.
 
-    The second half of the return is what gates the state write. It is the same
-    distinction `post()` cannot make one level down — there, `accepted` is the
-    relay's receipt and not the seat's; here, a run that printed to a terminal
-    or lost its post to a relay error has delivered nothing at all.
+    The second element gates the state write. It is the distinction `post()`
+    cannot make one level down — there, `accepted` is the relay's receipt and
+    not the seat's; here, a run that printed to a terminal or lost its post to
+    a relay error has delivered nothing at all. The third is the relay's id
+    for the message, which `stamp_delivery` stores so a later tick can ask the
+    named seat whether it ever read it.
     """
     if args.json:
         print(json.dumps(findings, indent=1, sort_keys=True))
@@ -1889,12 +2043,12 @@ def report(findings: list[dict], sheet: dict, args, post_ok: bool) -> tuple[int,
             print(f"clean: {len(sheet['seats'])} seats, no findings at {sheet['nowIso']}")
         # Nothing was found, so nothing can be lost by committing: this is the
         # tick that ages closed incidents out and records the restart counts.
-        return 0, True
+        return 0, True, None
 
     if post_ok and rock_is_mid_turn(sheet):
         print("watchdog: rock has a turn in flight in the health channel; skipping this tick")
         # Skipped, not delivered. The next tick must raise it again.
-        return 10, False
+        return 10, False, None
 
     text = render(findings, sheet)
     wake = any(f["severity"] == "wake" for f in findings)
@@ -1912,10 +2066,10 @@ def report(findings: list[dict], sheet: dict, args, post_ok: bool) -> tuple[int,
             # suppress() has already decided this incident is worth one message,
             # so this leg fires once per incident, not once per tick.
             post(text, mention=False, channel=OWNER_DM_CHANNEL)
-        return 10, result is not None
+        return 10, result is not None, (result or {}).get("event_id")
     if not args.json:
         print(text)
-    return 10, False
+    return 10, False, None
 
 
 if __name__ == "__main__":
