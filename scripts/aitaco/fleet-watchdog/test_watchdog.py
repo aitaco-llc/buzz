@@ -25,9 +25,21 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-import watchdog  # noqa: E402
 
 HERE = Path(__file__).parent
+
+# watchdog.py resolves seat names from two files outside this repository:
+# `~/dev/agents/deploy/seats.conf` and `~/.config/buzz-agents/pubkeys.txt`.
+# Neither exists on a CI runner, and without them every relay-backed class
+# finds no seats — so the suite went red away from hip and metal, which meant
+# there was no gate on this script anywhere. Pin both to the frozen copies in
+# `fixtures/roster/`, unconditionally: the sheets here are instants captured in
+# the past and the roster that gives them meaning is the one from then, not
+# whatever is on the machine running the test.
+os.environ["WATCHDOG_SEATS_CONF"] = str(HERE / "fixtures" / "roster" / "seats.conf")
+os.environ["WATCHDOG_PUBKEYS"] = str(HERE / "fixtures" / "roster" / "pubkeys.txt")
+
+import watchdog  # noqa: E402
 OUTAGE = HERE / "fixtures" / "sheet-2026-09-22T0052Z-limit-outage.json"
 # The same outage twenty-two minutes earlier, while the provider was still
 # refusing. The distinction is the whole point of the restart veto: at 00:52Z
