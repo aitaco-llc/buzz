@@ -26,6 +26,13 @@ import {
 
 type RepositoryReference = {
   repoAddress: string;
+  /**
+   * The pubkeys this repository's own `kind:30617` vouches for, parsed by
+   * `eventToRepository`. Optional because this module is structurally typed
+   * over anything with a `repoAddress`, and an absent list must read as
+   * "vouched for nobody" rather than widening trust.
+   */
+  maintainers?: string[];
 };
 
 type ProjectReference = {
@@ -177,6 +184,7 @@ export async function fetchProjectsWorkItems<TProject extends ProjectReference>(
           updatesByRepo.get(repository.repoAddress) ?? [],
           commentsByRepo.get(repository.repoAddress) ?? [],
           statusesByRepo.get(repository.repoAddress) ?? [],
+          repository.maintainers ?? [],
         ).map((pullRequest) => ({ project, pullRequest, repository })),
       ),
     )
@@ -210,6 +218,7 @@ export async function fetchProjectsWorkItems<TProject extends ProjectReference>(
           ),
           statusesByRepo.get(repository.repoAddress) ?? [],
           commentsByRepo.get(repository.repoAddress) ?? [],
+          repository.maintainers ?? [],
         ).map((issue) => ({ issue, project, repository })),
       ),
     )

@@ -43,20 +43,37 @@ function repoOwnerFromAddress(repoAddress) {
 }
 
 /**
- * Pubkeys allowed to change a root event's lifecycle (status, updates):
- * the root author and the owner of the repo the root event targets.
- * Anyone else's status/update events are ignored (NIP-34 scopes these
- * to the root author or a maintainer).
+ * Pubkeys allowed to change a root event's lifecycle (status, updates,
+ * assignment): the root author, the owner of the repo the root event targets,
+ * and the maintainers that repo's own `kind:30617` names. Anyone else's
+ * events are ignored — NIP-34 scopes these three ways and no further.
+ *
+ * `maintainers` comes from the caller's `Repository.maintainers`, which
+ * `eventToRepository` already parses, lowercases and validates off the
+ * announcement. It is optional and defaults to none, because the announcement
+ * is not in hand at every call site and "unknown" must read as "vouched for
+ * nobody" rather than as "vouched for anyone".
+ *
+ * Buzz could not write the tag at all until `buzz repos create --maintainer`,
+ * so for an older announcement this set is still author-plus-owner and this
+ * parameter changes nothing. It matters for a repository shared by a fleet,
+ * where owner-only trust means exactly one key can close or reassign anyone
+ * else's task.
  */
-export function allowedActorsForRoot(rootEvent) {
+export function allowedActorsForRoot(rootEvent, maintainers = []) {
   const allowed = new Set([rootEvent.pubkey.toLowerCase()]);
   const owner = repoOwnerFromAddress(getTag(rootEvent, "a"));
   if (owner) allowed.add(owner);
+  for (const maintainer of maintainers) {
+    if (/^[a-fA-F0-9]{64}$/.test(maintainer ?? "")) {
+      allowed.add(maintainer.toLowerCase());
+    }
+  }
   return allowed;
 }
 
-function latestStatusForIssue(issue, statusEvents) {
-  const allowedActors = allowedActorsForRoot(issue);
+function latestStatusForIssue(issue, statusEvents, maintainers) {
+  const allowedActors = allowedActorsForRoot(issue, maintainers);
   return statusEvents
     .filter(
       (event) =>
@@ -97,8 +114,8 @@ function statusFromEvent(issue, statusEvent) {
  * overriding authority while allowing a later observed owner/author decision
  * to be superseded by the affected assignee.
  */
-function assignmentStateForIssue(issue, issueCommentEvents) {
-  const allowedActors = allowedActorsForRoot(issue);
+function assignmentStateForIssue(issue, issueCommentEvents, maintainers) {
+  const allowedActors = allowedActorsForRoot(issue, maintainers);
   const assignees = new Set();
   const operationHeads = new Map();
   const uncausedSelfServiceOperations = [];
@@ -182,15 +199,20 @@ export function eventToProjectIssue(
   issue,
   statusEvents = [],
   commentEvents = [],
+  maintainers = [],
 ) {
-  const latestStatus = latestStatusForIssue(issue, statusEvents);
+  const latestStatus = latestStatusForIssue(issue, statusEvents, maintainers);
   const issueCommentEvents = commentEvents.filter((event) =>
     event.tags.some(
       (tag) => (tag[0] === "e" || tag[0] === "E") && tag[1] === issue.id,
     ),
   );
   const comments = commentsForIssue(issueCommentEvents);
-  const assignmentState = assignmentStateForIssue(issue, issueCommentEvents);
+  const assignmentState = assignmentStateForIssue(
+    issue,
+    issueCommentEvents,
+    maintainers,
+  );
   const labels = getAllTags(issue, "t");
   const title =
     getTag(issue, "subject") || issue.content.split("\n")[0] || "Untitled task";
@@ -226,9 +248,12 @@ export function projectIssueEventsToIssues(
   issueEvents,
   statusEvents = [],
   commentEvents = [],
+  maintainers = [],
 ) {
   return [...issueEvents]
-    .map((issue) => eventToProjectIssue(issue, statusEvents, commentEvents))
+    .map((issue) =>
+      eventToProjectIssue(issue, statusEvents, commentEvents, maintainers),
+    )
     .sort((left, right) => right.updatedAt - left.updatedAt);
 }
 
