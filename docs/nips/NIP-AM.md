@@ -214,6 +214,21 @@ unlabeled total.
 `cancelled`, `error`, `unknown`. Consumers MUST treat unrecognized
 `stopReason` values as `unknown`; the token counts remain valid.
 
+### `stopReason`: the aitaco fork's two extra values
+
+This fork also publishes `max_turn_requests` and `refusal`, which are ACP stop
+reasons the five values above cannot express. A consumer that has not heard of
+them reads them as `unknown` under the rule in the paragraph above, which is
+exactly what this fork published for them before — so the extension takes
+nothing away from a reader and is not a breaking change.
+
+They exist because collapsing them into `unknown` hid the one failure that
+looks identical to success. An ACP turn that exhausts its per-turn request
+budget returns a successful prompt result with `stopReason: max_turn_requests`;
+the model may not have published a word. Reported as `unknown`, it is
+indistinguishable from an old harness that reported nothing at all. Reported as
+`max_turn_requests`, it is a turn the owner can find and count.
+
 ## Publisher Behavior
 
 - Publish exactly one event per completed turn, at turn completion, including

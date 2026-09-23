@@ -3980,7 +3980,11 @@ async fn tokio_main() -> Result<()> {
                 // outcome should force someone to decide how it reads in the
                 // log rather than silently landing in an "other" bucket.
                 let outcome = match &result.outcome {
-                    PromptOutcome::Ok(_) => "ok",
+                    // Not a wildcard: `Ok` carries the stop reason, and four of
+                    // the five are not "ok". See `pool::ok_outcome_label` — an
+                    // exhausted turn recorded as `ok` is why three of Lloyd's
+                    // asks were dropped without anyone being able to see it.
+                    PromptOutcome::Ok(stop_reason) => pool::ok_outcome_label(stop_reason),
                     PromptOutcome::Error(_) => "error",
                     PromptOutcome::ProjectContextIndeterminate(_) => {
                         "project_context_indeterminate"
@@ -5492,7 +5496,7 @@ fn handle_prompt_result(
     }
 
     let outcome_label = match &result.outcome {
-        PromptOutcome::Ok(_) => "ok",
+        PromptOutcome::Ok(stop_reason) => pool::ok_outcome_label(stop_reason),
         PromptOutcome::Error(_) => "error",
         PromptOutcome::ProjectContextIndeterminate(_) => "project_context_indeterminate",
         PromptOutcome::Timeout(TimeoutKind::Idle) => "idle_timeout",

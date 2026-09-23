@@ -5189,6 +5189,31 @@ impl Drop for TurnCompletionGuard {
     }
 }
 
+/// What a turn that returned [`PromptOutcome::Ok`] should be called in the
+/// journal and in the durable turn index.
+///
+/// `Ok` means the ACP conversation completed without the harness losing the
+/// agent — it does **not** mean the turn did its job. Four of the five stop
+/// reasons end a turn early, and one of them, `max_turn_requests`, is
+/// indistinguishable from success at every layer that used to read this:
+/// `outcome: ok` in the index, `Unknown` in the NIP-AM metric, a warn line in
+/// the journal, and nothing at all in the channel. rock's turn `a1208720`
+/// (2026-09-22 00:53Z) burned 40 tool calls, 91 s and $0.33 answering Lloyd
+/// about two bug reports, published no message, and was recorded as `ok`.
+///
+/// So each stop reason gets its own word, and `ok` is reserved for the turn
+/// that reached its own end. Callers that need to distinguish a *silent*
+/// exhausted turn from one that answered ask the relay, not this function.
+pub(crate) fn ok_outcome_label(stop_reason: &StopReason) -> &'static str {
+    match stop_reason {
+        StopReason::EndTurn => "ok",
+        StopReason::MaxTurnRequests => "exhausted",
+        StopReason::MaxTokens => "limited",
+        StopReason::Refusal => "refused",
+        StopReason::Cancelled => "cancelled",
+    }
+}
+
 /// Map an ACP `StopReason` to the NIP-AM `StopReason` used in kind 44200 payloads.
 fn acp_stop_to_core(r: &StopReason) -> buzz_core::agent_turn_metric::StopReason {
     use buzz_core::agent_turn_metric::StopReason as CoreStop;
@@ -5196,8 +5221,93 @@ fn acp_stop_to_core(r: &StopReason) -> buzz_core::agent_turn_metric::StopReason 
         StopReason::EndTurn => CoreStop::EndTurn,
         StopReason::Cancelled => CoreStop::Cancelled,
         StopReason::MaxTokens => CoreStop::MaxTokens,
-        StopReason::MaxTurnRequests => CoreStop::Unknown,
-        StopReason::Refusal => CoreStop::Unknown,
+        // Both used to land on `Unknown`, which threw away the only two signals
+        // that distinguish a turn that stopped early from one that finished.
+        // An exhausted request budget in particular is the failure the owner's
+        // metrics could not see: `PromptOutcome::Ok`, `outcome: ok` in the
+        // index, and possibly not one published word.
+        StopReason::MaxTurnRequests => CoreStop::MaxTurnRequests,
+        StopReason::Refusal => CoreStop::Refusal,
+    }
+}
+
+#[cfg(test)]
+mod turn_outcome_tests {
+    use super::*;
+    use buzz_core::agent_turn_metric::StopReason as CoreStop;
+
+    /// The prompt result rock's harness really read at the end of turn
+    /// `a1208720` — Lloyd's "are you on top of these two bug reports??" in
+    /// #user-support, 2026-09-22 00:53Z. Copied verbatim out of
+    /// `~/.local/state/buzz-turns/rock/turns/2026-09-22/a1208720-….jsonl`, the
+    /// only place the signal survived: the index row for that turn says
+    /// `"outcome":"ok"`, the 44200 metric said `unknown`, and the channel got
+    /// nothing at all.
+    const EXHAUSTED_TURN: &str = include_str!("../tests/fixtures/turn-a1208720-prompt-result.json");
+
+    /// Replay the capture through the real wire parser and both mappers. This
+    /// is the check that fails on every build before this one: `ok` in the
+    /// index and `Unknown` in the metric.
+    #[test]
+    fn the_captured_exhausted_turn_is_not_called_ok_anywhere() {
+        let result: serde_json::Value = serde_json::from_str(EXHAUSTED_TURN).expect("fixture");
+        let raw = result["stopReason"].as_str().expect("stopReason");
+        let stop = StopReason::from_str(raw).expect("a stop reason buzz-acp knows");
+        assert_eq!(stop, StopReason::MaxTurnRequests);
+
+        assert_eq!(
+            ok_outcome_label(&stop),
+            "exhausted",
+            "the durable index row is what an audit and the watchdog read"
+        );
+        assert_eq!(
+            acp_stop_to_core(&stop),
+            CoreStop::MaxTurnRequests,
+            "the owner's NIP-AM metric must carry the same fact as the index"
+        );
+
+        // Named so the fixture cannot be quietly swapped for a friendlier one.
+        assert_eq!(
+            result["_meta"]["rebrand"]["termination"]["kind"],
+            "budget_exhausted"
+        );
+        assert_eq!(result["_meta"]["rebrand"]["toolCalls"], 40);
+    }
+
+    /// `ok` belongs to one stop reason and no other. Exhaustive by hand rather
+    /// than by wildcard: a sixth ACP stop reason must force this decision to be
+    /// made again, not inherit "ok" by default.
+    #[test]
+    fn only_a_turn_that_reached_its_own_end_is_called_ok() {
+        assert_eq!(ok_outcome_label(&StopReason::EndTurn), "ok");
+        for (stop, label) in [
+            (StopReason::MaxTurnRequests, "exhausted"),
+            (StopReason::MaxTokens, "limited"),
+            (StopReason::Refusal, "refused"),
+            (StopReason::Cancelled, "cancelled"),
+        ] {
+            assert_eq!(ok_outcome_label(&stop), label);
+            assert_ne!(
+                ok_outcome_label(&stop),
+                "ok",
+                "{stop:?} ends a turn early and must not read as success"
+            );
+        }
+    }
+
+    /// NIP-AM's own forward-compatibility rule is what makes the two added
+    /// values safe, so pin the wire spelling a consumer will see.
+    #[test]
+    fn the_two_added_stop_reasons_have_stable_wire_names() {
+        let name = |s: CoreStop| serde_json::to_value(s).expect("serialize");
+        assert_eq!(name(CoreStop::MaxTurnRequests), "max_turn_requests");
+        assert_eq!(name(CoreStop::Refusal), "refusal");
+        // Round-trip: an older publisher's values still read the same.
+        for wire in ["end_turn", "max_tokens", "cancelled", "error", "unknown"] {
+            let back: CoreStop =
+                serde_json::from_value(serde_json::Value::String(wire.into())).expect("parse");
+            assert_eq!(name(back), wire);
+        }
     }
 }
 
@@ -10737,11 +10847,23 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             acp_stop_to_core(&StopReason::MaxTokens),
             CoreStop::MaxTokens
         );
+        // These two used to be asserted as `Unknown`, which is how the owner's
+        // metric lost every exhausted turn. See `mod turn_outcome_tests`.
         assert_eq!(
             acp_stop_to_core(&StopReason::MaxTurnRequests),
-            CoreStop::Unknown
+            CoreStop::MaxTurnRequests
         );
-        assert_eq!(acp_stop_to_core(&StopReason::Refusal), CoreStop::Unknown);
+        assert_eq!(acp_stop_to_core(&StopReason::Refusal), CoreStop::Refusal);
+        // Nothing maps to `Unknown` any more: every ACP stop reason has a name.
+        for stop in [
+            StopReason::EndTurn,
+            StopReason::Cancelled,
+            StopReason::MaxTokens,
+            StopReason::MaxTurnRequests,
+            StopReason::Refusal,
+        ] {
+            assert_ne!(acp_stop_to_core(&stop), CoreStop::Unknown, "{stop:?}");
+        }
     }
 
     /// `publish_agent_turn_metric` is a no-op when `usage` is `None`.
