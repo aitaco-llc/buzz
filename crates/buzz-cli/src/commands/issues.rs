@@ -52,11 +52,11 @@ enum IssueAssignmentOperation {
 }
 
 #[derive(Debug)]
-struct AssignmentEvent {
-    id: String,
-    pubkey: String,
-    created_at: u64,
-    tags: Vec<Vec<String>>,
+pub(crate) struct AssignmentEvent {
+    pub(crate) id: String,
+    pub(crate) pubkey: String,
+    pub(crate) created_at: u64,
+    pub(crate) tags: Vec<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -244,6 +244,27 @@ fn reduce_assignment_operations(
         apply_assignment_operation(&mut state, operation);
     }
     state
+}
+
+/// The one accountable assignee of a task, for the board.
+///
+/// The same reducer `buzz issues assign` writes through, so the board cannot
+/// show an assignment the CLI would not have trusted. Section 6 says exactly
+/// one assignee; when the reduced set holds more than one — which only a
+/// hand-written note can produce — the lowest pubkey wins so that two readers
+/// agree, and the nudge still has somebody to name.
+pub(crate) fn board_assignee(
+    issue_id: &str,
+    issue_author: &str,
+    repo_owner: &str,
+    maintainers: &[String],
+    events: &[AssignmentEvent],
+) -> Option<String> {
+    let state =
+        reduce_assignment_operations(issue_id, issue_author, repo_owner, maintainers, events);
+    let mut assignees: Vec<String> = state.assignees.into_iter().collect();
+    assignees.sort();
+    assignees.into_iter().next()
 }
 
 struct IssueAssignmentContext {
