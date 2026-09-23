@@ -158,6 +158,27 @@ ESCALATE_NAME = os.environ.get("WATCHDOG_ESCALATE_NAME", "aldrin")
 # not decide on its own to start a conversation in someone's client.
 OWNER_DM_CHANNEL = os.environ.get("WATCHDOG_OWNER_DM_CHANNEL", "").strip()
 
+# The last rung. When the escalation seat cannot be reached either, the only
+# reader left is a person, and #fleet-health is where they read. Mentioning a
+# human costs them an interruption, so this fires on exactly two conditions,
+# both of which mean nobody in the fleet can act on it:
+#
+#   1. a WAKE_DEAD names the escalation seat itself — there is provably no seat
+#      left that a mention in this channel can reach; or
+#   2. a WAKE_DEAD was posted and is still live two ticks later — it was raised
+#      to a seat that can read it, and nothing changed.
+#
+# Condition 1 is state-free and is the one that matters: it is the case a
+# second fallback seat could not fix, because every allowlist comes from the
+# same generator. Condition 2 is rock's, and covers a reachable seat that is
+# simply not acting.
+OWNER_PUBKEY = os.environ.get(
+    "WATCHDOG_OWNER_PUBKEY",
+    "0f8471300f7806058507999b06f16805168c640aad3ffa5474cf8ec9e7c6a0ca",
+)
+OWNER_NAME = os.environ.get("WATCHDOG_OWNER_NAME", "lloyd")
+WAKE_DEAD_ESCALATE_SECS = _secs("WATCHDOG_WAKE_DEAD_ESCALATE_SECS", 1200)
+
 # The marker string that only a binary carrying buzz#58 contains. Probing the
 # running binary for it beats keeping a sha-to-commit map: the map goes stale
 # silently, and `/proc/<pid>/exe` is still readable after the file it came from
@@ -1370,6 +1391,7 @@ def eval_wake_dead(sheet: dict, people: dict, now: float) -> list[dict]:
                 wakeIds=[m["id"] for m in posts],
                 firstLostIso=iso(posts[0].get("created_at")),
                 lastLostIso=iso(posts[-1].get("created_at")),
+                lastLostAt=posts[-1].get("created_at"),
                 link=(
                     f"buzz://message?channel={HEALTH_CHANNEL}&id={posts[-1]['id']}"
                 ),
@@ -1464,12 +1486,35 @@ def suppress(findings: list[dict], state: dict, now: float) -> list[dict]:
             item["firstSeen"] = prior.get("firstSeen", now)
             item["escalated"] = True
             fresh.append(item)
+        elif (
+            item["class"] == "WAKE_DEAD"
+            and not prior.get("escalatedToOwner")
+            and now - (prior.get("posted") or now) >= WAKE_DEAD_ESCALATE_SECS
+            and (item["evidence"].get("lastLostAt") or 0) >= (prior.get("posted") or 0)
+        ):
+            # Raised to a seat that can read it, still true two ticks later,
+            # and STILL LOSING: at least one post has gone missing since the
+            # alarm went out. Without that last clause a fixed wake edge keeps
+            # escalating, because the post that was dropped before the repair
+            # stays in the two-hour relay window and the seat's routing log
+            # remembers `author_gate` for it forever. Waking a person about a
+            # fault that has already been fixed is the one thing this rung
+            # must not do.
+            item["firstSeen"] = prior.get("firstSeen", now)
+            item["escalated"] = True
+            item["ownerEscalation"] = True
+            fresh.append(item)
         keys[item["key"]] = {
             "severity": item["severity"],
             "class": item["class"],
             "firstSeen": (prior or {}).get("firstSeen", now),
             "lastSeen": now,
             "posted": now if (prior is None or item in fresh) else (prior or {}).get("posted"),
+            "escalatedToOwner": (
+                now
+                if item.get("ownerEscalation")
+                else (prior or {}).get("escalatedToOwner")
+            ),
         }
     # Keys nobody has seen for a day are closed incidents.
     for key in [k for k, v in keys.items() if now - (v.get("lastSeen") or 0) > 86400]:
@@ -1512,6 +1557,22 @@ ORDER = [
 ]
 
 
+def owner_escalation(findings: list[dict]) -> bool:
+    """Has this run run out of seats to tell?
+
+    Either a WAKE_DEAD names the escalation seat itself — a mention to it
+    travels the path being reported as broken, and a second fallback seat would
+    not help because every allowlist comes from the same generator — or one has
+    been standing, posted and unanswered, for two ticks.
+    """
+    for f in findings:
+        if f["class"] != "WAKE_DEAD":
+            continue
+        if f.get("ownerEscalation") or f["evidence"].get("seat") == ESCALATE_NAME:
+            return True
+    return False
+
+
 def render(findings: list[dict], sheet: dict) -> str:
     """One message, evidence inline.
 
@@ -1523,9 +1584,12 @@ def render(findings: list[dict], sheet: dict) -> str:
     """
     wake = [f for f in findings if f["severity"] == "wake"]
     dead = [f for f in findings if f["class"] == "WAKE_DEAD"]
+    to_owner = owner_escalation(findings)
     lines = []
     head = f"**{len(findings)} finding(s)** on `{sheet['body']}` at {sheet['nowIso']}."
-    if dead:
+    if to_owner:
+        lines.append(f"@{OWNER_NAME} {head}")
+    elif dead:
         # Naming the silent seat here would send this down the one path we have
         # just established does not work.
         lines.append(f"@{ESCALATE_NAME} {head}")
@@ -1547,15 +1611,28 @@ def render(findings: list[dict], sheet: dict) -> str:
         lines.append("")
     if dead:
         who = ", ".join(sorted({f["evidence"]["seat"] for f in dead}))
-        lines.append(
-            f"_Mentioning {ESCALATE_NAME} rather than {who}: a mention to {who} is "
-            f"the thing that is broken._"
-        )
-        if not OWNER_DM_CHANNEL:
+        if to_owner:
+            self_named = [f for f in dead if f["evidence"].get("seat") == ESCALATE_NAME]
+            why = (
+                f"`{ESCALATE_NAME}` is itself the seat not answering, so there is "
+                "no seat left in this channel to hand it to"
+                if self_named
+                else f"this was raised to {ESCALATE_NAME} two ticks ago and is "
+                "still true"
+            )
             lines.append(
-                "_No out-of-band escalation is configured. If "
-                f"{ESCALATE_NAME}'s wake edge is dead too, nothing here reaches a "
-                "human: set `WATCHDOG_OWNER_DM_CHANNEL` in fleet-watchdog.env._"
+                f"_Mentioning you because {why}. **The decision you owe:** whether "
+                f"to restart the named seat(s) — `systemctl --user restart "
+                f"buzz-agent@<seat>` — or to stop the timer while this is looked "
+                f"at (`systemctl --user stop fleet-watchdog.timer`). Nothing "
+                f"automated will fix a wake edge; an allowlist change only takes "
+                f"effect on a seat's next start._"
+            )
+        else:
+            lines.append(
+                f"_Mentioning {ESCALATE_NAME} rather than {who}: a mention to {who} is "
+                f"the thing that is broken. If this is still standing in two ticks, "
+                f"{OWNER_NAME} is mentioned instead._"
             )
         lines.append("")
     lines.append(
@@ -1823,7 +1900,13 @@ def report(findings: list[dict], sheet: dict, args, post_ok: bool) -> tuple[int,
     wake = any(f["severity"] == "wake" for f in findings)
     dead = [f for f in findings if f["class"] == "WAKE_DEAD"]
     if post_ok:
-        result = post(text, mention=wake, mention_pubkey=ESCALATE_PUBKEY if dead else None)
+        if owner_escalation(findings):
+            target = OWNER_PUBKEY
+        elif dead:
+            target = ESCALATE_PUBKEY
+        else:
+            target = None
+        result = post(text, mention=wake, mention_pubkey=target)
         print(json.dumps(result) if result else "watchdog: post failed")
         if dead and OWNER_DM_CHANNEL:
             # suppress() has already decided this incident is worth one message,

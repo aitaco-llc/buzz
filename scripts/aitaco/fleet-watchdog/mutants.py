@@ -94,6 +94,23 @@ MUTANTS = [
   "— the bug that ate the first real WAKE_DEAD",
   None, None,
   ('    if keeps_state and delivered:', '    if keeps_state:')),
+ ("escalation: a wake-dead naming the escalation seat itself is not special, "
+  "so the alarm is mentioned down the path it is reporting as broken",
+  None, None,
+  ('        if f.get("ownerEscalation") or f["evidence"].get("seat") == ESCALATE_NAME:',
+   '        if f.get("ownerEscalation"):')),
+ ("escalation: never re-raise a wake-dead nothing answered",
+  None, None,
+  ('            and now - (prior.get("posted") or now) >= WAKE_DEAD_ESCALATE_SECS',
+   '            and False')),
+ ("escalation: decide to wake the owner and then mention the seat anyway",
+  None, None,
+  ('            target = OWNER_PUBKEY', '            target = ESCALATE_PUBKEY')),
+ ("escalation: escalate a wake edge that has stopped losing — a person woken "
+  "about a fault that was already repaired",
+  None, None,
+  ('            and (item["evidence"].get("lastLostAt") or 0) >= (prior.get("posted") or 0)',
+   '            and True')),
 ]
 
 fails = 0
