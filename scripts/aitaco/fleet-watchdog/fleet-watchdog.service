@@ -1,0 +1,34 @@
+[Unit]
+Description=fleet-watchdog — deterministic stall detection for the aitaco agent fleet
+Documentation=file:%h/dev/buzz/scripts/aitaco/fleet-watchdog/README.md
+
+# Deliberately NOT Wants=/After= any buzz-agent@ unit. The watchdog's whole job
+# is to be running when the seats are not.
+
+[Service]
+Type=oneshot
+
+# Its own identity, and only its own. A watchdog that inherited a seat's key
+# would post as that seat, and a seat that cannot run is exactly the one it
+# would be impersonating.
+EnvironmentFile=%h/.config/aitaco/fleet-watchdog.env
+
+# Not %h/.local/bin: writing there is the fleet deploy path, and this is not a
+# fleet binary. libexec keeps the two apart so a watchdog update can never be
+# mistaken for a harness rollout.
+ExecStart=%h/.local/libexec/fleet-watchdog/watchdog.py --post --relay
+
+# 10 means "findings were raised", which is a normal outcome and not a failure.
+# Without this systemd marks every tick that found something as failed, and the
+# watchdog's own unit becomes the noisiest thing in the journal.
+SuccessExitStatus=10
+
+# A tick that cannot finish in four minutes has found something pathological,
+# and a hung watchdog is worse than none: systemd would hold the slot and the
+# next tick would never run.
+TimeoutStartSec=240
+
+# Nothing here is worth a restart loop. The timer fires again in ten minutes.
+Restart=no
+Nice=10
+IOSchedulingClass=idle
