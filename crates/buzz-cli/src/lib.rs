@@ -1235,6 +1235,12 @@ pub enum ReposCmd {
         /// Preferred Nostr relay(s) for repo discovery — can be specified multiple times
         #[arg(long = "nostr-relay")]
         relays: Vec<String>,
+        /// Pubkey (64-char hex) the owner vouches for — can be specified
+        /// multiple times. A NIP-34 reader trusts a maintainer's status and
+        /// assignment events on this repository's issues as it trusts the
+        /// owner's, so this is who may close or reassign someone else's task.
+        #[arg(long = "maintainer")]
+        maintainers: Vec<String>,
         /// Channel UUID to bind the repo to. The `buzz-channel` tag is the
         /// git ACL: without it the relay 404s every clone/fetch/push until
         /// the author runs `buzz repos bind` (issue #3527).
