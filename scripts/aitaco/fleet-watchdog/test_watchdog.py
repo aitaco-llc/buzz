@@ -960,6 +960,41 @@ def main() -> int:
           bool(wrote) and not wrote[0]["keys"]["unit:vinge"]["replay"],
           str(wrote[:1]))
 
+    # The same run, judged at an instant where the lost posts are one tick
+    # old. A seat that is mid-turn has not had its chance yet, so there is no
+    # loss to replay — and the instant that governs is the sheet's, not the
+    # wall clock of whatever process is reading it.
+    young = repaired_sheet()
+    young["seats"]["vinge"]["unit"] = {
+        "available": True, "activeState": "inactive", "nRestarts": 0,
+    }
+    # The OLDEST post, not the newest — the grace is per post, so moving the
+    # instant relative to the newest leaves the earlier one already past it.
+    # The first draft of this control did that and failed, which is the only
+    # reason it is known to be able to.
+    young["now"] = min(
+        m["created_at"]
+        for m in young["relay"]["messages"][watchdog.HEALTH_CHANNEL]
+    ) + 600
+    sent_young = []
+    try:
+        watchdog.collect = lambda *a, **k: json.loads(json.dumps(young))
+        watchdog.collect_relay = lambda *a, **k: None
+        watchdog.load_state = lambda: json.loads(json.dumps(seeded))
+        watchdog.save_state = lambda st: None
+        watchdog.buzz_on_path = lambda: "/nonexistent/buzz"
+        watchdog.post = lambda text, mention, mention_pubkey=None, channel=None: (
+            sent_young.append(text) or {"accepted": True, "event_id": "d" * 64})
+        with contextlib.redirect_stdout(io.StringIO()):
+            watchdog.main(["--post", "--min-uptime", "0"])
+    finally:
+        watchdog.collect, watchdog.collect_relay = keep["collect"], keep["relay"]
+        watchdog.save_state, watchdog.load_state = keep["save"], keep["load"]
+        watchdog.buzz_on_path, watchdog.post = keep["which"], keep["post"]
+
+    check("a loss too young to judge is not replayed either",
+          sent_young == [], str(sent_young)[:300])
+
     # --- the CLI the relay classes shell out to -----------------------------
     # `buzz_json` swallows the OSError a missing binary raises, so a run with
     # no `buzz` on PATH read an empty relay and printed `clean: N seats, no
