@@ -239,12 +239,12 @@ def main() -> int:
     # And the other half: with the reply deleted from the same bytes, the same
     # detector must fire. A check that cannot be made to fail proves nothing.
     sheet = json.loads(RELAY.read_text())
-    victim = removed = None
+    victim = removed = victim_turn = None
     for seat, data in sheet["seats"].items():
         if data["openTurns"] or not data.get("recentTurns"):
             continue
         for turn in data["recentTurns"]:
-            if turn["outcome"] != "ok" or not turn.get("channelId"):
+            if turn["outcome"] not in watchdog.FINISHED_OUTCOMES or not turn.get("channelId"):
                 continue
             pub = (watchdog.roster().get(seat) or {}).get("pubkey")
             rows = sheet["relay"]["messages"].get(turn["channelId"], [])
@@ -256,7 +256,7 @@ def main() -> int:
             if mine:
                 for m in mine:
                     rows.remove(m)
-                victim, removed = seat, len(mine)
+                victim, removed, victim_turn = seat, len(mine), turn
                 break
         if victim:
             break
@@ -278,6 +278,40 @@ def main() -> int:
                 f["evidence"].get("link", "").startswith("buzz://message?channel=")
                 for f in stranded
             ),
+        )
+
+        # The same case, relabelled. buzz-acp used to write `ok` for a turn that
+        # ran out of tool calls before it replied; it now writes `exhausted`
+        # (`pool::ok_outcome_label`). That is the turn MOST likely to have left
+        # an ask unanswered — rock's `a1208720` on 2026-09-22 is the case this
+        # whole change came from — so an outcome test that reads only `ok`
+        # would have silently stopped covering it on the day the harness
+        # started telling the truth.
+        for outcome in ("exhausted", "limited", "refused"):
+            victim_turn["outcome"] = outcome
+            relabelled = [
+                f
+                for f in watchdog.evaluate(
+                    sheet, {"keys": {}, "restarts": {}}, watchdog.roster()
+                )
+                if f["class"] == "STRANDED_HANDOFF"
+            ]
+            check(
+                f"relay: a turn recorded `{outcome}` still strands its asker",
+                any(f["evidence"]["seat"] == victim for f in relabelled),
+                str([f["evidence"]["seat"] for f in relabelled]),
+            )
+        # An outcome that is not finished (a retry may still run) must not.
+        victim_turn["outcome"] = "error"
+        still_running = [
+            f
+            for f in watchdog.evaluate(sheet, {"keys": {}, "restarts": {}}, watchdog.roster())
+            if f["class"] == "STRANDED_HANDOFF" and f["evidence"]["seat"] == victim
+        ]
+        check(
+            "relay: a turn that errored is not stranded — it is retryable",
+            still_running == [],
+            str(len(still_running)),
         )
 
     # --- collect() itself, which no fixture can exercise --------------------

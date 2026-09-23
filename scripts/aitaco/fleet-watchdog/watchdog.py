@@ -941,14 +941,30 @@ def eval_units(sheet: dict, state: dict, now: float) -> list[dict]:
     return out
 
 
+#: Index outcomes that mean the turn is over and the seat is not coming back to
+#: it. `ok` is a turn that reached its own end; the other three were cut off
+#: (buzz-acp `pool::ok_outcome_label`) and are if anything MORE likely to have
+#: left an ask unanswered — `exhausted` is the audited 2026-09-22 shape, where
+#: rock spent a whole tool-call budget on Lloyd's question and published
+#: nothing. They were all written `ok` before that change, which is why this
+#: reads a set rather than a string: an outcome not listed here (an error, a
+#: timeout, a dead letter) has its own detectors and a retry may still run.
+FINISHED_OUTCOMES = {"ok", "exhausted", "limited", "refused"}
+
+
 def eval_stranded(sheet: dict, people: dict, now: float) -> list[dict]:
     """A finished handoff that was never returned.
 
     Work only happens inside turns. So if B's index says a turn answering A's
-    p-tag ended `ok`, B has no turn open, and B has published nothing in that
+    p-tag is over, B has no turn open, and B has published nothing in that
     thread since, then B is done and A is still waiting. That is the 2026-09-19
     shape: three green PRs sat unmerged for 70 minutes because the callback
     mention was never sent.
+
+    A cut-off turn normally posts its own `⚠️` notice into that thread, signed
+    with the seat's key, and that publication suppresses this finding — which is
+    the right order: the harness answers in seconds, this answers in minutes.
+    This stays as the backstop for the case where the notice never went out.
     """
     msgs = sheet["relay"]["messages"]
     by_id = {m["id"]: m for ch in msgs.values() for m in ch}
@@ -958,7 +974,7 @@ def eval_stranded(sheet: dict, people: dict, now: float) -> list[dict]:
         if not pub or data["openTurns"]:
             continue  # a seat mid-turn has not finished anything yet
         for turn in data["recentTurns"]:
-            if turn["outcome"] != "ok" or not turn.get("channelId"):
+            if turn["outcome"] not in FINISHED_OUTCOMES or not turn.get("channelId"):
                 continue
             if now - turn["completedAt"] < STRANDED_SECS:
                 continue
