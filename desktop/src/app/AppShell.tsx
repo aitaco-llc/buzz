@@ -150,6 +150,7 @@ export function AppShell() {
     goHome,
     goNewMessage,
     goProjects,
+    goTasks,
     goPulse,
     goSettings,
     goWorkflows,
@@ -889,6 +890,7 @@ export function AppShell() {
                           ]}
                           onSelectHome={() => void goHome()}
                           onSelectProjects={() => void goProjects()}
+                          onSelectTasks={() => void goTasks()}
                           onSelectPulse={() => void goPulse()}
                           onSelectSettings={handleOpenSettings}
                           onSelectWorkflows={() => void goWorkflows()}

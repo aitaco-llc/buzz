@@ -273,6 +273,11 @@
   }
 
   .buzz-terminal-substrate[data-terminal-visible="false"] {
+    /* biome-ignore lint/complexity/noImportantStyles: load-bearing. A docked
+       terminal carries an inline `height: dockHeight`
+       (TerminalSubstrate.tsx), and an inline style beats any stylesheet rule
+       that is not `!important`. Without it a hidden terminal stays at its
+       docked height instead of collapsing. */
     height: 0 !important;
     min-height: 0;
     pointer-events: none;
