@@ -216,12 +216,14 @@ pub(crate) fn build_create_announcement(
     clone_urls: &[String],
     web_url: Option<&str>,
     relays: &[String],
+    maintainers: &[String],
     channel: Option<&str>,
 ) -> Result<EventBuilder, CliError> {
     validate_repo_id(repo_id)?;
 
     let clone_refs: Vec<&str> = clone_urls.iter().map(|s| s.as_str()).collect();
     let relay_refs: Vec<&str> = relays.iter().map(|s| s.as_str()).collect();
+    let maintainer_refs: Vec<&str> = maintainers.iter().map(|s| s.as_str()).collect();
 
     let mut builder = buzz_sdk::build_repo_announcement(
         repo_id,
@@ -230,6 +232,7 @@ pub(crate) fn build_create_announcement(
         &clone_refs,
         web_url,
         &relay_refs,
+        &maintainer_refs,
     )
     .map_err(|e| CliError::Other(format!("build_repo_announcement failed: {e}")))?;
 
@@ -249,6 +252,7 @@ pub async fn cmd_create_repo(
     clone_urls: &[String],
     web_url: Option<&str>,
     relays: &[String],
+    maintainers: &[String],
     channel: Option<&str>,
 ) -> Result<(), CliError> {
     let builder = build_create_announcement(
@@ -258,6 +262,7 @@ pub async fn cmd_create_repo(
         clone_urls,
         web_url,
         relays,
+        maintainers,
         channel,
     )?;
     let event = client.sign_event(builder)?;
@@ -425,6 +430,7 @@ pub async fn dispatch(cmd: crate::ReposCmd, client: &BuzzClient) -> Result<(), C
             clone_urls,
             web,
             relays,
+            maintainers,
             channel,
         } => {
             cmd_create_repo(
@@ -435,6 +441,7 @@ pub async fn dispatch(cmd: crate::ReposCmd, client: &BuzzClient) -> Result<(), C
                 &clone_urls,
                 web.as_deref(),
                 &relays,
+                &maintainers,
                 channel.as_deref(),
             )
             .await
@@ -774,6 +781,57 @@ mod tests {
     /// Issue #3527: `repos create --channel` must emit exactly one
     /// `buzz-channel` tag so the primary create command stops producing
     /// repos the relay 404s forever.
+    /// `--maintainer` reaches the wire. The fleet's tasks repository is the
+    /// case: every seat is vouched for by the owner so that any of them can
+    /// close or reassign a task, and that vouch lives in this tag and nowhere
+    /// else.
+    #[test]
+    fn create_carries_every_maintainer_through_to_the_event() {
+        let seats = vec!["c".repeat(64), "d".repeat(64)];
+        let event = build_create_announcement(
+            "tasks",
+            Some("aitaco tasks"),
+            None,
+            &[],
+            None,
+            &[],
+            &seats,
+            None,
+        )
+        .expect("build create announcement")
+        .sign_with_keys(&Keys::generate())
+        .expect("sign create announcement");
+
+        let tag: Vec<String> = event
+            .tags
+            .iter()
+            .map(|tag| tag.clone().to_vec())
+            .find(|tag| tag.first().map(String::as_str) == Some("maintainers"))
+            .expect("maintainers tag");
+        assert_eq!(tag[1..], seats[..]);
+    }
+
+    /// A bad pubkey fails the command instead of publishing an announcement
+    /// whose trust list is partly noise.
+    #[test]
+    fn create_refuses_a_maintainer_that_is_not_a_pubkey() {
+        let error = build_create_announcement(
+            "tasks",
+            None,
+            None,
+            &[],
+            None,
+            &[],
+            &["nope".to_string()],
+            None,
+        )
+        .expect_err("a malformed maintainer must not build");
+        assert!(
+            format!("{error}").contains("maintainer must be a 64-character hex pubkey"),
+            "{error}"
+        );
+    }
+
     #[test]
     fn create_with_channel_emits_exactly_one_binding_tag() {
         let channel = uuid::Uuid::new_v4().to_string();
@@ -783,6 +841,7 @@ mod tests {
             None,
             &["https://relay.example/git/owner/demo".to_string()],
             None,
+            &[],
             &[],
             Some(&channel),
         )
@@ -808,7 +867,7 @@ mod tests {
 
     #[test]
     fn create_without_channel_emits_no_binding_tag() {
-        let event = build_create_announcement("demo", None, None, &[], None, &[], None)
+        let event = build_create_announcement("demo", None, None, &[], None, &[], &[], None)
             .expect("build create announcement")
             .sign_with_keys(&Keys::generate())
             .expect("sign create announcement");
@@ -824,8 +883,9 @@ mod tests {
 
     #[test]
     fn create_rejects_malformed_channel_uuid() {
-        let error = build_create_announcement("demo", None, None, &[], None, &[], Some("nope"))
-            .expect_err("malformed channel id must not build an announcement");
+        let error =
+            build_create_announcement("demo", None, None, &[], None, &[], &[], Some("nope"))
+                .expect_err("malformed channel id must not build an announcement");
         assert!(matches!(error, crate::error::CliError::Usage(_)));
     }
 

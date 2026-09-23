@@ -868,6 +868,7 @@ pub fn build_repo_announcement(
     clone_urls: &[&str],
     web_url: Option<&str>,
     relays: &[&str],
+    maintainers: &[&str],
 ) -> Result<EventBuilder, SdkError> {
     // Validate repo_id
     check_repo_id(repo_id)?;
@@ -927,6 +928,24 @@ pub fn build_repo_announcement(
         }
     }
 
+    // Validate maintainers. NIP-34's `maintainers` is a multi-value tag of
+    // pubkeys the repository's owner vouches for; a reader that trusts a
+    // status, update or assignment event from one of them is trusting this
+    // list, so a malformed entry is refused rather than carried.
+    if maintainers.len() > 32 {
+        return Err(SdkError::InvalidInput(format!(
+            "too many maintainers (max 32, got {})",
+            maintainers.len()
+        )));
+    }
+    for maintainer in maintainers {
+        if maintainer.len() != 64 || !maintainer.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(SdkError::InvalidInput(format!(
+                "maintainer must be a 64-character hex pubkey (got {maintainer:?})"
+            )));
+        }
+    }
+
     // Validate relays
     if relays.len() > 10 {
         return Err(SdkError::InvalidInput(format!(
@@ -969,6 +988,11 @@ pub fn build_repo_announcement(
         let mut relay_tag = vec!["relays"];
         relay_tag.extend_from_slice(relays);
         tags.push(tag(&relay_tag)?);
+    }
+    if !maintainers.is_empty() {
+        let mut maintainer_tag = vec!["maintainers"];
+        maintainer_tag.extend_from_slice(maintainers);
+        tags.push(tag(&maintainer_tag)?);
     }
 
     Ok(EventBuilder::new(Kind::Custom(KIND_GIT_REPO_ANNOUNCEMENT as u16), "").tags(tags))
@@ -3514,6 +3538,7 @@ mod tests {
                 &["https://github.com/example/my-repo.git"],
                 Some("https://github.com/example/my-repo"),
                 &["wss://relay.example.com"],
+                &["a".repeat(64).as_str(), "b".repeat(64).as_str()],
             )
             .unwrap(),
         );
@@ -3538,7 +3563,8 @@ mod tests {
 
     #[test]
     fn repo_announcement_happy_path_minimal() {
-        let ev = sign(build_repo_announcement("bare-repo", None, None, &[], None, &[]).unwrap());
+        let ev =
+            sign(build_repo_announcement("bare-repo", None, None, &[], None, &[], &[]).unwrap());
         assert_eq!(ev.kind.as_u16(), 30617);
         assert_eq!(ev.content, "");
         assert!(has_tag(&ev, "d", "bare-repo"));
@@ -3583,33 +3609,91 @@ mod tests {
 
     #[test]
     fn repo_announcement_rejects_empty_repo_id() {
-        let err = build_repo_announcement("", None, None, &[], None, &[]).unwrap_err();
+        let err = build_repo_announcement("", None, None, &[], None, &[], &[]).unwrap_err();
         assert!(matches!(err, SdkError::InvalidInput(_)));
     }
 
     #[test]
     fn repo_announcement_rejects_leading_dot() {
-        let err = build_repo_announcement(".hidden", None, None, &[], None, &[]).unwrap_err();
+        let err = build_repo_announcement(".hidden", None, None, &[], None, &[], &[]).unwrap_err();
         assert!(matches!(err, SdkError::InvalidInput(_)));
     }
 
     #[test]
     fn repo_announcement_rejects_double_dot() {
-        let err = build_repo_announcement("some..repo", None, None, &[], None, &[]).unwrap_err();
+        let err =
+            build_repo_announcement("some..repo", None, None, &[], None, &[], &[]).unwrap_err();
         assert!(matches!(err, SdkError::InvalidInput(_)));
     }
 
     #[test]
     fn repo_announcement_rejects_repo_id_over_64_chars() {
         let long_id = "a".repeat(65);
-        let err = build_repo_announcement(&long_id, None, None, &[], None, &[]).unwrap_err();
+        let err = build_repo_announcement(&long_id, None, None, &[], None, &[], &[]).unwrap_err();
         assert!(matches!(err, SdkError::InvalidInput(_)));
     }
 
     #[test]
     fn repo_announcement_rejects_invalid_chars_in_repo_id() {
-        let err = build_repo_announcement("bad repo!", None, None, &[], None, &[]).unwrap_err();
+        let err =
+            build_repo_announcement("bad repo!", None, None, &[], None, &[], &[]).unwrap_err();
         assert!(matches!(err, SdkError::InvalidInput(_)));
+    }
+
+    /// `maintainers` is the NIP-34 multi-value tag that says who, besides the
+    /// owner, may move an issue's status or assignment. Buzz did not emit it
+    /// until this builder did; `docs/nips/NIP-MP.md` and the CLI's issue
+    /// reducer both read it, so its shape is load-bearing.
+    #[test]
+    fn repo_announcement_maintainers_is_one_multi_value_tag() {
+        let a = "a".repeat(64);
+        let b = "b".repeat(64);
+        let ev =
+            sign(build_repo_announcement("tasks", None, None, &[], None, &[], &[&a, &b]).unwrap());
+        let tag = ev
+            .tags
+            .iter()
+            .map(|t| t.clone().to_vec())
+            .find(|t| t.first().map(String::as_str) == Some("maintainers"))
+            .expect("maintainers tag");
+        assert_eq!(tag, vec!["maintainers".to_owned(), a, b]);
+    }
+
+    /// A repository with no maintainers carries no tag at all, rather than an
+    /// empty one: a reader must be able to tell "nobody was vouched for" from
+    /// "this publisher does not speak the tag".
+    #[test]
+    fn repo_announcement_without_maintainers_omits_the_tag() {
+        let ev = sign(build_repo_announcement("tasks", None, None, &[], None, &[], &[]).unwrap());
+        assert!(!ev
+            .tags
+            .iter()
+            .any(|t| t.clone().to_vec().first().map(String::as_str) == Some("maintainers")));
+    }
+
+    /// The tag decides who may act on someone else's task, so a malformed
+    /// entry is refused at the builder rather than published and ignored
+    /// downstream.
+    #[test]
+    fn repo_announcement_rejects_a_maintainer_that_is_not_a_pubkey() {
+        for bad in [
+            "",
+            "not-hex",
+            &"a".repeat(63),
+            &"a".repeat(65),
+            &"g".repeat(64),
+        ] {
+            let err =
+                build_repo_announcement("tasks", None, None, &[], None, &[], &[bad]).unwrap_err();
+            assert!(
+                format!("{err}").contains("maintainer must be a 64-character hex pubkey"),
+                "{bad:?} produced {err}"
+            );
+        }
+        let many: Vec<String> = (0..33).map(|i| format!("{i:064x}")).collect();
+        let refs: Vec<&str> = many.iter().map(String::as_str).collect();
+        let err = build_repo_announcement("tasks", None, None, &[], None, &[], &refs).unwrap_err();
+        assert!(format!("{err}").contains("too many maintainers"), "{err}");
     }
 
     #[test]
@@ -3624,6 +3708,7 @@ mod tests {
                     "ssh://git@github.com/org/multi-clone.git",
                 ],
                 None,
+                &[],
                 &[],
             )
             .unwrap(),

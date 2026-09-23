@@ -140,14 +140,45 @@ fn apply_assignment_operation(state: &mut AssignmentState, operation: ParsedAssi
     }
 }
 
+/// The pubkeys whose assignment operations are trusted for *other* people.
+///
+/// NIP-34 scopes an issue's status and assignment to its author, the
+/// repository's owner, and the owner's declared maintainers. The first two were
+/// always read here; `maintainers` was not, because Buzz's own announcement
+/// builder did not emit the tag until `buzz repos create --maintainer` existed.
+/// A repository shared by a fleet of agents is exactly the case it is for: with
+/// owner-only trust, only one key can close or reassign anyone else's task.
+///
+/// A signer outside this set may still operate on itself — that rule lives in
+/// [`reduce_assignment_operations`] and is deliberately not gated here.
+fn authoritative_signers(
+    issue_author: &str,
+    repo_owner: &str,
+    maintainers: &[String],
+) -> Vec<String> {
+    let mut signers = vec![
+        issue_author.to_ascii_lowercase(),
+        repo_owner.to_ascii_lowercase(),
+    ];
+    signers.extend(
+        maintainers
+            .iter()
+            .filter(|pubkey| is_hex64(pubkey))
+            .map(|pubkey| pubkey.to_ascii_lowercase()),
+    );
+    signers.sort();
+    signers.dedup();
+    signers
+}
+
 fn reduce_assignment_operations(
     issue_id: &str,
     issue_author: &str,
     repo_owner: &str,
+    maintainers: &[String],
     events: &[AssignmentEvent],
 ) -> AssignmentState {
-    let issue_author = issue_author.to_ascii_lowercase();
-    let repo_owner = repo_owner.to_ascii_lowercase();
+    let authoritative = authoritative_signers(issue_author, repo_owner, maintainers);
     let mut events = events.iter().collect::<Vec<_>>();
     events.sort_by(|left, right| {
         left.created_at
@@ -173,7 +204,7 @@ fn reduce_assignment_operations(
             .into_iter()
             .map(str::to_ascii_lowercase)
             .collect::<Vec<_>>();
-        let is_authoritative = signer == issue_author || signer == repo_owner;
+        let is_authoritative = authoritative.contains(&signer);
         let is_self_operation = pubkeys.len() == 1 && pubkeys[0] == signer;
         if !is_authoritative && !is_self_operation {
             continue;
@@ -428,8 +459,23 @@ async fn issue_assignment_context(
         "authors": [signer],
         "limit": 1
     });
+    // The repository's own announcement, for its `maintainers` tag. It rides
+    // in the same batched query rather than a second round trip: who may
+    // operate on someone else's assignment is read from the repo the issue
+    // names, and reading it late would mean reducing the operations twice.
+    let repo_filter = serde_json::json!({
+        "kinds": [30617],
+        "authors": [repo.owner.to_ascii_lowercase()],
+        "#d": [repo.id],
+        "limit": 1
+    });
     let response = client
-        .query_multi(&[root_filter, assignment_filter, signer_comment_filter])
+        .query_multi(&[
+            root_filter,
+            assignment_filter,
+            signer_comment_filter,
+            repo_filter,
+        ])
         .await?;
     // CLI read responses intentionally omit signatures, so deserialize only
     // the event fields needed for assignment reduction.
@@ -466,9 +512,33 @@ async fn issue_assignment_context(
         .map_err(|error| CliError::Other(format!("read system clock: {error}")))?
         .as_secs()
         .max(latest.saturating_add(1));
+    // An absent or unreadable announcement yields no maintainers, which is the
+    // pre-`--maintainer` behaviour: owner and author only. Failing closed here
+    // costs a maintainer their authority for one command; failing open would
+    // hand it to anyone.
+    let maintainers = events
+        .iter()
+        .find(|event| {
+            event.kind == 30617
+                && event.pubkey.eq_ignore_ascii_case(&repo.owner)
+                && event.tags.iter().any(|tag| {
+                    tag.first().map(String::as_str) == Some("d")
+                        && tag.get(1).map(String::as_str) == Some(repo.id.as_str())
+                })
+        })
+        .map(|event| {
+            event
+                .tags
+                .iter()
+                .filter(|tag| tag.first().map(String::as_str) == Some("maintainers"))
+                .flat_map(|tag| tag.iter().skip(1))
+                .cloned()
+                .collect::<Vec<String>>()
+        })
+        .unwrap_or_default();
     let prior = include_prior
         .then(|| {
-            reduce_assignment_operations(issue, &root.pubkey, &repo.owner, &comments)
+            reduce_assignment_operations(issue, &root.pubkey, &repo.owner, &maintainers, &comments)
                 .heads
                 .get(&signer.to_ascii_lowercase())
                 .cloned()
@@ -689,8 +759,8 @@ pub async fn dispatch(cmd: crate::IssuesCmd, client: &BuzzClient) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::{
-        assignment_note_label, reduce_assignment_operations, AssignmentEvent, AssignmentQueryEvent,
-        ISSUE_ASSIGNMENT_LABEL, ISSUE_UNASSIGNMENT_LABEL,
+        assignment_note_label, authoritative_signers, reduce_assignment_operations,
+        AssignmentEvent, AssignmentQueryEvent, ISSUE_ASSIGNMENT_LABEL, ISSUE_UNASSIGNMENT_LABEL,
     };
 
     const ISSUE: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
@@ -764,6 +834,53 @@ mod tests {
         assert_eq!(event.pubkey, VOLUNTEER);
     }
 
+    /// A maintainer the owner vouched for may move someone else's assignment.
+    /// Without this, a repository shared by a fleet of agents has exactly one
+    /// key that can close or reassign anyone's task — which is the whole reason
+    /// `buzz repos create --maintainer` exists.
+    #[test]
+    fn a_declared_maintainer_may_assign_someone_else() {
+        let maintainer = "7".repeat(64);
+        let maintainers = vec![maintainer.clone()];
+        let op = "8".repeat(64);
+
+        let state = reduce_assignment_operations(
+            ISSUE,
+            AUTHOR,
+            OWNER,
+            &maintainers,
+            &[assignment_event(&maintainer, &op, true, 100, None)],
+        );
+        assert!(
+            state.assignees.contains(VOLUNTEER),
+            "a maintainer's assignment of another pubkey must count"
+        );
+
+        // The control: the same event, same signer, from a repository that
+        // never named them. Nothing in the event changes — only the vouch.
+        let state = reduce_assignment_operations(
+            ISSUE,
+            AUTHOR,
+            OWNER,
+            &[],
+            &[assignment_event(&maintainer, &op, true, 100, None)],
+        );
+        assert!(
+            !state.assignees.contains(VOLUNTEER),
+            "an unvouched signer may not assign anyone but itself"
+        );
+    }
+
+    /// The tag is owner-authored data, so it is read defensively: a malformed
+    /// entry must not become a trusted signer by accident.
+    #[test]
+    fn a_malformed_maintainer_entry_grants_nothing() {
+        let signers = authoritative_signers(AUTHOR, OWNER, &["not-a-pubkey".to_owned()]);
+        assert_eq!(signers.len(), 2, "author and owner only: {signers:?}");
+        assert!(signers.contains(&AUTHOR.to_owned()));
+        assert!(signers.contains(&OWNER.to_owned()));
+    }
+
     #[test]
     fn uncaused_future_self_operations_lose_to_authority() {
         let owner_unassign = "1".repeat(64);
@@ -771,6 +888,7 @@ mod tests {
             ISSUE,
             AUTHOR,
             OWNER,
+            &[],
             &[
                 assignment_event(VOLUNTEER, &"2".repeat(64), true, 1_000, None),
                 assignment_event(OWNER, &owner_unassign, false, 200, None),
@@ -784,6 +902,7 @@ mod tests {
             ISSUE,
             AUTHOR,
             OWNER,
+            &[],
             &[
                 assignment_event(VOLUNTEER, &"4".repeat(64), false, 1_000, None),
                 assignment_event(OWNER, &owner_assign, true, 200, None),
@@ -801,6 +920,7 @@ mod tests {
             ISSUE,
             AUTHOR,
             OWNER,
+            &[],
             &[
                 assignment_event(OWNER, &owner_assign, true, 200, None),
                 assignment_event(VOLUNTEER, &self_unassign, false, 300, Some(&owner_assign)),
@@ -815,6 +935,7 @@ mod tests {
             ISSUE,
             AUTHOR,
             OWNER,
+            &[],
             &[
                 assignment_event(OWNER, &owner_unassign, false, 200, None),
                 assignment_event(VOLUNTEER, &self_assign, true, 300, Some(&owner_unassign)),
@@ -832,6 +953,7 @@ mod tests {
             ISSUE,
             AUTHOR,
             OWNER,
+            &[],
             &[
                 assignment_event(OWNER, &initial_assign, true, 100, None),
                 assignment_event(OWNER, &owner_unassign, false, 200, None),
