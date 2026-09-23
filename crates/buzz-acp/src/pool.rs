@@ -2368,6 +2368,11 @@ pub async fn run_prompt_task(
     };
     let observer_channel_id = source.channel_id();
     let turn_started_at = chrono::Utc::now().to_rfc3339();
+    // What this turn served, carried into every NIP-AM metric it publishes so a
+    // reader can join a turn to the work it was doing. Built once here because
+    // the batch is consumed further down and the twelve publish sites are
+    // spread across every stop path.
+    let turn_join = TurnJoin::for_batch(batch.as_ref());
     agent.acp.set_observer_context(observer::context_for_turn(
         observer_channel_id,
         None,
@@ -2814,6 +2819,7 @@ pub async fn run_prompt_task(
                         &session_id,
                         &format!("{turn_id}:initial"),
                         Some(acp_stop_to_core(&stop_reason)),
+                        &turn_join,
                     )
                     .await;
                 }
@@ -2849,6 +2855,7 @@ pub async fn run_prompt_task(
                                 &session_id,
                                 &format!("{turn_id}:initial"),
                                 Some(acp_stop_to_core(&stop_reason)),
+                                &turn_join,
                             )
                             .await;
                             agent.state.invalidate(&source);
@@ -3194,6 +3201,7 @@ pub async fn run_prompt_task(
                                     &session_id,
                                     &turn_id,
                                     Some(buzz_core::agent_turn_metric::StopReason::Cancelled),
+                                    &turn_join,
                                 )
                                 .await;
                                 send_prompt_result(
@@ -3230,6 +3238,7 @@ pub async fn run_prompt_task(
                                     &session_id,
                                     &turn_id,
                                     Some(buzz_core::agent_turn_metric::StopReason::Error),
+                                    &turn_join,
                                 )
                                 .await;
                                 send_prompt_result(
@@ -3296,6 +3305,7 @@ pub async fn run_prompt_task(
                             &session_id,
                             &turn_id,
                             Some(buzz_core::agent_turn_metric::StopReason::EndTurn),
+                            &turn_join,
                         )
                         .await;
                         send_prompt_result(
@@ -3371,6 +3381,7 @@ pub async fn run_prompt_task(
                 &session_id,
                 &turn_id,
                 Some(core_stop),
+                &turn_join,
             )
             .await;
 
@@ -3394,6 +3405,7 @@ pub async fn run_prompt_task(
                 &session_id,
                 &turn_id,
                 Some(buzz_core::agent_turn_metric::StopReason::Error),
+                &turn_join,
             )
             .await;
             send_prompt_result(
@@ -3426,6 +3438,7 @@ pub async fn run_prompt_task(
                         &session_id,
                         &turn_id,
                         Some(buzz_core::agent_turn_metric::StopReason::Cancelled),
+                        &turn_join,
                     )
                     .await;
                     // Timeout triggers respawn in handle_prompt_result —
@@ -3454,6 +3467,7 @@ pub async fn run_prompt_task(
                         &session_id,
                         &turn_id,
                         Some(buzz_core::agent_turn_metric::StopReason::Error),
+                        &turn_join,
                     )
                     .await;
                     send_prompt_result(
@@ -3479,6 +3493,7 @@ pub async fn run_prompt_task(
                         &session_id,
                         &turn_id,
                         Some(buzz_core::agent_turn_metric::StopReason::Error),
+                        &turn_join,
                     )
                     .await;
                     send_prompt_result(
@@ -3508,6 +3523,7 @@ pub async fn run_prompt_task(
                 &session_id,
                 &turn_id,
                 Some(buzz_core::agent_turn_metric::StopReason::Error),
+                &turn_join,
             )
             .await;
             send_prompt_result(
@@ -3535,6 +3551,7 @@ pub async fn run_prompt_task(
                 &session_id,
                 &turn_id,
                 Some(buzz_core::agent_turn_metric::StopReason::Error),
+                &turn_join,
             )
             .await;
             send_prompt_result(
@@ -5214,6 +5231,61 @@ pub(crate) fn ok_outcome_label(stop_reason: &StopReason) -> &'static str {
     }
 }
 
+/// What a turn served, carried into its NIP-AM `kind:44200` metric so a reader
+/// can join the turn to the work it was doing.
+///
+/// The join the task tracker needs is "which turns belong to this task": a task
+/// links a thread, and these two fields say which thread a turn ran in and
+/// which message started it. Without them a 44200 says what a turn cost and
+/// nothing about what it was for, and the owner's own metrics cannot be
+/// attributed to anything.
+///
+/// Both come off the batch the turn was dispatched with, so a heartbeat carries
+/// neither.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TurnJoin {
+    /// The thread a reply to this turn's trigger lands in: the trigger's own
+    /// NIP-10 root, or the trigger itself when it is top-level and the reply
+    /// would open the thread. Same key [`AnswerTarget`] judges ✅ by, and the
+    /// same one a task's `task-thread` link note points at — deliberately, so
+    /// the two join without a translation step.
+    ///
+    /// Read from the trigger rather than from the [`SessionScope`] because a
+    /// conversation-scoped session (a DM, or a channel under
+    /// `SessionPolicy::Channel`) has no thread root at all, and those turns
+    /// still serve a thread.
+    pub thread_root: Option<String>,
+    /// The newest event that triggered the turn. The turn index row carries
+    /// every trigger in `triggeringEventIds`; the metric carries the one a
+    /// reply is anchored to, which is the one a task is created from.
+    pub triggering_event_id: Option<String>,
+    /// When the turn started, for the `durationMs` a publish site computes at
+    /// the moment it publishes. A mid-turn metric (the initial-message arms)
+    /// therefore reports elapsed-so-far, which is what it means.
+    pub started_at: Option<std::time::Instant>,
+}
+
+impl TurnJoin {
+    fn for_batch(batch: Option<&FlushBatch>) -> Self {
+        let Some(trigger) = batch.and_then(|b| b.events.last()) else {
+            return Self::default();
+        };
+        let target = AnswerTarget::for_event(&trigger.event);
+        Self {
+            thread_root: Some(target.thread_key),
+            triggering_event_id: Some(target.event_id),
+            started_at: Some(std::time::Instant::now()),
+        }
+    }
+
+    /// Milliseconds since the turn started, saturating at `u64::MAX` rather
+    /// than wrapping. `None` when the turn carried no start (a heartbeat).
+    fn duration_ms(&self) -> Option<u64> {
+        self.started_at
+            .map(|at| u64::try_from(at.elapsed().as_millis()).unwrap_or(u64::MAX))
+    }
+}
+
 /// Map an ACP `StopReason` to the NIP-AM `StopReason` used in kind 44200 payloads.
 fn acp_stop_to_core(r: &StopReason) -> buzz_core::agent_turn_metric::StopReason {
     use buzz_core::agent_turn_metric::StopReason as CoreStop;
@@ -5387,6 +5459,7 @@ async fn publish_agent_turn_metric(
     session_id: &str,
     turn_id: &str,
     stop_reason: Option<buzz_core::agent_turn_metric::StopReason>,
+    join: &TurnJoin,
 ) {
     use buzz_core::agent_turn_metric::AgentTurnMetricPayload;
     use nostr::{EventBuilder, Kind, Tag};
@@ -5411,6 +5484,9 @@ async fn publish_agent_turn_metric(
         delta_reliable: usage.delta_reliable,
         stop_reason,
         pricing_identity: usage.pricing_identity.clone(),
+        thread_root: join.thread_root.clone(),
+        triggering_event_id: join.triggering_event_id.clone(),
+        duration_ms: join.duration_ms(),
     };
     let ciphertext = match buzz_core::agent_turn_metric::encrypt_agent_turn_metric(
         &ctx.agent_keys,
@@ -9637,6 +9713,54 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
         );
     }
 
+    /// A turn's metric must say which thread it served, or the owner's own
+    /// numbers cannot be attributed to any piece of work.
+    #[test]
+    fn a_turn_in_a_thread_joins_on_that_threads_root() {
+        let root = "a".repeat(64);
+        let reply = signed_event_with_tags(vec![vec![
+            "e".into(),
+            root.clone(),
+            String::new(),
+            "reply".into(),
+        ]]);
+        let batch = batch_with_scope(thread_scope(Uuid::new_v4(), &root), reply.clone());
+
+        let join = TurnJoin::for_batch(Some(&batch));
+
+        assert_eq!(join.thread_root.as_deref(), Some(root.as_str()));
+        assert_eq!(
+            join.triggering_event_id.as_deref(),
+            Some(reply.id.to_hex().as_str())
+        );
+        assert!(join.duration_ms().is_some());
+    }
+
+    /// A top-level trigger has no thread yet, and the reply opens one rooted at
+    /// the trigger. Joining on the trigger is therefore joining on the thread
+    /// the answer will live in — the same key ✅ and the task link note use.
+    #[test]
+    fn a_top_level_trigger_joins_on_itself() {
+        let ch = Uuid::new_v4();
+        let top = signed_event_with_tags(vec![vec!["h".into(), ch.to_string()]]);
+        let batch = batch_with_scope(SessionScope::Conversation { channel_id: ch }, top.clone());
+
+        let join = TurnJoin::for_batch(Some(&batch));
+
+        assert_eq!(join.thread_root, Some(top.id.to_hex()));
+        assert_eq!(join.triggering_event_id, Some(top.id.to_hex()));
+    }
+
+    /// A heartbeat serves no room and no thread, so it claims neither. An empty
+    /// string or a zero duration here would be a claim the harness cannot make.
+    #[test]
+    fn a_heartbeat_joins_to_nothing() {
+        let join = TurnJoin::for_batch(None);
+        assert_eq!(join.thread_root, None);
+        assert_eq!(join.triggering_event_id, None);
+        assert_eq!(join.duration_ms(), None);
+    }
+
     /// A top-level ask has no thread yet, so the notice must open one on the
     /// trigger rather than land at the channel root where nobody is looking.
     #[test]
@@ -11139,6 +11263,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             "sess-1",
             "turn-1",
             Some(buzz_core::agent_turn_metric::StopReason::EndTurn),
+            &TurnJoin::default(),
         )
         .await;
     }
@@ -11174,6 +11299,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             "sess-1",
             "turn-1",
             Some(buzz_core::agent_turn_metric::StopReason::EndTurn),
+            &TurnJoin::default(),
         )
         .await;
     }
@@ -11213,6 +11339,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             "sess-1",
             "turn-1",
             Some(buzz_core::agent_turn_metric::StopReason::EndTurn),
+            &TurnJoin::default(),
         )
         .await;
     }
@@ -11253,6 +11380,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             "sess-cancel",
             "turn-cancel",
             Some(buzz_core::agent_turn_metric::StopReason::Cancelled),
+            &TurnJoin::default(),
         )
         .await;
     }
@@ -11293,6 +11421,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             "sess-ba",
             "turn-ba",
             Some(buzz_core::agent_turn_metric::StopReason::EndTurn),
+            &TurnJoin::default(),
         )
         .await;
     }

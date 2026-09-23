@@ -229,6 +229,35 @@ the model may not have published a word. Reported as `unknown`, it is
 indistinguishable from an old harness that reported nothing at all. Reported as
 `max_turn_requests`, it is a turn the owner can find and count.
 
+### Optional join fields: the aitaco fork's `threadRoot`, `triggeringEventId`, `durationMs`
+
+This fork adds three optional payload fields. NIP-AM requires a consumer to
+ignore unknown fields, so an older reader is unaffected and a publisher that
+omits them is still conformant.
+
+```jsonc
+"threadRoot":        "<64-hex event id>",  // optional
+"triggeringEventId": "<64-hex event id>",  // optional
+"durationMs":        90642                 // optional
+```
+
+- `threadRoot` is the thread the turn served: the triggering message's NIP-10
+  root, or the triggering message itself when it was top-level and a reply to
+  it would open the thread.
+- `triggeringEventId` is the message the turn was dispatched for. A turn may
+  have been given several; this is the one a reply is anchored to.
+- `durationMs` is wall-clock milliseconds from the turn's start to this metric.
+  A turn that publishes more than one metric reports elapsed-so-far on each, so
+  they are **not additive within a turn**.
+
+They exist because a metric that reports what a turn cost, and nothing about
+what it was for, cannot be attributed to any piece of work. With them, a reader
+that knows which threads belong to a task knows which turns — and therefore
+which tokens, which models and which cost — belong to it too. A publisher that
+cannot determine a value MUST omit the field rather than send an empty string
+or a zero, both of which would be claims it cannot make; a heartbeat turn, which
+serves no thread, carries none of the three.
+
 ## Publisher Behavior
 
 - Publish exactly one event per completed turn, at turn completion, including

@@ -1877,6 +1877,43 @@ pub enum IssuesCmd {
         #[arg(long)]
         label: Option<String>,
     },
+    /// Link an issue to a working thread, or to the issue blocking it.
+    ///
+    /// A labeled kind:1 note in the same shape as an assignment, so it is read
+    /// under the same trust rule — the issue's author, the repository's owner,
+    /// or one of that repository's declared maintainers. It carries no channel
+    /// tag, so it never lands in a channel timeline.
+    Link {
+        /// Issue event id (64-char hex)
+        #[arg(long)]
+        issue: String,
+        /// Repo owner pubkey (64-char hex)
+        #[arg(long)]
+        repo_owner: String,
+        /// Repo identifier (d-tag)
+        #[arg(long)]
+        repo_id: String,
+        /// What this link says: `thread` marks a thread whose turns belong to
+        /// the issue; `blocked-by` names the issue this one waits on.
+        #[arg(long, value_name = "KIND")]
+        kind: IssueLinkKindArg,
+        /// The thread root, or the blocking issue's event id (64-char hex).
+        #[arg(long)]
+        target: String,
+        /// Markdown note body ('-' to read from stdin). Defaults to a line
+        /// naming the link.
+        #[arg(long)]
+        content: Option<String>,
+    },
+}
+
+/// What a `buzz issues link` note says about its target.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+pub enum IssueLinkKindArg {
+    /// The turns in this thread belong to the issue.
+    Thread,
+    /// The issue waits on the target issue.
+    BlockedBy,
 }
 
 #[derive(Subcommand)]
@@ -2621,7 +2658,7 @@ mod tests {
         );
         assert_eq!(
             names(&cmd, "issues"),
-            vec!["assign", "create", "get", "list", "status", "unassign"]
+            vec!["assign", "create", "get", "link", "list", "status", "unassign"]
         );
         assert_eq!(names(&cmd, "media"), vec!["get"]);
         assert_eq!(names(&cmd, "upload"), vec!["file"]);
@@ -2662,7 +2699,7 @@ mod tests {
             ("dms", 4),
             ("emoji", 5),
             ("feed", 1),
-            ("issues", 6),
+            ("issues", 7),
             ("media", 1),
             ("messages", 8),
             ("pack", 2),
