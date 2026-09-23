@@ -81,7 +81,7 @@ test("activity pod shows workspace details without a create action", () => {
       ["Projects", 2],
       ["Repositories", 2],
       ["Channels", 2],
-      ["Tasks", 5],
+      ["Issues", 5],
       ["Reviews", 5],
     ],
   );

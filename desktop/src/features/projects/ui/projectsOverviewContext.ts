@@ -395,7 +395,7 @@ export function projectsOverviewContext(
         {
           count: tasks.total,
           icon: "tasks",
-          label: "Tasks",
+          label: "Issues",
           section: "issues",
         },
         {
