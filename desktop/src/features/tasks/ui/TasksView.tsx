@@ -7,6 +7,7 @@ import {
   type TaskRow,
 } from "@/features/tasks/taskRows.mjs";
 import { Badge } from "@/shared/ui/badge";
+import { PubKey } from "@/shared/ui/PubKey";
 import { Button } from "@/shared/ui/button";
 
 /**
@@ -99,7 +100,14 @@ function TaskCard({ row }: { row: TaskRow }) {
         </Badge>
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-        <span>{row.assignee ? shortKey(row.assignee) : "nobody assigned"}</span>
+        {row.assignee ? (
+          // Never hand-truncate a pubkey: `PubKey` is the one renderer, and
+          // `scripts/check-pubkey-truncation.mjs` enforces it. It also gives
+          // the assignee a copyable npub, which a nudge in a thread cannot.
+          <PubKey pubkey={row.assignee} variant="compact" />
+        ) : (
+          <span>nobody assigned</span>
+        )}
         <span>{lastActivity(row)}</span>
         {row.commentCount > 0 ? <span>{row.commentCount} comments</span> : null}
         {row.linkedThreads.length === 0 ? (
@@ -113,8 +121,4 @@ function TaskCard({ row }: { row: TaskRow }) {
       </div>
     </li>
   );
-}
-
-function shortKey(pubkey: string) {
-  return pubkey.slice(0, 8);
 }
