@@ -261,6 +261,9 @@ enum Cmd {
     /// Create, get, list, and set status on git issues (NIP-34)
     #[command(subcommand)]
     Issues(IssuesCmd),
+    /// The task board — NIP-34 issues labelled `t=task`, state derived
+    #[command(subcommand)]
+    Tasks(TasksCmd),
     /// Open, update, list, and set status on git pull requests (NIP-34)
     #[command(subcommand)]
     Pr(PrCmd),
@@ -1916,6 +1919,35 @@ pub enum IssueLinkKindArg {
     BlockedBy,
 }
 
+/// The task board: NIP-34 issues labelled `t=task`, with their state derived
+/// from public events only (`buzz_core::task_board`).
+#[derive(Subcommand)]
+pub enum TasksCmd {
+    /// Show the task board for a repository.
+    ///
+    /// State is derived, never stored: `Unassigned` and `Blocked` outrank the
+    /// rest, then `In Progress` (activity within 24 h) and `Up Next`. `Done`
+    /// is hidden unless asked for.
+    Board {
+        /// Repo owner pubkey (64-char hex)
+        #[arg(long)]
+        repo_owner: String,
+        /// Repo identifier (d-tag)
+        #[arg(long)]
+        repo_id: String,
+        /// Include closed tasks.
+        #[arg(long)]
+        show_done: bool,
+        /// Only tasks assigned to this pubkey (64-char hex).
+        #[arg(long)]
+        assignee: Option<String>,
+        /// Emit the rows as JSON. What the fleet watchdog reads, so it applies
+        /// the nudge rules without a second copy of the derivation.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 #[derive(Subcommand)]
 pub enum UploadCmd {
     /// Upload a file to the relay's Blossom store
@@ -2291,6 +2323,7 @@ async fn run(cli: Cli) -> Result<(), CliError> {
         Cmd::Projects(sub) => commands::projects::dispatch(sub, &client).await,
         Cmd::Patches(sub) => commands::patches::dispatch(sub, &client).await,
         Cmd::Issues(sub) => commands::issues::dispatch(sub, &client).await,
+        Cmd::Tasks(sub) => commands::tasks::dispatch(sub, &client).await,
         Cmd::Pr(sub) => commands::pr::dispatch(sub, &client).await,
         Cmd::Media(sub) => commands::upload::dispatch_media(sub, &client).await,
         Cmd::Upload(sub) => commands::upload::dispatch(sub, &client).await,
@@ -2490,6 +2523,7 @@ mod tests {
             "relay",
             "repos",
             "social",
+            "tasks",
             "upload",
             "users",
             "workflows",
@@ -2710,6 +2744,7 @@ mod tests {
             ("relay", 1),
             ("repos", 6),
             ("social", 7),
+            ("tasks", 1),
             ("upload", 1),
             ("users", 5),
             ("workflows", 8),

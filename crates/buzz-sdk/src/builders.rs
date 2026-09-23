@@ -1286,7 +1286,17 @@ fn build_git_issue_assignee_operation(
         tags.push(tag(&["prior", &prior])?);
     }
 
-    Ok(EventBuilder::new(Kind::Custom(1), content).tags(tags))
+    // `.allow_self_tagging()` is load-bearing here, not hygiene. These `p`
+    // tags ARE the payload: they name who is being assigned. nostr 0.44 strips
+    // a `p` tag matching the signer by default, so without this a
+    // self-assignment — which is every `pickup`, and the one operation any
+    // seat is always allowed to perform on itself — reaches the relay with no
+    // `p` tag at all and reduces to nothing. It is accepted, it is signed, and
+    // it does nothing. Found live on 2026-09-23: `buzz issues assign
+    // --assignee <self>` left the task Unassigned on the board.
+    Ok(EventBuilder::new(Kind::Custom(1), content)
+        .tags(tags)
+        .allow_self_tagging())
 }
 
 /// What a task link note says about the thing it points at.
@@ -4008,6 +4018,50 @@ mod tests {
         };
         let err = build_git_issue(&repo, "", "body", &GitIssueMeta::default()).unwrap_err();
         assert!(matches!(err, SdkError::InvalidInput(_)));
+    }
+
+    /// The case the happy path could not see: the assignee IS the signer.
+    ///
+    /// `git_issue_assignment_happy_path` assigns c and d and signs with a
+    /// random key, so no `p` tag ever matched the signer and nostr 0.44's
+    /// default scrub never fired. Every self-assignment — which is what
+    /// `pickup` is, and the one operation a seat may always perform on
+    /// itself — shipped with no `p` tag and reduced to nothing.
+    #[test]
+    fn a_self_assignment_keeps_the_p_tag_that_is_its_payload() {
+        let keys = Keys::generate();
+        let me = keys.public_key().to_hex();
+        let repo = GitRepoCoord {
+            owner: "a".repeat(64),
+            id: "tasks".to_string(),
+        };
+        let issue = "b".repeat(64);
+
+        for builder in [
+            build_git_issue_assignment(&repo, &issue, std::slice::from_ref(&me), "Picked this up")
+                .unwrap(),
+            build_git_issue_unassignment(
+                &repo,
+                &issue,
+                std::slice::from_ref(&me),
+                "Handing it back",
+            )
+            .unwrap(),
+        ] {
+            let ev = builder.sign_with_keys(&keys).expect("sign");
+            let ps: Vec<String> = ev
+                .tags
+                .iter()
+                .map(|t| t.clone().to_vec())
+                .filter(|t| t.first().map(String::as_str) == Some("p"))
+                .filter_map(|t| t.get(1).cloned())
+                .collect();
+            assert_eq!(
+                ps,
+                vec![me.clone()],
+                "the signer's own pubkey is the payload here, not a self-mention"
+            );
+        }
     }
 
     #[test]
