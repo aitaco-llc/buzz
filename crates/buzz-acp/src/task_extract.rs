@@ -458,7 +458,7 @@ impl TaskExtractor {
             ],
             "response_format": {
                 "type": "json_schema",
-                "json_schema": { "name": "extraction", "schema": output_schema() }
+                "json_schema": { "name": "extraction", "schema": output_schema(&input.board) }
             }
         });
         if let (Some(effort), Some(map)) = (&cfg.reasoning_effort, body.as_object_mut()) {
@@ -590,16 +590,41 @@ impl TaskExtractor {
 /// the board-flooding the design note warns about — so this is a real trade,
 /// not a tuning failure, and it is the open question on this module.
 ///
-/// The untried lever is schema-level, like everything that has worked here:
-/// make `attachTo` an `enum` of the actual open-task ids, so attaching is a
-/// token the decoder can already see and creating is the longer path.
+/// **The obvious schema lever was tried and it is not the answer.** Making
+/// `attachTo` an `enum` of the actual open-task ids — so attaching is a choice
+/// the decoder can already see and a hallucinated id is unreachable — left
+/// `attach` at 4/24 against 6/24 for prose alone, with `2279229f` at 0/8 even
+/// though that message says outright "I know we already are running a
+/// comparison. Can we just add in Luna to that?". Four interventions now:
+///
+/// | | accuracy | `attach` | decomposition | gate |
+/// | --- | ---: | ---: | ---: | ---: |
+/// | two arrays + prose count rule | **93%** | **23/24** | 11/15 | 3/8 |
+/// | per-ask records | 74% | 3/24 | **14/16** | **8/8** |
+/// | + attach-first prose | 77% | 6/24 | **14/16** | 7/8 |
+/// | + `attachTo` enum (this) | 75% | 4/24 | **14/16** | **8/8** |
+///
+/// So the constraint was never the barrier — the judgement is. Asked about one
+/// isolated ask, the model does not recognise "where are we with spark 1.3?"
+/// as being about a board row someone else titled "Assess Spark 1.3 against
+/// Flash", and making the answer free to express does not make it visible.
+///
+/// The enum stays regardless of the score: it makes a dangling `attachTo`
+/// structurally impossible rather than rejected after the fact, which is worth
+/// having on its own.
+///
+/// What is left to try is a second question rather than a better constraint:
+/// keep this schema for decomposition, then ask once per proposed `create`
+/// whether any open task already covers *that subject*, with only the subject
+/// and the board in front of it. One extra call per create, and it is the
+/// question the per-ask framing cannot hold.
 ///
 /// `additionalProperties: false` is not tidiness. A model that expresses "then
 /// once all of that is done" as a nested `steps` key inside the first record
 /// produces exactly the one-task reading observed in (1), and nothing in the
 /// saved replays could rule it out because the raw text was not kept. Now it is
 /// a parse error, and [`Extraction::raw_reply`] keeps the evidence either way.
-pub fn output_schema() -> serde_json::Value {
+pub fn output_schema(board: &[BoardTask]) -> serde_json::Value {
     // Bounded free text. Not tidiness: at temperature 0 with an unbounded
     // `why`, the model fell into a repetition loop — "properly cleanly fast
     // well nicely reliably" for hundreds of tokens — on the first corpus
@@ -628,13 +653,20 @@ pub fn output_schema() -> serde_json::Value {
         },
         "required": ["ask", "disposition", "subject", "doneWhen"]
     });
+    // `attachTo` is an enum of the ids actually on the board, not a free
+    // string. Three prose attempts to make the model consult the board before
+    // creating recovered at most a quarter of `attach`; this makes attaching a
+    // choice the decoder can already see, where creating still costs a fresh
+    // `subject` and `doneWhen`. It also makes a hallucinated id unreachable
+    // rather than merely rejected after the fact.
+    let board_ids: Vec<&str> = board.iter().map(|t| t.id.as_str()).take(MAX_BOARD_ENTRIES).collect();
     let attach = serde_json::json!({
         "type": "object",
         "additionalProperties": false,
         "properties": {
             "ask":         short(MAX_ASK_CHARS as u32),
             "disposition": { "type": "string", "enum": ["attach"] },
-            "attachTo":    { "type": "string" },
+            "attachTo":    { "type": "string", "enum": board_ids },
             "note":        short(MAX_LINE_CHARS as u32)
         },
         "required": ["ask", "disposition", "attachTo"]
@@ -650,13 +682,23 @@ pub fn output_schema() -> serde_json::Value {
         "required": ["ask", "disposition"]
     });
 
+    // With nothing on the board there is nothing to attach to, so the shape is
+    // not offered at all. An enum with no members is not a legal schema, and an
+    // attach the harness would have to drop is worse than one the model could
+    // never propose.
+    let shapes = if board_ids.is_empty() {
+        vec![create, none]
+    } else {
+        vec![create, attach, none]
+    };
+
     serde_json::json!({
         "type": "object",
         "additionalProperties": false,
         "properties": {
             "items": {
                 "type": "array",
-                "items": { "oneOf": [create, attach, none] }
+                "items": { "oneOf": shapes }
             }
         },
         "required": ["items"]
@@ -1376,7 +1418,7 @@ mod tests {
         // whose `]` is a fresh decision, every record must name its own ask and
         // disposition, and nothing may be nested where the parser cannot see
         // it.
-        let schema = output_schema();
+        let schema = output_schema(&board());
         assert_eq!(schema["additionalProperties"], serde_json::json!(false));
         assert_eq!(
             schema["required"],
@@ -1418,7 +1460,7 @@ mod tests {
         // on the corpus's first utterance, and every `doneWhen` after it went
         // unwritten because the budget was gone — four creates, none of them
         // closable.
-        let schema = output_schema();
+        let schema = output_schema(&board());
         for shape in schema["properties"]["items"]["items"]["oneOf"].as_array().unwrap() {
             for (name, prop) in shape["properties"].as_object().unwrap() {
                 if matches!(name.as_str(), "why" | "doneWhen" | "note" | "reason" | "ask" | "subject")
@@ -1430,6 +1472,62 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn attach_to_is_an_enum_of_the_ids_actually_on_the_board() {
+        // A hallucinated id becomes unreachable rather than rejected after the
+        // fact, and attaching becomes a choice the decoder can already see —
+        // where creating still costs a fresh subject and doneWhen. Three prose
+        // attempts at the same effect recovered at most a quarter of `attach`.
+        let schema = output_schema(&board());
+        let shapes = schema["properties"]["items"]["items"]["oneOf"].as_array().unwrap();
+        let attach = shapes
+            .iter()
+            .find(|s| s["properties"]["disposition"]["enum"][0] == "attach")
+            .expect("an attach shape when the board is non-empty");
+        let ids: Vec<&str> = attach["properties"]["attachTo"]["enum"]
+            .as_array()
+            .expect("attachTo must be an enum, not a free string")
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["a".repeat(64), "b".repeat(64)]);
+    }
+
+    #[test]
+    fn an_empty_board_offers_no_attach_shape_at_all() {
+        // An enum with no members is not a legal schema, and an attach the
+        // harness would have to drop is worse than one the model could never
+        // propose.
+        let schema = output_schema(&[]);
+        let shapes = schema["properties"]["items"]["items"]["oneOf"].as_array().unwrap();
+        assert_eq!(shapes.len(), 2);
+        assert!(
+            !shapes.iter().any(|s| s["properties"]["disposition"]["enum"][0] == "attach"),
+            "nothing to attach to"
+        );
+    }
+
+    #[test]
+    fn the_board_enum_is_capped_with_the_board_itself() {
+        let big: Vec<BoardTask> = (0..MAX_BOARD_ENTRIES + 10)
+            .map(|i| BoardTask {
+                id: format!("{i:064}"),
+                subject: format!("task {i}"),
+                state: "open".into(),
+                assignee: None,
+            })
+            .collect();
+        let schema = output_schema(&big);
+        let shapes = schema["properties"]["items"]["items"]["oneOf"].as_array().unwrap();
+        let attach = shapes
+            .iter()
+            .find(|s| s["properties"]["disposition"]["enum"][0] == "attach")
+            .unwrap();
+        // The prompt only lists MAX_BOARD_ENTRIES rows; offering the decoder an
+        // id the model was never shown is an attach nobody can justify.
+        assert_eq!(attach["properties"]["attachTo"]["enum"].as_array().unwrap().len(), MAX_BOARD_ENTRIES);
     }
 
     #[test]
