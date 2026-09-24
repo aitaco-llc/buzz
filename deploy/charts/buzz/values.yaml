@@ -396,8 +396,12 @@ storageAccounting:
 # this disabled and use s3.* (or secrets.existingSecret) against managed S3.
 minio:
   enabled: false                 # quickstart: set true for bundled in-cluster MinIO
-  image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
-  mcImage: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+  # quay.io/minio and Docker Hub's minio/* no longer serve images. Chainguard's
+  # MinIO is public and multi-arch; the -dev variant carries mc and a shell,
+  # so it serves both roles. It runs as uid 65532 (see podSecurityContext in
+  # templates/quickstart-minio.yaml).
+  image: cgr.dev/chainguard/minio:latest-dev@sha256:4b862594d23cb20ae0fbeb93311ed312a5b566ecba2293220b204c89ef3c1fe2
+  mcImage: cgr.dev/chainguard/minio:latest-dev@sha256:4b862594d23cb20ae0fbeb93311ed312a5b566ecba2293220b204c89ef3c1fe2
   persistence:
     enabled: true
     size: 10Gi

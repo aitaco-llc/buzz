@@ -112,10 +112,10 @@ container redis -p "127.0.0.1:${REDIS_PORT}:6379" redis:7-alpine
 docker rm -f "${PREFIX}-minio" >/dev/null 2>&1 || true
 container minio -e MINIO_ROOT_USER=buzz_dev -e MINIO_ROOT_PASSWORD=buzz_dev_secret \
   --tmpfs /data:rw,size=1g \
-  -p "127.0.0.1:${MINIO_PORT}:9000" quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
+  -p "127.0.0.1:${MINIO_PORT}:9000" cgr.dev/chainguard/minio:latest-dev@sha256:4b862594d23cb20ae0fbeb93311ed312a5b566ecba2293220b204c89ef3c1fe2 server /data
 for _ in $(seq 1 60); do docker exec "${PREFIX}-pg" pg_isready -U buzz >/dev/null 2>&1 && break; sleep 1; done
 for _ in $(seq 1 60); do curl -sf "http://127.0.0.1:${MINIO_PORT}/minio/health/live" >/dev/null && break; sleep 1; done
-docker run --rm --network host --entrypoint /bin/sh quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z -c \
+docker run --rm --network host --entrypoint /bin/sh cgr.dev/chainguard/minio:latest-dev@sha256:4b862594d23cb20ae0fbeb93311ed312a5b566ecba2293220b204c89ef3c1fe2 -c \
   "mc alias set local http://127.0.0.1:${MINIO_PORT} buzz_dev buzz_dev_secret >/dev/null && mc mb --ignore-existing local/buzz-media >/dev/null" \
   >>"${RUN_DIR}/run.log" 2>&1
 
