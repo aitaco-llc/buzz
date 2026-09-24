@@ -337,7 +337,7 @@ fn validate_answer(
     seen: &HashMap<String, String>,
     channel: &str,
     question: &str,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     ensure!(
         !answer.answer.trim().is_empty() && answer.answer.len() <= 4096,
         "answer must be 1–4096 bytes"
@@ -381,7 +381,20 @@ fn validate_answer(
         missing.is_empty(),
         "answer names {missing:?}, which no cited message contains"
     );
-    Ok(())
+    // The citations that survived, which are the only ones fit to publish.
+    Ok(cited_ids.into_iter().cloned().collect())
+}
+
+/// The "Sources" block of the published answer: one deep link per surviving
+/// citation. Built from what `validate_answer` returned, never from the raw
+/// `source_ids`, or a dropped channel id comes back as a link to a message
+/// that does not exist.
+fn source_links(channel: &str, cited: &[String]) -> String {
+    cited
+        .iter()
+        .map(|id| format!("buzz://message?channel={channel}&id={id}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // ── the MCP endpoint rebrand-acp is handed ──────────────────────────────────
@@ -706,13 +719,8 @@ async fn retrieve(host: Arc<Host>, question: &str) -> Result<(String, Value)> {
         let head: String = text.chars().take(400).collect();
         format!("final answer must be structured JSON; the model wrote {head:?}")
     })?;
-    validate_answer(&answer, &*host.thread_seen.lock().await, &host.channel, question)?;
-    let links = answer
-        .source_ids
-        .iter()
-        .map(|id| format!("buzz://message?channel={}&id={id}", host.channel))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let cited = validate_answer(&answer, &*host.thread_seen.lock().await, &host.channel, question)?;
+    let links = source_links(&host.channel, &cited);
     Ok((format!("{}\n\nSources:\n{links}", answer.answer), report))
 }
 
@@ -901,9 +909,14 @@ mod tests {
             answer: "SOLVED-9bf89012805c".into(),
             source_ids: ids,
         };
+        let cited = validate_answer(&answer(vec![source.clone(), channel.to_owned()]), &seen, channel, question)
+            .expect("a real citation plus the channel id is the run-8 case and should pass");
+        assert_eq!(cited, vec![source.clone()], "the channel id is dropped from what survives");
+        let links = source_links(channel, &cited);
+        assert_eq!(links, format!("buzz://message?channel={channel}&id={source}"));
         assert!(
-            validate_answer(&answer(vec![source.clone(), channel.to_owned()]), &seen, channel, question).is_ok(),
-            "a real citation plus the channel id is the run-8 case and should pass"
+            !links.contains(&format!("id={channel}")),
+            "no Sources link may point at the channel's own id"
         );
         assert!(
             validate_answer(&answer(vec![channel.to_owned()]), &seen, channel, question).is_err(),
