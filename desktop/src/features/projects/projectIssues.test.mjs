@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  allowedActorsForRoot,
   buildGitIssueTags,
   eventToProjectIssue,
   getAllTags,
@@ -104,6 +105,68 @@ test("honors status events from the issue author and repo owner", () => {
   assert.equal(
     eventToProjectIssue(issueEvent(), [ownerClosed]).status,
     PROJECT_ISSUE_STATUS.CLOSED,
+  );
+});
+
+test("honors a maintainer the repository vouched for, and only then", () => {
+  const MAINTAINER = "d".repeat(64);
+  const closed = statusEvent({
+    kind: 1632,
+    pubkey: MAINTAINER,
+    createdAt: 300,
+  });
+
+  assert.equal(
+    eventToProjectIssue(issueEvent(), [closed], [], [MAINTAINER]).status,
+    PROJECT_ISSUE_STATUS.CLOSED,
+    "a pubkey in the repository's maintainers tag may close its issues",
+  );
+
+  // The control: the identical event, from a repository that vouched for
+  // nobody. Nothing about the event changes — only the vouch.
+  assert.equal(
+    eventToProjectIssue(issueEvent(), [closed]).status,
+    PROJECT_ISSUE_STATUS.BACKLOG,
+    "an unvouched signer must still be ignored",
+  );
+});
+
+test("a maintainer may assign someone else; an unvouched signer may not", () => {
+  const MAINTAINER = "d".repeat(64);
+  const VOLUNTEER = "f".repeat(64);
+  const op = assignmentComment(MAINTAINER, [VOLUNTEER], "assign-1");
+
+  assert.deepEqual(
+    eventToProjectIssue(issueEvent(), [], [op], [MAINTAINER]).assignees,
+    [VOLUNTEER],
+  );
+  assert.deepEqual(
+    eventToProjectIssue(issueEvent(), [], [op]).assignees,
+    [],
+    "without the vouch the same operation names someone other than its signer",
+  );
+});
+
+test("a malformed maintainers entry never enters the trusted set", () => {
+  // Assert the set, not a status downstream of it. A status assertion passes
+  // whether or not the garbage was admitted, because garbage does not match
+  // any signer — so it could never fail on the fault this guard is for.
+  const MAINTAINER = "d".repeat(64);
+  const actors = allowedActorsForRoot(issueEvent(), [
+    MAINTAINER,
+    "D".repeat(64),
+    "",
+    "not-hex",
+    "c".repeat(63),
+    "c".repeat(65),
+    null,
+    undefined,
+  ]);
+
+  assert.deepEqual(
+    [...actors].sort(),
+    [AUTHOR, OWNER, MAINTAINER].sort(),
+    "author, owner and the one well-formed pubkey — case-folded, nothing else",
   );
 });
 

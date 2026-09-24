@@ -1,6 +1,7 @@
 import * as React from "react";
 import { Check, Copy } from "lucide-react";
 
+import { isHostedCommunityCreationEnabled } from "@/features/communities/hostedCommunityAvailability";
 import { HostedCommunityOnboarding } from "@/features/communities/ui/HostedCommunityOnboarding";
 import { useCommunityOnboarding } from "@/features/onboarding/communityOnboarding";
 import { InviteRedeemForm } from "@/features/onboarding/ui/InviteRedeemForm";
@@ -44,6 +45,10 @@ export function WelcomeSetup({
   const [isHostedSignInOpen, setIsHostedSignInOpen] = React.useState(false);
   const [copiedNpub, setCopiedNpub] = React.useState(false);
   const communityOnboarding = useCommunityOnboarding();
+  // Without hosted creation there is nothing to create or claim, so the
+  // create card goes and "I already have a community" goes straight to the
+  // member reconnect page (the owner choice was the only other option).
+  const canCreate = isHostedCommunityCreationEnabled();
   const identityQuery = useIdentityQuery();
   const systemColorScheme = useSystemColorScheme();
   const npub = identityQuery.data?.pubkey
@@ -111,7 +116,7 @@ export function WelcomeSetup({
             }
           : page === "member"
             ? {
-                onClick: () => showPage("existing"),
+                onClick: () => showPage(canCreate ? "existing" : "welcome"),
                 testId: "welcome-member-back",
               }
             : undefined;
@@ -135,11 +140,14 @@ export function WelcomeSetup({
             >
               <div className="w-full max-w-[760px]">
                 <h1 className="text-title font-normal">
-                  Join or create a community
+                  {canCreate
+                    ? "Join or create a community"
+                    : "Join a community"}
                 </h1>
                 <p className="mt-3 text-sm leading-6 text-foreground/80">
-                  Join with an invite, create your own community, or reconnect
-                  one you already have.
+                  {canCreate
+                    ? "Join with an invite, create your own community, or reconnect one you already have."
+                    : "Join with an invite, or reconnect to a community you already have."}
                 </p>
               </div>
               <div className="flex w-full flex-1 translate-y-16 flex-col items-center justify-center gap-20 py-8">
@@ -156,19 +164,21 @@ export function WelcomeSetup({
                     Join a community
                   </button>
                 </Card>
-                <Card
-                  asChild
-                  className={COMMUNITY_OPTION_CARD_CLASS}
-                  variant="textured"
-                >
-                  <button
-                    data-testid="community-choice-create"
-                    onClick={beginHostedCommunity}
-                    type="button"
+                {canCreate ? (
+                  <Card
+                    asChild
+                    className={COMMUNITY_OPTION_CARD_CLASS}
+                    variant="textured"
                   >
-                    Create a community
-                  </button>
-                </Card>
+                    <button
+                      data-testid="community-choice-create"
+                      onClick={beginHostedCommunity}
+                      type="button"
+                    >
+                      Create a community
+                    </button>
+                  </Card>
+                ) : null}
                 <Card
                   asChild
                   className={COMMUNITY_OPTION_CARD_CLASS}
@@ -176,7 +186,7 @@ export function WelcomeSetup({
                 >
                   <button
                     data-testid="community-choice-existing"
-                    onClick={() => showPage("existing")}
+                    onClick={() => showPage(canCreate ? "existing" : "member")}
                     type="button"
                   >
                     I already have a community
@@ -259,7 +269,9 @@ export function WelcomeSetup({
                   error={null}
                   isRedeeming={false}
                   onCancel={() =>
-                    showPage(page === "member" ? "existing" : "welcome")
+                    showPage(
+                      page === "member" && canCreate ? "existing" : "welcome",
+                    )
                   }
                   onConnect={startConnection}
                   onRedeem={redeemInvite}
@@ -315,7 +327,7 @@ export function WelcomeSetup({
               </div>
             </OnboardingSlideTransition>
           )}
-          {isHostedSignInOpen && page !== "owned" ? (
+          {canCreate && isHostedSignInOpen && page !== "owned" ? (
             <HostedCommunityOnboarding
               onBack={() => setIsHostedSignInOpen(false)}
               onReady={() => {

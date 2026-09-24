@@ -1,0 +1,116 @@
+{
+  "about": "Labelled seed corpus for the task-extractor eval (PLANS/BUZZ_TASK_TRACKER_ARCHITECTURE_2026-09-23.md §5). Every Lloyd utterance in the audit window that aldrin's seat can read. Labels are hand-assigned by aldrin against the audit's own inventory; where the audit names an outcome for the item, `audit` cites it. Message TEXT is deliberately NOT stored here: the relay is the one source of truth for what Lloyd said, and `task-extractor-eval.py --fetch` resolves each id at run time. What this file holds is the labels and the reasoning, which is the part that cannot be re-derived.",
+  "window": {
+    "from": 1790029800,
+    "to": 1790127300,
+    "utc": "2026-09-21T22:30Z .. 2026-09-23T01:35Z"
+  },
+  "coverage": "7 of the channels the audit names. #user-support, every DM, and every huddle are NOT here: this seat is not a member, not a party, and not in the room. See the design note for who must contribute those.",
+  "utterances": [
+    {
+      "id": "9aee0484",
+      "channel": "general",
+      "expect": {
+        "action": "create",
+        "count": 4
+      },
+      "blocked": 1,
+      "why": "Four asks in one message, and the fourth is explicitly ordered after the first three ('once all of that is done'). A single-task extraction loses three of them and the ordering. This is the blocked-by link in the first utterance of the window.",
+      "audit": "Utterance 1 — COMPLETED (Spark 1.3 follow-up became its own track), which is the audit itself observing that this message was more than one task."
+    },
+    {
+      "id": "46c1401d",
+      "channel": "buzz-platform",
+      "expect": {
+        "action": "create",
+        "count": 1
+      },
+      "why": "One defect, one deliverable. The easy case.",
+      "audit": "Utterance 2 — COMPLETED, buzz#64."
+    },
+    {
+      "id": "17ced753",
+      "channel": "ml-platform",
+      "expect": {
+        "action": "attach",
+        "count": 1
+      },
+      "why": "A status query against work that already exists. Creating for this is the failure that floods the board: the Spark track was opened by 9aee0484.",
+      "audit": "Utterances 22/23/31/48/73/78-81 — STALLED at completion boundary. Repeated asks, one task."
+    },
+    {
+      "id": "c91bd631",
+      "channel": "ml-platform",
+      "expect": {
+        "action": "attach",
+        "count": 1
+      },
+      "why": "Direction on an open task, not a new one. 'keep on this' names its own antecedent."
+    },
+    {
+      "id": "5d472ef8",
+      "channel": "general",
+      "expect": {
+        "action": "none",
+        "count": 0
+      },
+      "why": "A request for a report across everything. It attaches to no single task and creates none. An extractor that creates here produces a task whose done-when is unwritable."
+    },
+    {
+      "id": "648e67e3",
+      "channel": "general",
+      "expect": {
+        "action": "none",
+        "count": 0
+      },
+      "why": "An instruction about how rock should work, not a deliverable. Same class as the one above."
+    },
+    {
+      "id": "a04fd4d9",
+      "channel": "general",
+      "expect": {
+        "action": "none",
+        "count": 0
+      },
+      "why": "A challenge to an answer just given. No deliverable."
+    },
+    {
+      "id": "5872666e",
+      "channel": "general",
+      "expect": {
+        "action": "create",
+        "count": 1
+      },
+      "why": "A standing capability with an observable end: the watchdog. Distinguishing this from the three above is the hardest judgement in the set — all four are about the same frustration, and only this one asks for a thing to exist.",
+      "audit": "Utterances 32, 76 — INFRASTRUCTURE DEPLOYED (fleet-watchdog), incident triage dropped."
+    },
+    {
+      "id": "6bfd1e01",
+      "channel": "game-dev",
+      "expect": {
+        "action": "create",
+        "count": 3
+      },
+      "why": "Level progression, art quality and diversity, and the outstanding issue reports. The audit records that audio and iOS validation were dropped INSIDE this item — sub-items a one-task extraction swallows by construction. The count is the point of this case.",
+      "audit": "Utterance 34 — PARTIAL: art and engine completed, audio and iOS dropped."
+    },
+    {
+      "id": "2279229f",
+      "channel": "ml-platform",
+      "expect": {
+        "action": "attach",
+        "count": 1
+      },
+      "why": "The human says which task it belongs to, in words: 'I know we already are running a comparison. Can we just add in Luna to that?'. If an extractor creates here it has ignored an explicit instruction."
+    },
+    {
+      "id": "63e0c989",
+      "channel": "general",
+      "expect": {
+        "action": "none",
+        "count": 0
+      },
+      "why": "A status sweep, phrased as an instruction. Near-duplicate of 648e67e3 nineteen hours later, which is itself evidence the first one was never satisfied — but the remedy is a task for the watchdog, not a task for this message."
+    }
+  ]
+}

@@ -11,6 +11,29 @@ export type TimelineReaction = {
   }>;
 };
 
+/**
+ * One NIP-AR (kind:44201) turn receipt, resolved onto the single message it
+ * annotates.
+ *
+ * The counts belong to the *turn*, not to any one message: a turn that
+ * published three messages emits one receipt naming all three, and this object
+ * is attached to exactly one of them (the last one this client holds). Every
+ * count is nullable because `null` means "the harness reported nothing", which
+ * is a different claim from zero — see `turnReceiptFormat.ts`.
+ */
+export type TimelineTurnReceipt = {
+  /** The receipt event's id. Stable key, and what deduplicates redeliveries. */
+  id: string;
+  /** Model the turn actually ran on, as the harness observed it. */
+  model: string;
+  /** Harness identifier (`claude-agent-acp`, `goose`, …). */
+  harness: string;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+};
+
 export type TimelineMessage = {
   id: string;
   /** Stable local key used to avoid remounting optimistic rows on send ack. */
@@ -49,4 +72,10 @@ export type TimelineMessage = {
   kind?: number;
   tags?: string[][];
   reactions?: TimelineReaction[];
+  /**
+   * NIP-AR turn receipt anchored to this message. Present on at most one
+   * message per turn — the last `e`-tagged message this client actually holds
+   * — so a three-message turn never renders its cost three times.
+   */
+  turnReceipt?: TimelineTurnReceipt;
 };

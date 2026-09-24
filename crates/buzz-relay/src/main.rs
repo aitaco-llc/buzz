@@ -667,11 +667,20 @@ async fn run_relay_main(boot: BootTracker) -> anyhow::Result<()> {
         });
     }
 
-    // Emit kind:39000/39002 discovery events for channels that exist in the DB
-    // but don't have corresponding events (e.g. seeded via direct SQL inserts).
-    // Only runs when BUZZ_RECONCILE_CHANNELS=true (dev/CI environments).
-    // Production relays create channels through the event pipeline and don't need this.
-    if std::env::var("BUZZ_RECONCILE_CHANNELS").is_ok() {
+    // Repair channel discovery events at boot. Two passes with different
+    // scopes, in one task so the deployment's community is resolved once.
+    //
+    // 1. Always: archived channels whose stored kind:39000 does not say so.
+    //    Huddle auto-end used to archive a backing channel without re-emitting
+    //    discovery, and nothing else ever revisits an archived row, so those
+    //    events read "not archived" forever and clients keep listing dead
+    //    channels. Those rows are on production, so this pass must not sit
+    //    behind BUZZ_RECONCILE_CHANNELS. It touches only archived channels and
+    //    is a no-op once each is repaired.
+    // 2. Only under BUZZ_RECONCILE_CHANNELS (dev/CI): channels that have no
+    //    kind:39000 at all, e.g. seeded via direct SQL insert. Production
+    //    relays create channels through the event pipeline and don't need it.
+    {
         let reconcile_state = Arc::clone(&state);
         tokio::spawn(async move {
             // Resolve the deployment's community from the configured relay URL
@@ -686,13 +695,38 @@ async fn run_relay_main(boot: BootTracker) -> anyhow::Result<()> {
             {
                 Ok(ctx) => ctx,
                 Err(e) => {
+                    // Expected on a relay that serves no community of its own
+                    // (the pairing relay leaves RELAY_URL unset). It repairs
+                    // nothing rather than guessing a tenant.
                     tracing::warn!(
                         error = ?e,
+                        relay_url = %reconcile_state.config.relay_url,
                         "channel reconciliation skipped: relay host is not mapped to a community"
                     );
                     return;
                 }
             };
+
+            match buzz_relay::handlers::side_effects::reconcile_channel_events(
+                &tenant,
+                &reconcile_state,
+                buzz_relay::handlers::side_effects::DiscoveryRepairScope::StaleArchivedOnly,
+            )
+            .await
+            {
+                Ok(0) => {}
+                Ok(repaired) => tracing::info!(
+                    count = repaired,
+                    "repaired archived channels whose discovery events still read as live"
+                ),
+                Err(e) => {
+                    tracing::warn!(error = %e, "archived-channel discovery repair failed");
+                }
+            }
+
+            if std::env::var("BUZZ_RECONCILE_CHANNELS").is_err() {
+                return;
+            }
             // Try immediately, then retry every 5s for up to 2 minutes.
             // Handles CI pattern: relay starts → seed script inserts data → reconciliation.
             for attempt in 0..24u32 {
@@ -702,10 +736,11 @@ async fn run_relay_main(boot: BootTracker) -> anyhow::Result<()> {
                 match buzz_relay::handlers::side_effects::reconcile_channel_events(
                     &tenant,
                     &reconcile_state,
+                    buzz_relay::handlers::side_effects::DiscoveryRepairScope::MissingOrStaleArchived,
                 )
                 .await
                 {
-                    Ok(()) => {}
+                    Ok(_) => {}
                     Err(e) => {
                         tracing::warn!(error = %e, "channel reconciliation attempt failed");
                     }

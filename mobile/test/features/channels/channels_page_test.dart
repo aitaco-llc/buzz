@@ -20,10 +20,10 @@ import 'package:buzz/features/profile/profile_avatar.dart';
 import 'package:buzz/features/profile/profile_provider.dart';
 import 'package:buzz/shared/profile/user_profile.dart';
 import 'package:buzz/shared/utils/string_utils.dart';
-import 'package:buzz/shared/auth/auth.dart';
 import 'package:buzz/shared/community/community_icon_provider.dart';
 import 'package:buzz/shared/relay/relay.dart';
 import 'package:buzz/shared/theme/theme.dart';
+import 'package:buzz/shared/widgets/aitaco_mark.dart';
 import 'package:buzz/shared/widgets/avatar_image.dart';
 import 'package:buzz/shared/widgets/buzz_loading_indicator.dart';
 import 'package:buzz/shared/widgets/frosted_app_bar.dart';
@@ -184,7 +184,7 @@ void main() {
     expect(find.text('Channels'), findsOneWidget);
     expect(find.text('FORUMS'), findsNothing);
     expect(find.text('DMs'), findsOneWidget);
-    expect(find.text('Community'), findsOneWidget);
+    expect(find.text('aitaco'), findsOneWidget);
     expect(find.byTooltip('Create or start conversation'), findsOneWidget);
     expect(find.byTooltip('Channels options'), findsOneWidget);
     expect(find.byIcon(LucideIcons.ellipsisVertical), findsWidgets);
@@ -732,7 +732,7 @@ void main() {
     relaySession.connect();
     await tester.pumpAndSettle();
 
-    final topLabelX = tester.getTopLeft(find.text('Community')).dx;
+    final topLabelX = tester.getTopLeft(find.text('aitaco')).dx;
     final sectionLabelX = tester.getTopLeft(find.text('Channels')).dx;
     final rowLabelX = tester.getTopLeft(find.text('general')).dx;
     // The community title shares the leading row with its avatar. Channel
@@ -774,7 +774,7 @@ void main() {
     final appBar = find.byType(FrostedAppBar).last;
     final communityAvatar = find.descendant(
       of: appBar,
-      matching: find.byType(AvatarImage),
+      matching: find.byType(AitacoMark),
     );
     final profileAvatar = find.descendant(
       of: appBar,
@@ -1023,9 +1023,7 @@ void main() {
     expect(reverseScaleProgress, closeTo(reverseOpacity, 0.001));
   });
 
-  testWidgets('gives feedback for the profile and community controls', (
-    tester,
-  ) async {
+  testWidgets('gives feedback for the profile control', (tester) async {
     final hapticCalls = <MethodCall>[];
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(SystemChannels.platform, (call) async {
@@ -1048,316 +1046,6 @@ void main() {
     await tester.tap(find.byType(ProfileAvatar));
     await tester.pumpAndSettle();
     expect(hapticCalls.single.arguments, 'HapticFeedbackType.lightImpact');
-
-    Navigator.of(tester.element(find.text('Injected settings'))).pop();
-    await tester.pumpAndSettle();
-    final communityAvatar = find.descendant(
-      of: find.byType(FrostedAppBar).last,
-      matching: find.byType(AvatarImage),
-    );
-    await tester.tap(communityAvatar);
-    await tester.pump();
-    expect(hapticCalls.last.arguments, 'HapticFeedbackType.selectionClick');
-  });
-
-  testWidgets('community switcher separates selection from edit removal', (
-    tester,
-  ) async {
-    tester.view.physicalSize = const Size(390, 844);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-
-    final communities = [
-      Community(
-        id: 'alpha',
-        name: 'Alpha',
-        relayUrl: 'wss://alpha.example.com',
-        addedAt: DateTime(2025),
-      ),
-      Community(
-        id: 'bravo',
-        name: 'Bravo',
-        relayUrl: 'wss://bravo.example.com',
-        addedAt: DateTime(2025),
-      ),
-    ];
-    final communityNotifier = _FakeCommunityListNotifier(communities);
-
-    await tester.pumpWidget(
-      buildTestable(
-        communityIcons: const {
-          'wss://alpha.example.com':
-              'data:image/png;base64,'
-              'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
-        },
-        overrides: [
-          channelsProvider.overrideWith(() => _FakeNotifier(testChannels)),
-          communityListProvider.overrideWith(() => communityNotifier),
-          activeCommunityProvider.overrideWith(
-            (ref) async => communities.first,
-          ),
-        ],
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.text('Alpha'));
-    await tester.pumpAndSettle();
-
-    expect(find.text('Switch Community'), findsOneWidget);
-    final options = find.byKey(const Key('community-switcher-options'));
-    expect(options, findsOneWidget);
-    final editButton = find.byKey(const Key('community-switcher-edit'));
-    expect(tester.getSize(editButton), const Size(56, 44));
-    expect(find.byTooltip('Close sheet'), findsNothing);
-    expect(
-      tester.getCenter(editButton).dx,
-      greaterThan(tester.getCenter(find.text('Switch Community')).dx),
-    );
-    expect(find.text('alpha.example.com'), findsOneWidget);
-    expect(find.text('bravo.example.com'), findsOneWidget);
-    expect(find.text('Rename'), findsNothing);
-    expect(
-      find.descendant(
-        of: options,
-        matching: find.byIcon(LucideIcons.ellipsisVertical),
-      ),
-      findsNothing,
-    );
-    expect(find.text('Edit'), findsOneWidget);
-    expect(find.byIcon(LucideIcons.trash2), findsNothing);
-    expect(
-      tester.getSize(find.byKey(const Key('community-switcher-avatar-alpha'))),
-      const Size.square(36),
-    );
-    final alphaAvatar = tester.widget<AvatarImage>(
-      find.descendant(
-        of: find.byKey(const Key('community-switcher-avatar-alpha')),
-        matching: find.byType(AvatarImage),
-      ),
-    );
-    expect(alphaAvatar.imageUrl, startsWith('data:image/png;base64,'));
-    final activeSelection = find.byKey(
-      const Key('community-switcher-selection-alpha'),
-    );
-    final inactiveSelection = find.byKey(
-      const Key('community-switcher-selection-bravo'),
-    );
-    expect(
-      tester.getCenter(editButton).dx,
-      closeTo(tester.getCenter(activeSelection).dx, 0.01),
-    );
-    expect(tester.getSize(activeSelection), const Size.square(40));
-    expect(
-      tester.getSize(find.byKey(const Key('community-switcher-circle-alpha'))),
-      const Size.square(24),
-    );
-    expect(
-      find.descendant(
-        of: activeSelection,
-        matching: find.byIcon(LucideIcons.check),
-      ),
-      findsOneWidget,
-    );
-    expect(
-      find.descendant(
-        of: inactiveSelection,
-        matching: find.byIcon(LucideIcons.check),
-      ),
-      findsNothing,
-    );
-    expect(
-      find.descendant(of: options, matching: find.byType(Divider)),
-      findsNWidgets(2),
-    );
-
-    await tester.tap(find.text('Edit'));
-    await tester.pump();
-
-    final activeAction = find.byKey(
-      const Key('community-switcher-action-alpha'),
-    );
-    final actionSwitcher = tester.widget<AnimatedSwitcher>(
-      find.descendant(
-        of: activeAction,
-        matching: find.byType(AnimatedSwitcher),
-      ),
-    );
-    expect(actionSwitcher.duration, const Duration(milliseconds: 250));
-    expect(activeSelection, findsOneWidget);
-    expect(
-      find.byKey(const Key('community-switcher-remove-alpha')),
-      findsOneWidget,
-    );
-
-    await tester.pump(const Duration(milliseconds: 125));
-
-    final transitioningOpacities = tester
-        .widgetList<Opacity>(
-          find.descendant(of: activeAction, matching: find.byType(Opacity)),
-        )
-        .map((opacity) => opacity.opacity);
-    expect(
-      transitioningOpacities.any((opacity) => opacity > 0 && opacity < 1),
-      isTrue,
-    );
-    expect(
-      find.descendant(of: activeAction, matching: find.byType(ImageFiltered)),
-      findsWidgets,
-    );
-
-    await tester.pumpAndSettle();
-
-    expect(find.text('Done'), findsOneWidget);
-    expect(find.byIcon(LucideIcons.trash2), findsNWidgets(2));
-    expect(activeSelection, findsNothing);
-    expect(inactiveSelection, findsNothing);
-
-    await tester.tap(find.byTooltip('Remove Bravo'));
-    await tester.pumpAndSettle();
-
-    expect(find.text('Remove community?'), findsOneWidget);
-    expect(
-      find.text(
-        'Are you sure you want to remove “Bravo”? '
-        'You can pair with it again later.',
-      ),
-      findsOneWidget,
-    );
-
-    await tester.tap(find.widgetWithText(FilledButton, 'Remove'));
-    await tester.pumpAndSettle();
-
-    expect(communityNotifier.removedIds, ['bravo']);
-    expect(find.text('Switch Community'), findsOneWidget);
-    expect(find.text('Bravo'), findsNothing);
-    expect(find.text('Done'), findsOneWidget);
-
-    await tester.tap(find.text('Done'));
-    await tester.pumpAndSettle();
-
-    expect(find.text('Edit'), findsOneWidget);
-    expect(
-      find.byKey(const Key('community-switcher-selection-alpha')),
-      findsOneWidget,
-    );
-  });
-
-  testWidgets('opening the community switcher refreshes visible icons', (
-    tester,
-  ) async {
-    final community = Community(
-      id: 'alpha',
-      name: 'Alpha',
-      relayUrl: 'wss://alpha.example.com',
-      addedAt: DateTime(2025),
-    );
-    var iconLoads = 0;
-
-    await tester.pumpWidget(
-      buildTestable(
-        onCommunityIconLoad: (_) => iconLoads++,
-        overrides: [
-          channelsProvider.overrideWith(() => _FakeNotifier(testChannels)),
-          communityListProvider.overrideWith(
-            () => _FakeCommunityListNotifier([community]),
-          ),
-          activeCommunityProvider.overrideWith((ref) async => community),
-        ],
-      ),
-    );
-    await tester.pumpAndSettle();
-    final initialIconLoads = iconLoads;
-
-    await tester.tap(find.text('Alpha'));
-    await tester.pumpAndSettle();
-
-    expect(iconLoads, greaterThan(initialIconLoads));
-  });
-
-  testWidgets('community switcher header grows with accessible text', (
-    tester,
-  ) async {
-    final community = Community(
-      id: 'alpha',
-      name: 'Alpha',
-      relayUrl: 'wss://alpha.example.com',
-      addedAt: DateTime(2025),
-    );
-
-    await tester.pumpWidget(
-      buildTestable(
-        textScaler: TextScaler.linear(2),
-        overrides: [
-          channelsProvider.overrideWith(() => _FakeNotifier(testChannels)),
-          communityListProvider.overrideWith(
-            () => _FakeCommunityListNotifier([community]),
-          ),
-          activeCommunityProvider.overrideWith((ref) async => community),
-        ],
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.text('Alpha'));
-    await tester.pumpAndSettle();
-
-    expect(tester.takeException(), isNull);
-    expect(
-      tester.getSize(find.byKey(const Key('community-switcher-title'))).height,
-      greaterThan(32),
-    );
-  });
-
-  testWidgets('community switcher disables icon motion when requested', (
-    tester,
-  ) async {
-    final communities = [
-      Community(
-        id: 'alpha',
-        name: 'Alpha',
-        relayUrl: 'wss://alpha.example.com',
-        addedAt: DateTime(2025),
-      ),
-    ];
-
-    await tester.pumpWidget(
-      buildTestable(
-        disableAnimations: true,
-        overrides: [
-          channelsProvider.overrideWith(() => _FakeNotifier(testChannels)),
-          communityListProvider.overrideWith(
-            () => _FakeCommunityListNotifier(communities),
-          ),
-          activeCommunityProvider.overrideWith(
-            (ref) async => communities.first,
-          ),
-        ],
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.text('Alpha'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Edit'));
-    await tester.pump();
-
-    final actionSwitcher = tester.widget<AnimatedSwitcher>(
-      find.descendant(
-        of: find.byKey(const Key('community-switcher-action-alpha')),
-        matching: find.byType(AnimatedSwitcher),
-      ),
-    );
-    expect(actionSwitcher.duration, Duration.zero);
-    expect(
-      find.byKey(const Key('community-switcher-selection-alpha')),
-      findsNothing,
-    );
-    expect(
-      find.byKey(const Key('community-switcher-remove-alpha')),
-      findsOneWidget,
-    );
   });
 
   testWidgets('quick actions slide behind navigation when leaving home', (
@@ -2610,25 +2298,6 @@ class _FakeChannelSectionsNotifier extends ChannelSectionsNotifier {
   @override
   ChannelSectionsState build() =>
       ChannelSectionsState(isReady: true, store: _store, version: 1);
-}
-
-class _FakeCommunityListNotifier extends CommunityListNotifier {
-  _FakeCommunityListNotifier(this._communities);
-
-  List<Community> _communities;
-  final List<String> removedIds = [];
-
-  @override
-  Future<List<Community>> build() async => _communities;
-
-  @override
-  Future<void> removeCommunity(String id) async {
-    removedIds.add(id);
-    _communities = _communities
-        .where((community) => community.id != id)
-        .toList();
-    state = AsyncData(_communities);
-  }
 }
 
 class _ErrorNotifier extends ChannelsNotifier {

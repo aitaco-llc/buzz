@@ -16,6 +16,10 @@ buzz-core = { workspace = true }
 nostr = { workspace = true }
 tokio = { workspace = true }
 tokio-tungstenite = { workspace = true }
+# Explicit rustls dep with the ring provider, so `main` can install a
+# process-level CryptoProvider. Without one, any wss:// relay panics in
+# rustls before the first frame. Same reason as buzz-cli.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 futures-util = { workspace = true }
 serde_json = { workspace = true }
 url = { workspace = true }

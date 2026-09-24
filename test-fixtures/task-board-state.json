@@ -1,0 +1,198 @@
+{
+  "$comment": "Task board state and stall derivation — the shared oracle for sections 6 and 7 of PLANS/BUZZ_TASK_TRACKER_ARCHITECTURE_2026-09-23.md, consumed by the Rust `buzz tasks board` reducer and by the Desktop TS read model, so the two cannot disagree about one task. Inputs are SEMANTIC, not signed envelopes: a task is its issue's facts plus the public events a maintainer can read. `kind:44200` is deliberately absent — it is owner-scoped by NIP-AM's design, so a seat can decrypt only its own metrics and it is never a board input anywhere (section 6, visibility rule). Every timestamp is unix seconds and every case carries its own `now`, so the file is stable across the year.",
+  "version": 1,
+  "constants": {
+    "failure_notice_prefix": "⚠️ I couldn't process the last request",
+    "$failure_notice_prefix": "crates/buzz-acp/src/pool.rs FAILURE_NOTICE_PREFIX. A consumer MUST read this from the fixture rather than hardcoding it, so the two move together.",
+    "watchdog_pubkey": "f84515c5827ced5aa43d3e2d0aaeba822b00f30d6f8d35ed4232bd4da229898b",
+    "$watchdog_pubkey": "Derived from ~/.config/aitaco/fleet-watchdog.env on hip, 2026-09-23 — not taken on trust.",
+    "stall_after_secs": 14400,
+    "in_progress_within_secs": 86400
+  },
+  "pubkeys": {
+    "assignee": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "author": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "bystander": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "precedence": [
+    "Done and Dropped (status 1632) win over everything: a closed task has no board state to derive.",
+    "Blocked wins over In Progress. Section 6's table does not order its rows; this file makes the call so two implementations cannot differ. A blocked task with recent activity is still Blocked — it renders under its blocker, and someone chipping at it does not unblock it. Overturn it here, in one place, if that is wrong.",
+    "Unassigned wins over Up Next: no assignee is a tracker fault and is pinned to the top of the board.",
+    "Otherwise: In Progress when there is activity inside `in_progress_within_secs`, else Up Next."
+  ],
+  "cases": [
+    {
+      "name": "control_reply_in_a_linked_thread_is_activity",
+      "spec_case": "In Progress = open, activity in a linked thread within 24 h",
+      "note": "The case every other one is a variation of. If this fails, nothing below means anything.",
+      "now": 1790200000,
+      "task": { "createdAt": 1790100000, "status": "open", "assignee": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "blockedBy": null },
+      "links": [ { "kind": "task-thread", "target": "1111111111111111111111111111111111111111111111111111111111111111" } ],
+      "posts": [
+        { "thread": "1111111111111111111111111111111111111111111111111111111111111111", "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "createdAt": 1790199000, "content": "Pushed the branch; CI is running." }
+      ],
+      "comments": [],
+      "assigneeSeatUp": true,
+      "assigneeTurnInFlight": false,
+      "expect": { "state": "In Progress", "activityAt": 1790199000, "stalled": false }
+    },
+    {
+      "name": "failure_notice_alone_is_not_activity",
+      "spec_case": "Activity excludes any post whose content starts with FAILURE_NOTICE_PREFIX",
+      "note": "The #70 notice says a turn was cut off before it replied. Counting it as activity would let a task look worked-on precisely because nothing was done. The post is recent enough that, if it counted, this would read In Progress — which is what makes the case able to fail.",
+      "now": 1790200000,
+      "task": { "createdAt": 1790100000, "status": "open", "assignee": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "blockedBy": null },
+      "links": [ { "kind": "task-thread", "target": "1111111111111111111111111111111111111111111111111111111111111111" } ],
+      "posts": [
+        { "thread": "1111111111111111111111111111111111111111111111111111111111111111", "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "createdAt": 1790199000, "content": "⚠️ I couldn't process the last request — the turn ran out of tool calls before it replied. Nothing was published, so nobody is working on it. Please re-send if it is still needed." }
+      ],
+      "comments": [],
+      "assigneeSeatUp": true,
+      "assigneeTurnInFlight": false,
+      "expect": { "state": "Up Next", "activityAt": null, "stalled": true }
+    },
+    {
+      "name": "watchdog_nudge_does_not_reset_the_clock_it_measures",
+      "spec_case": "Activity excludes the watchdog's own posts",
+      "note": "The stall nudge lands in the task's own thread. If it counted as activity it would reset the very clock that produced it, and TASK_STALLED could fire exactly once per task, ever. Here the last real activity is 5 h old and the nudge is 10 min old: the task must still read stalled.",
+      "now": 1790200000,
+      "task": { "createdAt": 1790100000, "status": "open", "assignee": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "blockedBy": null },
+      "links": [ { "kind": "task-thread", "target": "1111111111111111111111111111111111111111111111111111111111111111" } ],
+      "posts": [
+        { "thread": "1111111111111111111111111111111111111111111111111111111111111111", "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "createdAt": 1790182000, "content": "Picked this up." },
+        { "thread": "1111111111111111111111111111111111111111111111111111111111111111", "pubkey": "f84515c5827ced5aa43d3e2d0aaeba822b00f30d6f8d35ed4232bd4da229898b", "createdAt": 1790199400, "content": "no activity for 4 h: post status, hand back, or mark blocked." }
+      ],
+      "comments": [],
+      "assigneeSeatUp": true,
+      "assigneeTurnInFlight": false,
+      "expect": { "state": "In Progress", "activityAt": 1790182000, "stalled": true }
+    },
+    {
+      "name": "reply_in_an_unlinked_thread_is_not_activity",
+      "spec_case": "Activity counts a kind-9 in any task-thread-LINKED thread",
+      "note": "Real work, in a thread nobody linked to the task. It does not count, and that is a linking gap rather than a reason to reach for 44200 (section 6). The next case is the same bytes with the link added.",
+      "now": 1790200000,
+      "task": { "createdAt": 1790100000, "status": "open", "assignee": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "blockedBy": null },
+      "links": [],
+      "posts": [
+        { "thread": "2222222222222222222222222222222222222222222222222222222222222222", "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "createdAt": 1790199000, "content": "Working on this over here." }
+      ],
+      "comments": [],
+      "assigneeSeatUp": true,
+      "assigneeTurnInFlight": false,
+      "expect": { "state": "Up Next", "activityAt": null, "stalled": true }
+    },
+    {
+      "name": "the_same_reply_counts_once_the_thread_is_linked",
+      "spec_case": "buzz issues link --kind thread closes the linking gap",
+      "note": "Identical to the case above but for one link note. This pair is the argument that the gap 44200 would have filled is closed by linking, not by decryption.",
+      "now": 1790200000,
+      "task": { "createdAt": 1790100000, "status": "open", "assignee": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "blockedBy": null },
+      "links": [ { "kind": "task-thread", "target": "2222222222222222222222222222222222222222222222222222222222222222" } ],
+      "posts": [
+        { "thread": "2222222222222222222222222222222222222222222222222222222222222222", "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "createdAt": 1790199000, "content": "Working on this over here." }
+      ],
+      "comments": [],
+      "assigneeSeatUp": true,
+      "assigneeTurnInFlight": false,
+      "expect": { "state": "In Progress", "activityAt": 1790199000, "stalled": false }
+    },
+    {
+      "name": "an_in_flight_turn_suppresses_the_nudge_but_not_the_state",
+      "spec_case": "TASK_STALLED suppressed while a turn is in flight on the assignee's seat",
+      "note": "Surprising and deliberate: an in-flight turn has published nothing yet, so it is not activity and the task still reads Up Next. It suppresses only the nudge, because nagging a seat that is mid-turn is exactly the false alarm section 7 is avoiding. Mac seats have no turn index the watchdog can read, so they get no suppression and `assigneeTurnInFlight` is always false for them.",
+      "now": 1790200000,
+      "task": { "createdAt": 1790100000, "status": "open", "assignee": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "blockedBy": null },
+      "links": [ { "kind": "task-thread", "target": "1111111111111111111111111111111111111111111111111111111111111111" } ],
+      "posts": [],
+      "comments": [],
+      "assigneeSeatUp": true,
+      "assigneeTurnInFlight": true,
+      "expect": { "state": "Up Next", "activityAt": null, "stalled": false }
+    },
+    {
+      "name": "a_seat_that_is_down_is_not_nudged",
+      "spec_case": "TASK_STALLED requires the assignee's seat to be up",
+      "note": "A seat that is not running cannot answer a nudge. Its being down is the watchdog's UNIT_DOWN finding, not a task finding.",
+      "now": 1790200000,
+      "task": { "createdAt": 1790100000, "status": "open", "assignee": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "blockedBy": null },
+      "links": [],
+      "posts": [],
+      "comments": [],
+      "assigneeSeatUp": false,
+      "assigneeTurnInFlight": false,
+      "expect": { "state": "Up Next", "activityAt": null, "stalled": false }
+    },
+    {
+      "name": "a_nip22_comment_on_the_issue_is_activity",
+      "spec_case": "Activity counts a NIP-22 comment on the issue",
+      "note": "The other half of the activity definition. A task can be worked without a linked thread existing at all.",
+      "now": 1790200000,
+      "task": { "createdAt": 1790100000, "status": "open", "assignee": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "blockedBy": null },
+      "links": [],
+      "posts": [],
+      "comments": [
+        { "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "createdAt": 1790198000, "content": "Root-caused; PR next." }
+      ],
+      "assigneeSeatUp": true,
+      "assigneeTurnInFlight": false,
+      "expect": { "state": "In Progress", "activityAt": 1790198000, "stalled": false }
+    },
+    {
+      "name": "activity_older_than_the_issue_does_not_count",
+      "spec_case": "Activity requires created_at later than the issue's",
+      "note": "A task extracted from a message in a long-running thread inherits that thread's history. Without the bound, every such task would be born In Progress.",
+      "now": 1790200000,
+      "task": { "createdAt": 1790100000, "status": "open", "assignee": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "blockedBy": null },
+      "links": [ { "kind": "task-thread", "target": "1111111111111111111111111111111111111111111111111111111111111111" } ],
+      "posts": [
+        { "thread": "1111111111111111111111111111111111111111111111111111111111111111", "pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "createdAt": 1790099000, "content": "Original discussion, before the task existed." }
+      ],
+      "comments": [],
+      "assigneeSeatUp": true,
+      "assigneeTurnInFlight": false,
+      "expect": { "state": "Up Next", "activityAt": null, "stalled": true }
+    },
+    {
+      "name": "an_unassigned_task_is_a_tracker_fault",
+      "spec_case": "Unassigned = open, no assignee",
+      "note": "Pinned to the top of the board in red and nudged within 10 minutes. It outranks Up Next even though it is also, literally, next.",
+      "now": 1790200000,
+      "task": { "createdAt": 1790100000, "status": "open", "assignee": null, "blockedBy": null },
+      "links": [],
+      "posts": [],
+      "comments": [],
+      "assigneeSeatUp": true,
+      "assigneeTurnInFlight": false,
+      "expect": { "state": "Unassigned", "activityAt": null, "stalled": false }
+    },
+    {
+      "name": "a_blocked_task_stays_blocked_even_while_it_is_worked",
+      "spec_case": "Blocked = open with an unresolved blocked-by link",
+      "note": "See `precedence`: this file makes Blocked outrank In Progress because section 6's table does not order its rows. Recent activity does not unblock a task; only closing its blocker does.",
+      "now": 1790200000,
+      "task": { "createdAt": 1790100000, "status": "open", "assignee": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "blockedBy": "3333333333333333333333333333333333333333333333333333333333333333" },
+      "links": [ { "kind": "task-thread", "target": "1111111111111111111111111111111111111111111111111111111111111111" } ],
+      "posts": [
+        { "thread": "1111111111111111111111111111111111111111111111111111111111111111", "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "createdAt": 1790199000, "content": "Chipping at the part that is not blocked." }
+      ],
+      "comments": [],
+      "assigneeSeatUp": true,
+      "assigneeTurnInFlight": false,
+      "expect": { "state": "Blocked", "activityAt": 1790199000, "stalled": false }
+    },
+    {
+      "name": "a_closed_task_has_no_board_state_to_derive",
+      "spec_case": "Done / Dropped = status 1632",
+      "note": "Behind the completed toggle. It is never stalled, whatever its clock says.",
+      "now": 1790200000,
+      "task": { "createdAt": 1790100000, "status": "closed", "assignee": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "blockedBy": null },
+      "links": [],
+      "posts": [],
+      "comments": [],
+      "assigneeSeatUp": true,
+      "assigneeTurnInFlight": false,
+      "expect": { "state": "Done", "activityAt": null, "stalled": false }
+    }
+  ]
+}

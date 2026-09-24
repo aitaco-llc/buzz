@@ -13,28 +13,28 @@ use buzz_auth::Scope;
 use buzz_core::kind::{
     event_kind_u32, is_identity_archive_request_kind, is_parameterized_replaceable,
     is_relay_admin_kind, KIND_AGENT_ENGRAM, KIND_AGENT_PROFILE, KIND_AGENT_TURN_METRIC,
-    KIND_APPROVAL_DENY, KIND_APPROVAL_GRANT, KIND_AUTH, KIND_BOOKMARK_LIST, KIND_BOOKMARK_SET,
-    KIND_CANVAS, KIND_CONTACT_LIST, KIND_DELETION, KIND_DM_ADD_MEMBER, KIND_DM_HIDE, KIND_DM_OPEN,
-    KIND_EMOJI_LIST, KIND_EMOJI_SET, KIND_EVENT_REMINDER, KIND_FOLLOW_SET, KIND_FORUM_COMMENT,
-    KIND_FORUM_POST, KIND_FORUM_VOTE, KIND_GIFT_WRAP, KIND_GIT_ISSUE, KIND_GIT_PATCH,
-    KIND_GIT_PR_UPDATE, KIND_GIT_PULL_REQUEST, KIND_GIT_REPO_ANNOUNCEMENT, KIND_GIT_REPO_STATE,
-    KIND_GIT_STATUS_CLOSED, KIND_GIT_STATUS_DRAFT, KIND_GIT_STATUS_MERGED, KIND_GIT_STATUS_OPEN,
-    KIND_HUDDLE_ENDED, KIND_HUDDLE_GUIDELINES, KIND_HUDDLE_PARTICIPANT_JOINED,
-    KIND_HUDDLE_PARTICIPANT_LEFT, KIND_HUDDLE_STARTED, KIND_IA_ARCHIVE_REQUEST,
-    KIND_IA_UNARCHIVE_REQUEST, KIND_LONG_FORM, KIND_MANAGED_AGENT, KIND_MEMBER_ADDED_NOTIFICATION,
-    KIND_MEMBER_REMOVED_NOTIFICATION, KIND_MODERATION_BAN, KIND_MODERATION_RESOLVE_REPORT,
-    KIND_MODERATION_TIMEOUT, KIND_MODERATION_UNBAN, KIND_MODERATION_UNTIMEOUT, KIND_MUTE_LIST,
-    KIND_NIP29_CREATE_GROUP, KIND_NIP29_DELETE_EVENT, KIND_NIP29_DELETE_GROUP,
-    KIND_NIP29_EDIT_METADATA, KIND_NIP29_JOIN_REQUEST, KIND_NIP29_LEAVE_REQUEST,
-    KIND_NIP29_PUT_USER, KIND_NIP29_REMOVE_USER, KIND_NIP43_LEAVE_REQUEST,
-    KIND_NIP65_RELAY_LIST_METADATA, KIND_PERSONA, KIND_PIN_LIST, KIND_PRESENCE_UPDATE,
-    KIND_PRIVATE_MANAGED_AGENT, KIND_PRODUCT_FEEDBACK, KIND_PROFILE, KIND_PROJECT, KIND_REACTION,
-    KIND_READ_STATE, KIND_REPORT, KIND_STREAM_MESSAGE, KIND_STREAM_MESSAGE_BOOKMARKED,
-    KIND_STREAM_MESSAGE_DIFF, KIND_STREAM_MESSAGE_EDIT, KIND_STREAM_MESSAGE_PINNED,
-    KIND_STREAM_MESSAGE_SCHEDULED, KIND_STREAM_MESSAGE_V2, KIND_STREAM_REMINDER, KIND_TEAM,
-    KIND_TEAM_CATALOG, KIND_TEXT_NOTE, KIND_USER_STATUS, KIND_WORKFLOW_DEF, KIND_WORKFLOW_TRIGGER,
-    RELAY_ADMIN_ADD_MEMBER, RELAY_ADMIN_CHANGE_ROLE, RELAY_ADMIN_REMOVE_MEMBER,
-    RELAY_ADMIN_SET_WORKSPACE_PROFILE,
+    KIND_AGENT_TURN_RECEIPT, KIND_APPROVAL_DENY, KIND_APPROVAL_GRANT, KIND_AUTH,
+    KIND_BOOKMARK_LIST, KIND_BOOKMARK_SET, KIND_CANVAS, KIND_CONTACT_LIST, KIND_DELETION,
+    KIND_DM_ADD_MEMBER, KIND_DM_HIDE, KIND_DM_OPEN, KIND_EMOJI_LIST, KIND_EMOJI_SET,
+    KIND_EVENT_REMINDER, KIND_FOLLOW_SET, KIND_FORUM_COMMENT, KIND_FORUM_POST, KIND_FORUM_VOTE,
+    KIND_GIFT_WRAP, KIND_GIT_ISSUE, KIND_GIT_PATCH, KIND_GIT_PR_UPDATE, KIND_GIT_PULL_REQUEST,
+    KIND_GIT_REPO_ANNOUNCEMENT, KIND_GIT_REPO_STATE, KIND_GIT_STATUS_CLOSED, KIND_GIT_STATUS_DRAFT,
+    KIND_GIT_STATUS_MERGED, KIND_GIT_STATUS_OPEN, KIND_HUDDLE_ENDED, KIND_HUDDLE_GUIDELINES,
+    KIND_HUDDLE_PARTICIPANT_JOINED, KIND_HUDDLE_PARTICIPANT_LEFT, KIND_HUDDLE_STARTED,
+    KIND_IA_ARCHIVE_REQUEST, KIND_IA_UNARCHIVE_REQUEST, KIND_LONG_FORM, KIND_MANAGED_AGENT,
+    KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION, KIND_MODERATION_BAN,
+    KIND_MODERATION_RESOLVE_REPORT, KIND_MODERATION_TIMEOUT, KIND_MODERATION_UNBAN,
+    KIND_MODERATION_UNTIMEOUT, KIND_MUTE_LIST, KIND_NIP29_CREATE_GROUP, KIND_NIP29_DELETE_EVENT,
+    KIND_NIP29_DELETE_GROUP, KIND_NIP29_EDIT_METADATA, KIND_NIP29_JOIN_REQUEST,
+    KIND_NIP29_LEAVE_REQUEST, KIND_NIP29_PUT_USER, KIND_NIP29_REMOVE_USER,
+    KIND_NIP43_LEAVE_REQUEST, KIND_NIP65_RELAY_LIST_METADATA, KIND_PERSONA, KIND_PIN_LIST,
+    KIND_PRESENCE_UPDATE, KIND_PRIVATE_MANAGED_AGENT, KIND_PRODUCT_FEEDBACK, KIND_PROFILE,
+    KIND_PROJECT, KIND_REACTION, KIND_READ_STATE, KIND_REPORT, KIND_STREAM_MESSAGE,
+    KIND_STREAM_MESSAGE_BOOKMARKED, KIND_STREAM_MESSAGE_DIFF, KIND_STREAM_MESSAGE_EDIT,
+    KIND_STREAM_MESSAGE_PINNED, KIND_STREAM_MESSAGE_SCHEDULED, KIND_STREAM_MESSAGE_V2,
+    KIND_STREAM_REMINDER, KIND_TEAM, KIND_TEAM_CATALOG, KIND_TEXT_NOTE, KIND_USER_STATUS,
+    KIND_WORKFLOW_DEF, KIND_WORKFLOW_TRIGGER, RELAY_ADMIN_ADD_MEMBER, RELAY_ADMIN_CHANGE_ROLE,
+    RELAY_ADMIN_REMOVE_MEMBER, RELAY_ADMIN_SET_WORKSPACE_PROFILE,
 };
 use buzz_core::tenant::TenantContext;
 use buzz_core::verification::verify_event;
@@ -445,6 +445,9 @@ fn required_scope_for_kind(kind: u32, event: &Event) -> Result<Scope, &'static s
         }
         // NIP-AM: agent turn metrics are agent-authored global events (encrypted to owner).
         KIND_AGENT_TURN_METRIC => Ok(Scope::MessagesWrite),
+        // NIP-AR: agent turn receipts are plaintext channel writes — the same
+        // scope an ordinary message needs, because that is what they annotate.
+        KIND_AGENT_TURN_RECEIPT => Ok(Scope::MessagesWrite),
         // NIP-56 reports are ordinary member writes into the mod-only queue.
         // Ingest persists them to `moderation_reports` and suppresses public
         // storage/fanout; reports are signals, never enforcement triggers.
@@ -719,6 +722,10 @@ pub(crate) fn requires_h_channel_scope(kind: u32) -> bool {
             | KIND_FORUM_POST
             | KIND_FORUM_VOTE
             | KIND_FORUM_COMMENT
+            // NIP-AR: a receipt names the channel whose turn it accounts for.
+            // Without an `h` tag it would store globally and be readable outside
+            // the room it reports on — the one thing the kind must not do.
+            | KIND_AGENT_TURN_RECEIPT
             // NIP-29 admin kinds (except CREATE_GROUP which creates the channel)
             | KIND_NIP29_PUT_USER
             | KIND_NIP29_REMOVE_USER
@@ -1956,6 +1963,138 @@ fn validate_agent_turn_metric_envelope(event: &nostr::Event) -> Result<(), Strin
     Ok(())
 }
 
+/// Upper bound on the `e` tags one NIP-AR receipt may carry.
+///
+/// A receipt names the messages a single turn published, so the cap keeps one
+/// event from dragging an unbounded id list through storage, JSONB containment
+/// lookups, and fan-out. It sits far above any real turn — the ACP harness
+/// builds its list from the replies it published since the turn was dispatched
+/// — deliberately, because a rejected receipt is never retried: exceeding this
+/// must mean the publisher is wrong about what a turn is, not that a busy turn
+/// lost its accounting.
+const RECEIPT_MAX_E_TAGS: usize = 256;
+
+/// Upper bound on a receipt's model and harness identifiers, in bytes.
+///
+/// Matches the other metadata-tag caps in this module (`PROJECT_*_MAX_LEN`).
+const RECEIPT_IDENTIFIER_MAX_LEN: usize = 256;
+
+/// Validate the envelope and payload of a NIP-AR `kind:44201` event.
+///
+/// Enforces:
+/// - Exactly one `h` tag holding a channel UUID.
+/// - Between 1 and [`RECEIPT_MAX_E_TAGS`] `e` tags, each a 64 lowercase-hex
+///   event id, and none carrying a NIP-10 `root`/`reply` marker — a receipt
+///   annotates the messages it names, it is not a reply to them. Without this
+///   the marked form would be resolved as thread ancestry downstream and a
+///   receipt would inflate the annotated message's reply counters.
+/// - Exactly one non-empty `model` tag, equal to the payload's `model` so a
+///   receipt cannot filter as one model and read as another.
+/// - Content that parses as [`buzz_core::agent_turn_receipt::AgentTurnReceiptPayload`]
+///   and passes its own `validate()` (non-empty model/harness, finite
+///   non-negative cost).
+///
+/// Deliberately *not* enforced: that `event.pubkey` authored the `e`-tagged
+/// messages. Anyone may publish a receipt; binding it to the message author is
+/// a consumer-side rule (NIP-AR §Trust), and a relay-side join would cost a
+/// lookup per tag while still proving nothing about the numbers inside.
+fn validate_agent_turn_receipt_envelope(event: &nostr::Event) -> Result<(), String> {
+    let mut h_tags: Vec<&str> = Vec::new();
+    let mut e_tag_count = 0usize;
+    let mut model_tags: Vec<&str> = Vec::new();
+
+    for tag in event.tags.iter() {
+        let parts = tag.as_slice();
+        if parts.len() < 2 {
+            continue;
+        }
+        match parts[0].as_str() {
+            "h" => h_tags.push(&parts[1]),
+            "model" => model_tags.push(&parts[1]),
+            "e" => {
+                e_tag_count += 1;
+                if e_tag_count > RECEIPT_MAX_E_TAGS {
+                    return Err(format!(
+                        "agent-turn-receipt event must have at most {RECEIPT_MAX_E_TAGS} `e` tags"
+                    ));
+                }
+                let id = parts[1].as_str();
+                if id.len() != 64
+                    || !id
+                        .bytes()
+                        .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+                {
+                    return Err(
+                        "agent-turn-receipt `e` tags must be 64 lowercase hex chars".to_string()
+                    );
+                }
+                if matches!(parts.get(3).map(|m| m.as_str()), Some("root" | "reply")) {
+                    return Err(
+                        "agent-turn-receipt `e` tags must not carry a NIP-10 marker (a receipt annotates messages, it is not a reply)"
+                            .to_string(),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if h_tags.len() != 1 {
+        return Err(format!(
+            "agent-turn-receipt event must have exactly one `h` tag (got {})",
+            h_tags.len()
+        ));
+    }
+    if h_tags[0].parse::<Uuid>().is_err() {
+        return Err("agent-turn-receipt `h` tag must be a channel UUID".to_string());
+    }
+
+    if e_tag_count == 0 {
+        return Err(
+            "agent-turn-receipt event must have at least one `e` tag (the messages the turn published)"
+                .to_string(),
+        );
+    }
+
+    if model_tags.len() != 1 {
+        return Err(format!(
+            "agent-turn-receipt event must have exactly one `model` tag (got {})",
+            model_tags.len()
+        ));
+    }
+    let model_tag = model_tags[0];
+    if model_tag.trim().is_empty() {
+        return Err("agent-turn-receipt `model` tag must not be empty".to_string());
+    }
+    if model_tag.len() > RECEIPT_IDENTIFIER_MAX_LEN {
+        return Err(format!(
+            "agent-turn-receipt `model` tag too long ({} bytes, max {RECEIPT_IDENTIFIER_MAX_LEN})",
+            model_tag.len()
+        ));
+    }
+
+    let payload: buzz_core::agent_turn_receipt::AgentTurnReceiptPayload =
+        serde_json::from_str(&event.content)
+            .map_err(|e| format!("agent-turn-receipt content is not a valid receipt: {e}"))?;
+    payload
+        .validate()
+        .map_err(|e| format!("agent-turn-receipt content is not a valid receipt: {e}"))?;
+
+    if payload.harness.len() > RECEIPT_IDENTIFIER_MAX_LEN {
+        return Err(format!(
+            "agent-turn-receipt `harness` too long ({} bytes, max {RECEIPT_IDENTIFIER_MAX_LEN})",
+            payload.harness.len()
+        ));
+    }
+    if payload.model != model_tag {
+        return Err(
+            "agent-turn-receipt `model` tag must equal the receipt's `model` field".to_string(),
+        );
+    }
+
+    Ok(())
+}
+
 /// Parse a NIP-ER `not_before` tag value into a Unix timestamp.
 ///
 /// The value MUST be a decimal integer string containing only ASCII digits, with
@@ -2779,6 +2918,14 @@ async fn ingest_event_inner(
                     .into(),
             ));
         }
+    }
+
+    if kind_u32 == KIND_AGENT_TURN_RECEIPT {
+        // NIP-AR: envelope + payload only. There is deliberately no ownership
+        // or authorship join here — a receipt is a public claim, and the
+        // pubkey-vs-message-author rule is the consumer's (NIP-AR §Trust).
+        validate_agent_turn_receipt_envelope(&event)
+            .map_err(|e| IngestError::Rejected(format!("invalid: {e}")))?;
     }
 
     if kind_u32 == KIND_EVENT_REMINDER {
@@ -3915,6 +4062,7 @@ mod postgres_tests {
             KIND_TEAM,
             KIND_MANAGED_AGENT,
             KIND_AGENT_TURN_METRIC,
+            KIND_AGENT_TURN_RECEIPT,
         ];
         for kind in migrated {
             assert!(
@@ -3959,6 +4107,332 @@ mod postgres_tests {
             Scope::MessagesWrite,
             "kind:44200 requires MessagesWrite scope"
         );
+    }
+
+    /// A receipt's `content`, with `model` swappable so the tag/payload
+    /// agreement rule can be exercised from both sides.
+    fn receipt_content(model: &str) -> String {
+        serde_json::json!({
+            "model": model,
+            "harness": "claude-agent-acp",
+            "turn": {
+                "inputTokens": 191_261,
+                "outputTokens": 683,
+                "totalTokens": 191_944,
+                "costUsd": 0.42,
+                "cacheReadTokens": 122_407,
+            },
+        })
+        .to_string()
+    }
+
+    fn receipt_channel() -> String {
+        Uuid::new_v4().to_string()
+    }
+
+    fn message_id(seed: char) -> String {
+        seed.to_string().repeat(64)
+    }
+
+    /// The canonical well-formed receipt: one channel, two published messages,
+    /// one model tag that agrees with the payload.
+    fn make_receipt_event() -> Event {
+        let channel = receipt_channel();
+        let first = message_id('a');
+        let second = message_id('b');
+        make_event_with_tags(
+            KIND_AGENT_TURN_RECEIPT,
+            &receipt_content("opus[1m]"),
+            &[
+                &["h", &channel],
+                &["e", &first],
+                &["e", &second],
+                &["model", "opus[1m]"],
+            ],
+        )
+    }
+
+    #[test]
+    fn agent_turn_receipt_is_channel_scoped_and_in_scope_allowlist() {
+        let dummy = make_dummy_event();
+        assert!(
+            !is_global_only_kind(KIND_AGENT_TURN_RECEIPT),
+            "kind:44201 is the room's receipt — it must keep its channel scope"
+        );
+        assert!(
+            requires_h_channel_scope(KIND_AGENT_TURN_RECEIPT),
+            "kind:44201 must require an h tag"
+        );
+        assert_eq!(
+            required_scope_for_kind(KIND_AGENT_TURN_RECEIPT, &dummy).unwrap(),
+            Scope::MessagesWrite,
+            "kind:44201 requires MessagesWrite scope"
+        );
+    }
+
+    #[test]
+    fn a_well_formed_agent_turn_receipt_is_accepted() {
+        let event = make_receipt_event();
+        assert_eq!(validate_agent_turn_receipt_envelope(&event), Ok(()));
+        assert_eq!(
+            extract_channel_id(&event).map(|id| id.to_string()),
+            event
+                .tags
+                .iter()
+                .find(|t| t.as_slice().first().map(|k| k.as_str()) == Some("h"))
+                .and_then(|t| t.content().map(str::to_string)),
+            "the receipt's channel scope comes from its own h tag"
+        );
+    }
+
+    #[test]
+    fn an_agent_turn_receipt_needs_exactly_one_channel() {
+        let content = receipt_content("opus[1m]");
+        let id = message_id('a');
+        let one = receipt_channel();
+        let other = receipt_channel();
+
+        for tags in [
+            vec![
+                ["e", id.as_str()].as_slice(),
+                ["model", "opus[1m]"].as_slice(),
+            ],
+            vec![
+                ["h", one.as_str()].as_slice(),
+                ["h", other.as_str()].as_slice(),
+                ["e", id.as_str()].as_slice(),
+                ["model", "opus[1m]"].as_slice(),
+            ],
+        ] {
+            let event = make_event_with_tags(KIND_AGENT_TURN_RECEIPT, &content, &tags);
+            let error = validate_agent_turn_receipt_envelope(&event)
+                .expect_err("a receipt without exactly one channel must be refused");
+            assert!(error.contains("exactly one `h` tag"), "{error}");
+        }
+    }
+
+    #[test]
+    fn an_agent_turn_receipt_channel_must_be_a_uuid() {
+        let event = make_event_with_tags(
+            KIND_AGENT_TURN_RECEIPT,
+            &receipt_content("opus[1m]"),
+            &[
+                &["h", "not-a-uuid"],
+                &["e", &message_id('a')],
+                &["model", "opus[1m]"],
+            ],
+        );
+        let error = validate_agent_turn_receipt_envelope(&event).expect_err("non-UUID channel");
+        assert!(error.contains("must be a channel UUID"), "{error}");
+    }
+
+    #[test]
+    fn an_agent_turn_receipt_must_name_at_least_one_message() {
+        let channel = receipt_channel();
+        let event = make_event_with_tags(
+            KIND_AGENT_TURN_RECEIPT,
+            &receipt_content("opus[1m]"),
+            &[&["h", &channel], &["model", "opus[1m]"]],
+        );
+        let error = validate_agent_turn_receipt_envelope(&event)
+            .expect_err("a receipt that annotates nothing must be refused");
+        assert!(error.contains("at least one `e` tag"), "{error}");
+    }
+
+    #[test]
+    fn an_agent_turn_receipt_bounds_the_messages_it_names() {
+        let channel = receipt_channel();
+        let ids: Vec<String> = (0..=RECEIPT_MAX_E_TAGS)
+            .map(|i| format!("{i:064x}"))
+            .collect();
+        let mut tags: Vec<Vec<&str>> = vec![vec!["h", channel.as_str()]];
+        tags.extend(ids.iter().map(|id| vec!["e", id.as_str()]));
+        tags.push(vec!["model", "opus[1m]"]);
+        let borrowed: Vec<&[&str]> = tags.iter().map(|t| t.as_slice()).collect();
+
+        let event = make_event_with_tags(
+            KIND_AGENT_TURN_RECEIPT,
+            &receipt_content("opus[1m]"),
+            &borrowed,
+        );
+        let error = validate_agent_turn_receipt_envelope(&event)
+            .expect_err("an unbounded id list must be refused");
+        assert!(
+            error.contains(&format!("at most {RECEIPT_MAX_E_TAGS} `e` tags")),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn an_agent_turn_receipt_message_id_must_be_lowercase_hex() {
+        let channel = receipt_channel();
+        let event = make_event_with_tags(
+            KIND_AGENT_TURN_RECEIPT,
+            &receipt_content("opus[1m]"),
+            &[
+                &["h", &channel],
+                &["e", &message_id('A')],
+                &["model", "opus[1m]"],
+            ],
+        );
+        let error = validate_agent_turn_receipt_envelope(&event).expect_err("uppercase event id");
+        assert!(error.contains("64 lowercase hex chars"), "{error}");
+    }
+
+    #[test]
+    fn an_agent_turn_receipt_may_not_pose_as_a_reply() {
+        // A marked `e` tag would be resolved as NIP-10 ancestry downstream, so
+        // the receipt would become a reply and inflate the annotated message's
+        // reply counters. Refuse the marker instead.
+        let channel = receipt_channel();
+        let id = message_id('a');
+        for marker in ["root", "reply"] {
+            let event = make_event_with_tags(
+                KIND_AGENT_TURN_RECEIPT,
+                &receipt_content("opus[1m]"),
+                &[
+                    &["h", &channel],
+                    &["e", &id, "", marker],
+                    &["model", "opus[1m]"],
+                ],
+            );
+            let error = validate_agent_turn_receipt_envelope(&event)
+                .expect_err("a marked e tag must be refused");
+            assert!(error.contains("NIP-10 marker"), "{error}");
+        }
+
+        // Falsifiability: the accepted shape really does resolve to no ancestry,
+        // so the accepted receipt never reaches the thread-metadata path.
+        assert_eq!(
+            buzz_core::nip10::parse_thread_markers(&make_receipt_event().tags).resolve(),
+            None,
+        );
+    }
+
+    #[test]
+    fn an_agent_turn_receipt_needs_exactly_one_model_tag() {
+        let channel = receipt_channel();
+        let id = message_id('a');
+        let content = receipt_content("opus[1m]");
+
+        for tags in [
+            vec![
+                ["h", channel.as_str()].as_slice(),
+                ["e", id.as_str()].as_slice(),
+            ],
+            vec![
+                ["h", channel.as_str()].as_slice(),
+                ["e", id.as_str()].as_slice(),
+                ["model", "opus[1m]"].as_slice(),
+                ["model", "sonnet"].as_slice(),
+            ],
+        ] {
+            let event = make_event_with_tags(KIND_AGENT_TURN_RECEIPT, &content, &tags);
+            let error = validate_agent_turn_receipt_envelope(&event)
+                .expect_err("a receipt must name exactly one model");
+            assert!(error.contains("exactly one `model` tag"), "{error}");
+        }
+    }
+
+    #[test]
+    fn an_agent_turn_receipt_model_tag_must_match_its_payload() {
+        let channel = receipt_channel();
+        let event = make_event_with_tags(
+            KIND_AGENT_TURN_RECEIPT,
+            &receipt_content("opus[1m]"),
+            &[
+                &["h", &channel],
+                &["e", &message_id('a')],
+                &["model", "sonnet"],
+            ],
+        );
+        let error = validate_agent_turn_receipt_envelope(&event)
+            .expect_err("a receipt must not filter as one model and read as another");
+        assert!(
+            error.contains("must equal the receipt's `model` field"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn an_agent_turn_receipt_with_unreadable_content_is_rejected() {
+        let channel = receipt_channel();
+        for content in ["", "not json", r#"{"harness":"goose"}"#] {
+            let event = make_event_with_tags(
+                KIND_AGENT_TURN_RECEIPT,
+                content,
+                &[
+                    &["h", &channel],
+                    &["e", &message_id('a')],
+                    &["model", "opus[1m]"],
+                ],
+            );
+            let error = validate_agent_turn_receipt_envelope(&event)
+                .expect_err("content that is not a receipt must be refused");
+            assert!(
+                error.contains("not a valid receipt"),
+                "{content:?}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_agent_turn_receipt_with_a_negative_cost_is_rejected() {
+        let channel = receipt_channel();
+        let content = serde_json::json!({
+            "model": "opus[1m]",
+            "harness": "claude-agent-acp",
+            "turn": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2, "costUsd": -0.01},
+        })
+        .to_string();
+        let event = make_event_with_tags(
+            KIND_AGENT_TURN_RECEIPT,
+            &content,
+            &[
+                &["h", &channel],
+                &["e", &message_id('a')],
+                &["model", "opus[1m]"],
+            ],
+        );
+        let error = validate_agent_turn_receipt_envelope(&event)
+            .expect_err("a cost that is not a cost must be refused");
+        assert!(error.contains("cost_usd"), "{error}");
+    }
+
+    #[test]
+    fn an_agent_turn_receipt_bounds_its_identifiers() {
+        let channel = receipt_channel();
+        let long = "m".repeat(RECEIPT_IDENTIFIER_MAX_LEN + 1);
+        let event = make_event_with_tags(
+            KIND_AGENT_TURN_RECEIPT,
+            &receipt_content(&long),
+            &[
+                &["h", &channel],
+                &["e", &message_id('a')],
+                &["model", &long],
+            ],
+        );
+        let error = validate_agent_turn_receipt_envelope(&event).expect_err("oversized model id");
+        assert!(error.contains("`model` tag too long"), "{error}");
+
+        let harness = "h".repeat(RECEIPT_IDENTIFIER_MAX_LEN + 1);
+        let content = serde_json::json!({
+            "model": "opus[1m]",
+            "harness": harness,
+            "turn": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2, "costUsd": null},
+        })
+        .to_string();
+        let event = make_event_with_tags(
+            KIND_AGENT_TURN_RECEIPT,
+            &content,
+            &[
+                &["h", &channel],
+                &["e", &message_id('a')],
+                &["model", "opus[1m]"],
+            ],
+        );
+        let error = validate_agent_turn_receipt_envelope(&event).expect_err("oversized harness id");
+        assert!(error.contains("`harness` too long"), "{error}");
     }
 
     #[test]

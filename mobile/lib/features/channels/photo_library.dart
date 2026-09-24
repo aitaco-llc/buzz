@@ -39,7 +39,7 @@ class PhotoLibraryAccessException implements Exception {
   const PhotoLibraryAccessException();
 
   @override
-  String toString() => 'Photo access is turned off for Buzz.';
+  String toString() => 'Photo access is turned off for aitaco.';
 }
 
 /// Provides the device photo library. Tests can override this with fixtures.

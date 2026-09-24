@@ -35,7 +35,7 @@ function isBuzzRuntime(runtime: AcpRuntimeCatalogEntry): boolean {
 export function getRuntimeDisplayLabel(
   runtime: AcpRuntimeCatalogEntry,
 ): string {
-  return isBuzzRuntime(runtime) ? "Buzz" : runtime.label;
+  return isBuzzRuntime(runtime) ? "aitaco" : runtime.label;
 }
 
 function getRuntimeLogoUrl(runtime: AcpRuntimeCatalogEntry): string | null {
@@ -58,9 +58,12 @@ export function RuntimeIcon({
   const Mark = RUNTIME_MARKS[id];
 
   if (isBuzzRuntime(runtime)) {
-    // The mark's wide viewBox letterboxes inside a square box, so honoring
-    // the caller's size keeps it optically in line with the square logos.
-    return <BuzzMark className={cn(className, "text-foreground")} />;
+    // The aitaco mark is a square disc, so it fills the caller's box the way
+    // the square vendor bitmaps beside it do — the bee's wide viewBox used to
+    // letterbox here, and honoring the caller's size was what kept it optically
+    // in line. No inset is needed now. It carries its own colour, so unlike
+    // RUNTIME_MARKS below it takes no `text-*` tint.
+    return <BuzzMark className={cn(className, "rounded-md")} />;
   }
 
   if (Mark) {

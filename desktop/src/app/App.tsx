@@ -72,7 +72,6 @@ import {
   listenForDeepLinks,
 } from "@/shared/deep-link";
 import { cn } from "@/shared/lib/cn";
-import { BuzzMark } from "@/shared/ui/buzz-logo/BuzzMark";
 import { FlappingBee } from "@/shared/ui/buzz-logo/FlappingBee";
 import { FuzzyLogo } from "@/shared/ui/buzz-logo/FuzzyLogo";
 import { StartupWindowDragRegion } from "@/shared/ui/StartupWindowDragRegion";
@@ -138,11 +137,12 @@ function useBootSplashHold(): BootSplashPhase {
   return phase;
 }
 
-// Animated Buzz mark for the loading gates. The static BuzzMark renders in
-// normal flow and sizes the box — it's plain SVG (no JS/SMIL), so it paints on
-// the very first frame even before scripting starts, avoiding a blank flash on
-// hard reload. The animated FuzzyLogo is layered on top and takes over once it
-// begins playing.
+// Animated aitaco mark for the loading gates. One layer now, not two: the
+// bee's static-under-animated stack existed because the animated layer was an
+// SMIL morph that did not paint until scripting started, so the static SVG sat
+// underneath to avoid a blank flash on hard reload. The aitaco mark is a
+// bitmap that paints on the first frame and animates with a CSS transform, so
+// a single element covers both jobs.
 function BeeLoader({
   ariaLabel,
   className,
@@ -154,22 +154,16 @@ function BeeLoader({
 }) {
   return (
     <div className={cn("relative", tintClassName, className)}>
-      <BuzzMark className="block h-auto w-full" />
-      <FuzzyLogo
-        ariaLabel={ariaLabel}
-        className="absolute inset-0 h-full! w-full! [&>svg]:h-full [&>svg]:w-full [&>svg]:max-w-full"
-        fuzz
-        loop
-        loopRestSeconds={0}
-      />
+      <FuzzyLogo ariaLabel={ariaLabel} className="block h-auto w-full" />
     </div>
   );
 }
 
 // Cold boot gate: the theme-adaptive grainient background with a single
-// centered Buzz bee flying over it — the same static mark as before, now with
-// its wings flapping (ported from the Buzz website's wing-flap). Replaces the
-// old "Setting up your community" text, which stays as an sr-only caption.
+// centered aitaco mark over it, breathing on a compositor transform. Replaces
+// the old "Setting up your community" text, which stays as an sr-only caption.
+// The motion has to stay off the main thread here — this gate is on screen
+// precisely while bundle eval and the first React render are holding it.
 function AppLoadingGate() {
   return (
     <div

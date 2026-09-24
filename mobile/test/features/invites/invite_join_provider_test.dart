@@ -11,6 +11,7 @@ import 'package:pointycastle/digests/sha256.dart';
 import 'package:buzz/app.dart';
 import 'package:buzz/features/channels/channel.dart';
 import 'package:buzz/features/invites/invite_join_provider.dart';
+import 'package:buzz/shared/community/aitaco_community.dart';
 import 'package:buzz/shared/auth/auth.dart';
 import 'package:buzz/shared/deeplink/deep_link.dart';
 
@@ -18,8 +19,8 @@ import '../../shared/community/community_storage_test.dart';
 
 void main() {
   for (final existingRelayUrl in [
-    'wss://relay.example.com',
-    'https://relay.example.com',
+    'wss://buzz.aitaco.co',
+    'https://buzz.aitaco.co',
   ]) {
     test(
       'same-relay invite switches existing $existingRelayUrl before keygen or claim',
@@ -60,7 +61,7 @@ void main() {
             .read(inviteJoinProvider.notifier)
             .prepare(
               const InviteDeepLink(
-                relayUrl: 'wss://relay.example.com',
+                relayUrl: 'wss://buzz.aitaco.co',
                 code: 'code',
               ),
             );
@@ -116,7 +117,7 @@ void main() {
           .read(inviteJoinProvider.notifier)
           .prepare(
             const InviteDeepLink(
-              relayUrl: 'wss://relay.example.com',
+              relayUrl: 'wss://buzz.aitaco.co',
               code: 'code',
             ),
           );
@@ -133,7 +134,7 @@ void main() {
       expect(capturedRequest, isNotNull);
       expect(
         capturedRequest!.url.toString(),
-        'https://relay.example.com/api/invites/claim',
+        'https://buzz.aitaco.co/api/invites/claim',
       );
       expect(capturedRequest!.body, jsonEncode({'code': 'code'}));
       final authHeader = capturedRequest!.headers['Authorization'];
@@ -159,7 +160,7 @@ void main() {
       expect(auth.authenticatedCommunities, hasLength(1));
       expect(
         auth.authenticatedCommunities.single.relayUrl,
-        'wss://relay.example.com',
+        'wss://buzz.aitaco.co',
       );
       expect(auth.authenticatedCommunities.single.pubkey, keys.public);
       expect(auth.authenticatedCommunities.single.nsec, keys.nsec);
@@ -387,7 +388,7 @@ void main() {
           .read(inviteJoinProvider.notifier)
           .prepare(
             const InviteDeepLink(
-              relayUrl: 'wss://relay.example.com',
+              relayUrl: 'wss://buzz.aitaco.co',
               code: 'code',
             ),
           );
@@ -426,7 +427,7 @@ void main() {
           .read(inviteJoinProvider.notifier)
           .prepare(
             const InviteDeepLink(
-              relayUrl: 'wss://relay.example.com',
+              relayUrl: 'wss://buzz.aitaco.co',
               code: 'code',
             ),
           );
@@ -510,7 +511,7 @@ void main() {
         .read(inviteJoinProvider.notifier)
         .prepare(
           const InviteDeepLink(
-            relayUrl: 'wss://relay.example.com',
+            relayUrl: 'wss://buzz.aitaco.co',
             code: 'code',
             policyReceipt: 'expired.receipt',
           ),
@@ -554,7 +555,7 @@ void main() {
         .read(inviteJoinProvider.notifier)
         .prepare(
           const InviteDeepLink(
-            relayUrl: 'wss://relay.example.com',
+            relayUrl: 'wss://buzz.aitaco.co',
             code: 'v2.exhausted-secret',
           ),
         );
@@ -611,7 +612,7 @@ void main() {
         .read(inviteJoinProvider.notifier)
         .prepare(
           const InviteDeepLink(
-            relayUrl: 'wss://relay.example.com',
+            relayUrl: 'wss://buzz.aitaco.co',
             code: 'code',
             policyReceipt: 'receipt.value',
           ),
@@ -632,70 +633,37 @@ void main() {
     expect(auth.authenticatedCommunities, hasLength(1));
   });
 
-  test('builds a fresh recovery with the second community identity', () async {
-    final firstKeys = nostr.Keys.generate();
-    final secondKeys = nostr.Keys.generate();
-    final scopes = <InviteJoinRecoveryScope>[];
-    final recoveries = <InviteJoinRecoveryScope>[];
-    var nextKeys = 0;
+  test('refuses an invite for another community before any claim', () async {
+    var requests = 0;
     final container = ProviderContainer(
       overrides: [
         communityStorageProvider.overrideWithValue(
           CommunityStorage(secure: FakeSecureStorage()),
         ),
         authProvider.overrideWith(_RecordingAuthNotifier.new),
-        inviteKeyGeneratorProvider.overrideWithValue(() {
-          final keys = nextKeys == 0 ? firstKeys : secondKeys;
-          nextKeys++;
-          return keys;
-        }),
-        inviteJoinRecoveryProvider.overrideWithValue((scope) {
-          scopes.add(scope);
-          return _RecordingInviteJoinRecovery(() async {
-            recoveries.add(scope);
-            return 'welcome-everyone-id';
-          });
-        }),
         inviteJoinHttpClientProvider.overrideWithValue(
-          http_testing.MockClient(
-            (request) async => http.Response(
-              jsonEncode({
-                'status': 'joined',
-                'host': request.url.host,
-                'role': 'member',
-              }),
-              200,
-            ),
-          ),
+          http_testing.MockClient((request) async {
+            requests++;
+            return http.Response('{}', 200);
+          }),
         ),
       ],
     );
     addTearDown(container.dispose);
 
-    for (final invite in const [
-      InviteDeepLink(relayUrl: 'wss://first.example.com', code: 'first'),
-      InviteDeepLink(relayUrl: 'wss://second.example.com', code: 'second'),
-    ]) {
-      await container.read(inviteJoinProvider.notifier).prepare(invite);
-      await container.read(inviteJoinProvider.notifier).confirmJoin();
-      expect(
-        container.read(inviteJoinProvider).status,
-        InviteJoinStatus.success,
-      );
-    }
-
-    expect(scopes.map((scope) => scope.relayHttpOrigin), [
-      'https://first.example.com',
-      'https://second.example.com',
-    ]);
-    expect(scopes.map((scope) => scope.nsec), [
-      firstKeys.nsec,
-      secondKeys.nsec,
-    ]);
-    expect(recoveries, hasLength(2));
-    expect(identical(recoveries[0], scopes[0]), isTrue);
-    expect(identical(recoveries[1], scopes[1]), isTrue);
-    expect(identical(recoveries[1], scopes[0]), isFalse);
+    await expectLater(
+      container
+          .read(inviteJoinProvider.notifier)
+          .prepare(
+            const InviteDeepLink(
+              relayUrl: 'wss://second.example.com',
+              code: 'second',
+            ),
+          ),
+      throwsA(isA<ForeignCommunityException>()),
+    );
+    expect(container.read(inviteJoinProvider).status, InviteJoinStatus.idle);
+    expect(requests, 0);
   });
 }
 
@@ -713,15 +681,6 @@ class _FakeInviteJoinRecovery implements InviteJoinRecovery {
     if (error case final failure?) throw failure;
     return focusChannelId;
   }
-}
-
-class _RecordingInviteJoinRecovery implements InviteJoinRecovery {
-  const _RecordingInviteJoinRecovery(this._ensure);
-
-  final Future<String?> Function() _ensure;
-
-  @override
-  Future<String?> ensureStarterChannels() => _ensure();
 }
 
 Channel _channel({

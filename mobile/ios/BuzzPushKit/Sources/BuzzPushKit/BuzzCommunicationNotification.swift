@@ -159,7 +159,7 @@ public struct BuzzCommunicationNotificationDescriptor: Equatable, Sendable {
           INSpeakableString(spokenPhrase: $0)
         },
         conversationIdentifier: descriptor.conversationIdentifier,
-        serviceName: "Buzz",
+        serviceName: "aitaco",
         sender: sender,
         attachments: nil
       )

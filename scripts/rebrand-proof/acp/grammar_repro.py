@@ -17,6 +17,21 @@ fired 9 of 11 runs at temperature 0.0 and 2 of 10 at 0.7. One request at 0.7 is
 one draw of a sampled setting, so every case runs REBRAND_REPEATS times and
 reports a rate.
 
+neil diagnosed it in aitaco-llc/rebrand#300 (`a8a0500`), and the condition is
+narrower than these cases: `ArrayScope::items()` credited an element only once it
+reached a structural position of its array, so an array being written at its
+**first** element read as holding nothing. The `minItems` deficit that followed
+denied exactly the tokens that close the string and the array together (`"]`,
+`"]}`), while the apostrophe twins (`']`, `']}`) stayed allowed because they never
+leave the string. Greedy then takes the best survivor. The mask is a function of
+the automaton state alone, so thinking is not a condition either: with thinking
+off this model writes the array pretty-printed and closes each level with its own
+token, none of which was denied. The same undercount let a one-item array take a
+second element past `maxItems: 1`.
+
+So a row that passes below is not a safe configuration; it is a model that did not
+happen to need a denied token. The row that matters is the first.
+
     REBRAND_BIN=... REBRAND_MODEL=... [REBRAND_REPEATS=3] python3 grammar_repro.py
 
 Starts and stops one `rebrand serve` of its own; nothing else may hold the card.

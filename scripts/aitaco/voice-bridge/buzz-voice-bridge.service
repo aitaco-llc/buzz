@@ -22,13 +22,25 @@ Environment=VOICE_BRIDGE_KEY_FILE=%h/.config/buzz-agents/rock.env
 Environment=VOICE_BRIDGE_PARENT_CHANNELS=daa0371a-17fc-41a8-bb70-272b7c7e8be0
 Environment=VOICE_BRIDGE_STARTERS=0f8471300f7806058507999b06f16805168c640aad3ffa5474cf8ec9e7c6a0ca
 # Context pack (rock's call, #buzz-platform 54da67d0): the roster only. No
-# status snapshot: every fact about the work goes through ask_rock.
+# status snapshot: every fact about the work goes through the `work` tool. The
+# parent channel's recent messages are fetched per call on top of this.
 Environment=VOICE_BRIDGE_CONTEXT_FILES=%h/.buzz/GUIDES/AGENT_ROSTER.md
+# Names come from the seat's and Lloyd's kind:0 profiles; set
+# VOICE_BRIDGE_AGENT_NAME / VOICE_BRIDGE_HUMAN_LABEL only to override them.
 # The Gemini key comes from the binary's default key command:
 #   gcloud secrets versions access latest --secret gemini-live-api-key --project aitaco-ml-dev
 # Do not restate it here unquoted: systemd splits Environment= on spaces.
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
-Environment=RUST_LOG=buzz_voice_bridge=info
+# Named, not inherited from $HOME: the unit must not be able to move its own
+# evidence. bridge.jsonl and the per-call logs live here.
+Environment=VOICE_BRIDGE_LOG_DIR=%h/.local/state/buzz-voice-bridge
+# Call logs hold every word spoken on the call, so they expire at 30 days,
+# matching the seat turn logs. bridge.jsonl holds no speech and is kept.
+Environment=VOICE_BRIDGE_RETENTION_DAYS=30
+# The transport crates are in the filter on purpose: buzz_voice_bridge=info
+# alone discards every tungstenite and buzz-ws-client line, and those are what
+# explain a call that never happened.
+Environment=RUST_LOG=buzz_voice_bridge=info,buzz_ws_client=info,tokio_tungstenite=info,tungstenite=info
 ExecStart=%h/.local/bin/buzz-voice-bridge
 Restart=on-failure
 RestartSec=5

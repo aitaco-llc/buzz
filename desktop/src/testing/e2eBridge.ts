@@ -51,6 +51,7 @@ import {
 } from "@/shared/api/customEmoji";
 import {
   KIND_AGENT_OBSERVER_FRAME,
+  KIND_AGENT_TURN_RECEIPT,
   KIND_CHANNEL_THREAD_SUMMARY,
   KIND_CHANNEL_WINDOW_BOUNDS,
   KIND_DM_VISIBILITY,
@@ -202,6 +203,8 @@ type MockHuddleSeed = {
 
 type E2eConfig = {
   mode?: "mock" | "relay";
+  /** Set false to see the production aitaco build: no Builderlab hosting entry points. */
+  hostedCommunities?: boolean;
   mock?: {
     /** Tauri window label exposed to the app. Defaults to the main window. */
     windowLabel?: string;
@@ -1305,6 +1308,30 @@ declare global {
       /** 64-hex id required for the event to be a valid reaction target. */
       id?: string;
     }) => RelayEvent;
+    /**
+     * Publish a NIP-AR (kind:44201) turn receipt for one agent turn.
+     *
+     * `messageIds` are the ids that turn published, **in publication order**;
+     * the client anchors the footer to the last one it holds. `pubkey` must be
+     * the author of those messages or the client drops the receipt, which is
+     * exactly the forgery case a spec wants to be able to reproduce. Every
+     * count is optional: omitting one publishes `null`, which must render as
+     * "not reported", never as `0`.
+     */
+    __BUZZ_E2E_EMIT_MOCK_TURN_RECEIPT__?: (input: {
+      channelName: string;
+      messageIds: string[];
+      pubkey: string;
+      model: string;
+      harness?: string;
+      inputTokens?: number | null;
+      outputTokens?: number | null;
+      totalTokens?: number | null;
+      cacheReadTokens?: number | null;
+      cacheWriteTokens?: number | null;
+      costUsd?: number | null;
+      createdAt?: number;
+    }) => RelayEvent;
     /** Prepend `count` synthetic older messages to a channel's mock store so
      *  an older-history fetch has something to paginate. Mirrors how the real
      *  relay backfills history. Returns the created events. */
@@ -1622,11 +1649,15 @@ const DEFAULT_RELAY_WS_URL = "ws://localhost:3000";
 const KIND_REACTION = 7; // NIP-25 reaction
 const KIND_DELETION = 5; // NIP-09 deletion
 const KIND_NIP29_DELETION = 9005;
+// Mirror of the relay's `WINDOW_AUX_KINDS` (crates/buzz-relay/src/api/bridge.rs):
+// the overlay kinds a channel window returns alongside its rows. NIP-AR turn
+// receipts (44201) are an overlay on the messages they `e`-tag, never a row.
 const CHANNEL_WINDOW_AUX_KINDS = new Set([
   KIND_REACTION,
   KIND_DELETION,
   KIND_NIP29_DELETION,
   KIND_STREAM_MESSAGE_EDIT,
+  KIND_AGENT_TURN_RECEIPT,
 ]);
 const CHANNEL_WINDOW_AUX_DELETION_KINDS = new Set([
   KIND_DELETION,
@@ -2452,7 +2483,7 @@ function buildMockConfigSurface(pubkey: string): {
   const buzzAgentSurface = {
     ...gooseSurface,
     runtimeId: "buzz-agent",
-    runtimeLabel: "Buzz Agent",
+    runtimeLabel: "aitaco Agent",
     advanced: [],
     extensions: [],
     sources: {
@@ -5835,8 +5866,8 @@ async function handleGetChannelReconnectRepair(
   config: E2eConfig | undefined,
 ): Promise<RelayEvent[]> {
   const kinds = new Set([
-    5, 7, 9, 9005, 40001, 40002, 40003, 40008, 40099, 45001, 45003, 48100,
-    48101, 48102, 48103,
+    5, 7, 9, 9005, 40001, 40002, 40003, 40008, 40099, 44201, 45001, 45003,
+    48100, 48101, 48102, 48103,
   ]);
   const filter: Record<string, unknown> = {
     "#h": [args.channelId],
@@ -8573,14 +8604,14 @@ async function handleDiscoverAcpRuntimes(
     },
     {
       id: "buzz-agent",
-      label: "Buzz Agent",
+      label: "aitaco Agent",
       avatar_url: "",
       availability: "available",
       command: "buzz-agent",
       binary_path: "/usr/local/bin/buzz-agent",
       default_args: [],
       mcp_command: "buzz-dev-mcp",
-      install_hint: "Ships with the Buzz desktop app.",
+      install_hint: "Ships with the aitaco desktop app.",
       install_instructions_url: "https://github.com/block/buzz",
       can_auto_install: false,
       requires_external_cli: false,
@@ -9786,7 +9817,7 @@ async function handleStartManagedAgent(
         mockMeshState.models.some((model) => model.id === modelId));
     if (!hasLiveTarget) {
       throw new Error(
-        "Buzz shared compute cannot start because no live member is serving this model.",
+        "aitaco shared compute cannot start because no live member is serving this model.",
       );
     }
   }
@@ -11612,6 +11643,56 @@ export function maybeInstallE2eTauriMocks() {
     );
     recordMockUserStatus(event);
     emitMockGlobalEvent(event);
+    return event;
+  };
+  window.__BUZZ_E2E_EMIT_MOCK_TURN_RECEIPT__ = ({
+    channelName,
+    messageIds,
+    pubkey,
+    model,
+    harness = "claude-agent-acp",
+    inputTokens = null,
+    outputTokens = null,
+    totalTokens = null,
+    cacheReadTokens = null,
+    cacheWriteTokens = null,
+    costUsd = null,
+    createdAt,
+  }) => {
+    const channel = mockChannels.find(
+      (candidate) => candidate.name === channelName,
+    );
+    if (!channel) {
+      throw new Error(`Mock channel ${channelName} not found.`);
+    }
+
+    // NIP-AR envelope: exactly one `h`, one unmarked `e` per published
+    // message in publication order, exactly one `model` tag equal to the
+    // body's `model`.
+    const tags: string[][] = [["h", channel.id]];
+    for (const messageId of messageIds) tags.push(["e", messageId]);
+    tags.push(["model", model]);
+
+    const event = createMockEvent(
+      KIND_AGENT_TURN_RECEIPT,
+      JSON.stringify({
+        model,
+        harness,
+        turn: {
+          inputTokens,
+          outputTokens,
+          totalTokens,
+          costUsd,
+          cacheReadTokens,
+          cacheWriteTokens,
+        },
+      }),
+      tags,
+      pubkey,
+      createdAt,
+    );
+    recordMockMessage(channel.id, event);
+    emitMockLiveEvent(channel.id, event);
     return event;
   };
   window.__BUZZ_E2E_PREPEND_MOCK_HISTORY__ = prependMockHistory;
@@ -14151,7 +14232,7 @@ export function maybeInstallE2eTauriMocks() {
           }
           if (mockMeshState.models.length === 0) {
             throw new Error(
-              "no Buzz shared compute serving members are available",
+              "no aitaco shared compute serving members are available",
             );
           }
         }
@@ -14880,6 +14961,36 @@ export function maybeInstallE2eTauriMocks() {
       case "archive_events":
         // Returns the ArchiveBatchResult shape the UI expects.
         return { persisted: 0, dropped: 0 };
+      case "get_agent_usage_series": {
+        // `AgentUsagePanel` takes its enabled/disabled copy from this command's
+        // `collectionEnabled`, not from `list_save_subscriptions`, so derive it
+        // from the same mutable rows the toggle writes — otherwise flipping the
+        // toggle in a spec would leave the panel and the switch disagreeing.
+        const collectionEnabled = mockSaveSubscriptions.some((s) => {
+          if (s.scope_type !== "owner_p") return false;
+          try {
+            const kinds = JSON.parse(s.kinds) as unknown;
+            return Array.isArray(kinds) && kinds.includes(44200);
+          } catch {
+            return false;
+          }
+        });
+        return {
+          collectionEnabled,
+          buckets: [],
+          agents: [],
+          coverage: {
+            firstArchivedAt: null,
+            lastArchivedAt: null,
+            firstReportedAt: null,
+            lastReportedAt: null,
+            reportCount: 0,
+            invalidReportCount: 0,
+            hasUnknownUsage: false,
+          },
+          hasArchivedEvidence: null,
+        };
+      }
       // Archive sync runs natively; the bridge has no relay-backed backend to
       // drive, so these are accepted no-ops. Without them every AppShell mount
       // logs an unknown-command warning once the gate opens.

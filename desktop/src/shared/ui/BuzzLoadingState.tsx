@@ -1,5 +1,5 @@
 import { cn } from "@/shared/lib/cn";
-import BuzzLogoAnimation from "@/shared/ui/buzz-logo/BuzzLogoAnimation";
+import { AitacoMark } from "@/shared/ui/buzz-logo/AitacoMark";
 
 /** Centered, low-emphasis loading state for page and panel fetches. */
 export function BuzzLoadingState({
@@ -21,14 +21,7 @@ export function BuzzLoadingState({
       data-testid="buzz-loading-state"
       role="status"
     >
-      <BuzzLogoAnimation
-        ariaLabel={label}
-        className="buzz-logo--scale-pulse"
-        fullScreen={false}
-        showBackground={false}
-        style={{ width: "2rem" }}
-        textured={false}
-      />
+      <AitacoMark ariaLabel={label} className="aitaco-mark--pulse w-8" />
     </div>
   );
 }
