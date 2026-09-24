@@ -67,6 +67,41 @@ Run `deploy` in a terminal or background job that can outlive a 2-minute tool ti
 - The old binary then refuses a schema it doesn't know.
 - For that reason, once the new relay has started, a failure in a migrating deploy is **not** rolled back by digest. The script stops, leaves the new relay up, and prints the backup to restore from. Going back is a manual restore (see `backup.sh` for what it needs).
 
+## Host configuration (`/opt/buzz/.env`)
+
+`.env` exists only on the host. Nothing in this repository generates it, and `relay-deploy.sh` rewrites exactly one line in it, `BUZZ_IMAGE=` (`scripts/aitaco/relay-deploy.sh:312`). Compose hands the whole file to the relay (`env_file: - .env`), so every key in it reaches the process.
+
+That cuts both ways. A line added by hand survives every later deploy — and a line never added stays missing through every later deploy, with a green deploy each time.
+
+- **A host that was never configured ships config-gated features dark.** On 2026-09-21 the relay ran #33's code from 01:55Z with `BUZZ_APPLE_APP_IDS` unset, and it took a reconciliation 20 minutes later to notice. `/.well-known/apple-app-site-association` answered 404 and iOS universal links did not work. Every image check passed, because the image was right; the host was not.
+- **`.env.pre-<stamp>` is not a rollback for a later hand edit.** `deploy` copies `.env` at step 2, *before* it pins the new `BUZZ_IMAGE` at step 4, so that copy names the **previous** image. Restoring it after an unrelated edit starts the old relay against a schema the new one may already have migrated. Take a fresh copy immediately before editing, and roll back by undoing the edit, not by restoring a file.
+
+### What this deployment needs beyond the template
+
+`deploy/compose/.env.example` is the template the live `.env` matches. Anything below is not in it, or is commented out in it:
+
+| Variable | Value on `buzz.aitaco.co` | What is dark without it |
+| --- | --- | --- |
+| `BUZZ_APPLE_APP_IDS` | `5F7YLJS4YR.co.aitaco.buzz` | `GET /.well-known/apple-app-site-association` answers 404 (`crates/buzz-relay/src/api/app_links.rs:25-26`), so `https://buzz.aitaco.co/invite/<code>` opens Safari instead of the iOS app. Set 2026-09-21. |
+
+The format is `<10-character team id>.<bundle id>`, comma-separated, written bare: no quotes, no trailing comment. The team id must be uppercase and digits only. A malformed entry **fails relay startup** (`crates/buzz-relay/src/config.rs:380-407`), so a typo here is an outage rather than a 404.
+
+### Editing `.env` by hand
+
+Same go as a deploy, and the same window: `buzzctl start` recreates the relay, which drops every WebSocket connection, so not during a live voice call.
+
+1. **Follow the logs** first, as in deploy step 3. A recreate deletes the container's `json-file` log, whether or not the image changed.
+2. **Fresh copy:** `sudo cp -p /opt/buzz/.env /opt/buzz/.env.rollback-<stamp>`, and `cmp` it.
+3. **Edit**, then `diff` against that copy and confirm the change is the only one.
+4. **Start:** `sudo flock -w 300 /run/lock/buzz-relay-deploy.lock /opt/buzz/buzzctl start`. `up -d --wait` blocks on the relay's health check, so a value that fails to parse comes back as a non-zero exit rather than as silence.
+5. **Prove the relay came up.** A feature endpoint answering is not that proof; a relay that failed to start answers nothing, which looks the same as a feature still being off. Check the container's `config_load` phase reaching `"status":"succeeded"` in `docker logs`, NIP-11 answering at `https://buzz.aitaco.co`, and `buzz_ws_connections_active` back above zero on the metrics port.
+
+### A PR that gates behaviour on configuration
+
+Name its `.env` line in the PR body — the variable, the value for this host, and what stays dark without it. Merging the code is not shipping the feature, so the line goes in with or before the deploy that carries the code, and the check afterwards is the feature's own endpoint. A digest and a revision label cannot tell you whether the host was configured.
+
+Add the variable to `deploy/compose/.env.example` in the same PR, commented out. The root `.env.example` is the single-process template; the compose file is the one a rebuilt host copies, and #33 updated only the first.
+
 ## The first cutover (Block's image → ours)
 
 - **What's live** (read 2026-09-19):

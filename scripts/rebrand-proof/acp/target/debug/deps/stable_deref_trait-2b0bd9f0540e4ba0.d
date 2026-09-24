@@ -1,0 +1,7 @@
+/private/tmp/claude-501/-Users-lth-dev-buzz-voicebetter/93c14bb8-1603-478a-90af-3ce797cf620d/scratchpad/pr40/scripts/rebrand-proof/acp/target/debug/deps/stable_deref_trait-2b0bd9f0540e4ba0.d: /private/tmp/claude-501/-Users-lth-dev-buzz-voicebetter/93c14bb8-1603-478a-90af-3ce797cf620d/scratchpad/pr40/.hermit/rust/registry/src/index.crates.io-1949cf8c6b5b557f/stable_deref_trait-1.2.1/src/lib.rs
+
+/private/tmp/claude-501/-Users-lth-dev-buzz-voicebetter/93c14bb8-1603-478a-90af-3ce797cf620d/scratchpad/pr40/scripts/rebrand-proof/acp/target/debug/deps/libstable_deref_trait-2b0bd9f0540e4ba0.rlib: /private/tmp/claude-501/-Users-lth-dev-buzz-voicebetter/93c14bb8-1603-478a-90af-3ce797cf620d/scratchpad/pr40/.hermit/rust/registry/src/index.crates.io-1949cf8c6b5b557f/stable_deref_trait-1.2.1/src/lib.rs
+
+/private/tmp/claude-501/-Users-lth-dev-buzz-voicebetter/93c14bb8-1603-478a-90af-3ce797cf620d/scratchpad/pr40/scripts/rebrand-proof/acp/target/debug/deps/libstable_deref_trait-2b0bd9f0540e4ba0.rmeta: /private/tmp/claude-501/-Users-lth-dev-buzz-voicebetter/93c14bb8-1603-478a-90af-3ce797cf620d/scratchpad/pr40/.hermit/rust/registry/src/index.crates.io-1949cf8c6b5b557f/stable_deref_trait-1.2.1/src/lib.rs
+
+/private/tmp/claude-501/-Users-lth-dev-buzz-voicebetter/93c14bb8-1603-478a-90af-3ce797cf620d/scratchpad/pr40/.hermit/rust/registry/src/index.crates.io-1949cf8c6b5b557f/stable_deref_trait-1.2.1/src/lib.rs:
