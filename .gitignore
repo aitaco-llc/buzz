@@ -1,5 +1,5 @@
 # Build artifacts
-/target/
+target/
 /dist/
 /admin-web/dist/
 
@@ -59,6 +59,7 @@ typesense-data/
 .hermit/
 doc/
 /repos/
+crates/buzz-relay/repos/
 
 # Local identity files
 identity.key

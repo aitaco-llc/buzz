@@ -1,5 +1,0 @@
-/private/tmp/claude-501/-Users-lth-dev-buzz-voicebetter/93c14bb8-1603-478a-90af-3ce797cf620d/scratchpad/pr40/scripts/rebrand-proof/acp/target/debug/build/bitcoin-io-834e78c0500dd91f/build_script_build-834e78c0500dd91f.d: /private/tmp/claude-501/-Users-lth-dev-buzz-voicebetter/93c14bb8-1603-478a-90af-3ce797cf620d/scratchpad/pr40/.hermit/rust/registry/src/index.crates.io-1949cf8c6b5b557f/bitcoin-io-0.1.101/build.rs
-
-/private/tmp/claude-501/-Users-lth-dev-buzz-voicebetter/93c14bb8-1603-478a-90af-3ce797cf620d/scratchpad/pr40/scripts/rebrand-proof/acp/target/debug/build/bitcoin-io-834e78c0500dd91f/build_script_build-834e78c0500dd91f: /private/tmp/claude-501/-Users-lth-dev-buzz-voicebetter/93c14bb8-1603-478a-90af-3ce797cf620d/scratchpad/pr40/.hermit/rust/registry/src/index.crates.io-1949cf8c6b5b557f/bitcoin-io-0.1.101/build.rs
-
-/private/tmp/claude-501/-Users-lth-dev-buzz-voicebetter/93c14bb8-1603-478a-90af-3ce797cf620d/scratchpad/pr40/.hermit/rust/registry/src/index.crates.io-1949cf8c6b5b557f/bitcoin-io-0.1.101/build.rs:

@@ -1,5 +1,0 @@
-/private/tmp/claude-501/-Users-lth-dev-buzz-voicebetter/93c14bb8-1603-478a-90af-3ce797cf620d/scratchpad/pr40/scripts/rebrand-proof/acp/target/debug/build/parking_lot_core-6832ab796be4be4e/build_script_build-6832ab796be4be4e.d: /private/tmp/claude-501/-Users-lth-dev-buzz-voicebetter/93c14bb8-1603-478a-90af-3ce797cf620d/scratchpad/pr40/.hermit/rust/registry/src/index.crates.io-1949cf8c6b5b557f/parking_lot_core-0.9.12/build.rs
-
-/private/tmp/claude-501/-Users-lth-dev-buzz-voicebetter/93c14bb8-1603-478a-90af-3ce797cf620d/scratchpad/pr40/scripts/rebrand-proof/acp/target/debug/build/parking_lot_core-6832ab796be4be4e/build_script_build-6832ab796be4be4e: /private/tmp/claude-501/-Users-lth-dev-buzz-voicebetter/93c14bb8-1603-478a-90af-3ce797cf620d/scratchpad/pr40/.hermit/rust/registry/src/index.crates.io-1949cf8c6b5b557f/parking_lot_core-0.9.12/build.rs
-
-/private/tmp/claude-501/-Users-lth-dev-buzz-voicebetter/93c14bb8-1603-478a-90af-3ce797cf620d/scratchpad/pr40/.hermit/rust/registry/src/index.crates.io-1949cf8c6b5b557f/parking_lot_core-0.9.12/build.rs:
