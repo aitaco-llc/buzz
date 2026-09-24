@@ -37,6 +37,70 @@ pub struct McpServer {
     pub env: Vec<EnvVar>,
 }
 
+/// An HTTP MCP server, the `McpServerHttp` variant of the ACP schema:
+/// `{"type":"http","name","url","headers":[{"name","value"}]}`. Read from the
+/// schema the live adapter ships,
+/// `@agentclientprotocol/sdk/schema/v2/schema.unstable.json`, where `name` and
+/// `url` are required and `headers` is an array rather than a map.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct McpServerHttp {
+    #[serde(rename = "type")]
+    pub kind: HttpTransport,
+    pub name: String,
+    pub url: String,
+    pub headers: Vec<HttpHeader>,
+}
+
+/// Serializes as the literal `"http"`. A field that must hold one value is a
+/// footgun as a `String`; this cannot be built wrong.
+// Constructed once the session wiring lands: a seat configured for a Rebrand
+// worker starts an `mcp_host` endpoint and sends this entry. The wire shape is
+// pinned by tests now so that change is a small one.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HttpTransport {
+    Http,
+}
+
+/// One header sent with every request to an HTTP MCP server.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HttpHeader {
+    pub name: String,
+    pub value: String,
+}
+
+/// One entry of `session/new`'s `mcpServers`.
+///
+/// Untagged on purpose. Schema v2 requires `type` on every arm, **including
+/// stdio**, but the harness has always sent stdio entries without it and every
+/// adapter this fleet runs accepts them. Adding `"type":"stdio"` would change
+/// the bytes on the one path that is known to work, for no gain, so only the
+/// HTTP arm carries its tag.
+#[allow(dead_code)] // `Http` arrives with the session wiring; see `HttpTransport`.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(untagged)]
+pub enum McpServerConfig {
+    Stdio(McpServer),
+    Http(McpServerHttp),
+}
+
+impl McpServerConfig {
+    /// An HTTP MCP server reached with one bearer token.
+    #[allow(dead_code)] // See `HttpTransport`.
+    pub fn http(name: impl Into<String>, url: impl Into<String>, bearer: &str) -> Self {
+        Self::Http(McpServerHttp {
+            kind: HttpTransport::Http,
+            name: name.into(),
+            url: url.into(),
+            headers: vec![HttpHeader {
+                name: "Authorization".into(),
+                value: format!("Bearer {bearer}"),
+            }],
+        })
+    }
+}
+
 /// A single environment variable for an MCP server.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct EnvVar {
@@ -180,6 +244,38 @@ fn build_initialize_params() -> serde_json::Value {
             "version": env!("CARGO_PKG_VERSION")
         },
     })
+}
+
+/// An outgoing ACP message as the `acp::wire` debug log may show it: every
+/// MCP server's `env` and `headers` values replaced. `session/new` carries the
+/// seat's `BUZZ_PRIVATE_KEY` in a stdio server's env and a bearer in an HTTP
+/// server's headers, and a debug log is not a place for either.
+pub(crate) fn wire_log_line<T: serde::Serialize>(msg: &T) -> String {
+    let mut value = match serde_json::to_value(msg) {
+        Ok(value) => value,
+        Err(_) => return String::new(),
+    };
+    if let Some(servers) = value
+        .get_mut("params")
+        .and_then(|params| params.get_mut("mcpServers"))
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for server in servers {
+            for field in ["env", "headers"] {
+                if let Some(entries) = server
+                    .get_mut(field)
+                    .and_then(serde_json::Value::as_array_mut)
+                {
+                    for entry in entries {
+                        if let Some(slot) = entry.get_mut("value") {
+                            *slot = serde_json::Value::String("<redacted>".into());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    value.to_string()
 }
 
 /// ACP client that owns an agent subprocess and communicates over its stdio.
@@ -743,9 +839,10 @@ impl AcpClient {
     pub async fn session_new_full(
         &mut self,
         cwd: &str,
-        mcp_servers: Vec<McpServer>,
+        mcp_servers: Vec<McpServerConfig>,
         system_prompt: Option<SystemPromptTransport<'_>>,
         session_title: Option<&str>,
+        rebrand_meta: Option<&serde_json::Value>,
     ) -> Result<SessionNewResponse, AcpError> {
         let mut params = serde_json::json!({
             "cwd": cwd,
@@ -768,6 +865,12 @@ impl AcpClient {
             // Merge — _meta may already carry a system prompt from an adapter extension.
             params["_meta"]["sessionTitle"] = serde_json::Value::String(title.to_owned());
         }
+        // `_meta.rebrand` is how a Rebrand worker is told its answer schema and
+        // its budget. Merged like the two above, and absent when there is none:
+        // an adapter may read an absent member differently from a null one.
+        if let Some(meta) = rebrand_meta {
+            params["_meta"]["rebrand"] = meta.clone();
+        }
         let result = self.send_request("session/new", params).await?;
         let session_id = result["sessionId"]
             .as_str()
@@ -787,12 +890,12 @@ impl AcpClient {
     pub async fn session_new(
         &mut self,
         cwd: &str,
-        mcp_servers: Vec<McpServer>,
+        mcp_servers: Vec<McpServerConfig>,
         system_prompt: Option<SystemPromptTransport<'_>>,
         session_title: Option<&str>,
     ) -> Result<String, AcpError> {
         Ok(self
-            .session_new_full(cwd, mcp_servers, system_prompt, session_title)
+            .session_new_full(cwd, mcp_servers, system_prompt, session_title, None)
             .await?
             .session_id)
     }
@@ -901,7 +1004,7 @@ impl AcpClient {
             "params": params,
         });
 
-        tracing::debug!(target: "acp::wire", "→ {}", &serde_json::to_string(&msg).unwrap_or_default());
+        tracing::debug!(target: "acp::wire", "→ {}", wire_log_line(&msg));
         if let Err(e) = self.write_ndjson(&msg).await {
             self.last_prompt_id = None;
             self.current_hard_deadline = None;
@@ -1241,7 +1344,7 @@ impl AcpClient {
             "params": params,
         });
 
-        tracing::debug!(target: "acp::wire", "→ {}", &serde_json::to_string(&msg).unwrap_or_default());
+        tracing::debug!(target: "acp::wire", "→ {}", wire_log_line(&msg));
 
         // Wrap write + read in a single timeout so a hung agent can't block forever.
         // We cannot use an async block that borrows `self` mutably across two awaits
@@ -1306,7 +1409,7 @@ impl AcpClient {
             "params": params,
         });
 
-        tracing::debug!(target: "acp::wire", "→ (notification) {}", &serde_json::to_string(&msg).unwrap_or_default());
+        tracing::debug!(target: "acp::wire", "→ (notification) {}", wire_log_line(&msg));
         self.write_ndjson(&msg).await?;
         Ok(())
     }
@@ -2551,6 +2654,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_wire_log_never_shows_an_mcp_secret() {
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "session/new",
+            "params": {"cwd": "/w", "mcpServers": [
+                {"name": "buzz", "command": "buzz-dev-mcp", "args": [],
+                 "env": [{"name": "BUZZ_PRIVATE_KEY", "value": "nsec1secret"}]},
+                {"type": "http", "name": "host", "url": "http://127.0.0.1:1/mcp",
+                 "headers": [{"name": "Authorization", "value": "Bearer tok3n"}]}
+            ]}
+        });
+        let line = wire_log_line(&msg);
+        assert!(
+            !line.contains("nsec1secret") && !line.contains("tok3n"),
+            "{line}"
+        );
+        assert!(
+            line.contains("BUZZ_PRIVATE_KEY") && line.contains("Authorization"),
+            "names stay: {line}"
+        );
+        assert!(line.contains("buzz-dev-mcp") && line.contains("session/new"));
+        let plain =
+            serde_json::json!({"jsonrpc": "2.0", "method": "session/prompt", "params": {"x": 1}});
+        assert_eq!(wire_log_line(&plain), plain.to_string());
+    }
+
+    #[test]
     fn stop_reason_parses_all_known_values() {
         assert_eq!(StopReason::from_str("end_turn"), Some(StopReason::EndTurn));
         assert_eq!(
@@ -3762,6 +3891,7 @@ mod tests {
                 vec![],
                 Some(SystemPromptTransport::Field("Custom system prompt")),
                 None,
+                None,
             )
             .await
             .expect("session_new_full should succeed");
@@ -3847,7 +3977,7 @@ mod tests {
             .expect("initialize should succeed");
 
         let resp = client
-            .session_new_full("/tmp", vec![], None, None)
+            .session_new_full("/tmp", vec![], None, None, None)
             .await
             .expect("session_new_full should succeed");
 
@@ -3856,6 +3986,54 @@ mod tests {
         assert!(
             received["params"]["systemPrompt"].is_null(),
             "systemPrompt should NOT be in params when value is None"
+        );
+    }
+
+    /// The stdio entry's JSON must not change: schema v2 requires `type` on every
+    /// arm, but every adapter this fleet runs accepts a stdio entry without it,
+    /// and that is the path all seats use today.
+    #[test]
+    fn stdio_serializes_without_a_type_tag() {
+        let value = serde_json::to_value(McpServerConfig::Stdio(McpServer {
+            name: "dev-mcp".into(),
+            command: "/usr/bin/buzz-dev-mcp".into(),
+            args: vec!["--quiet".into()],
+            env: vec![EnvVar {
+                name: "BUZZ_RELAY_URL".into(),
+                value: "wss://relay.example".into(),
+            }],
+        }))
+        .expect("stdio entry serializes");
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "name": "dev-mcp",
+                "command": "/usr/bin/buzz-dev-mcp",
+                "args": ["--quiet"],
+                "env": [{"name": "BUZZ_RELAY_URL", "value": "wss://relay.example"}],
+            }),
+            "adding a `type` to stdio would change the one path known to work"
+        );
+    }
+
+    /// `McpServerHttp` from the schema the live adapter ships: `type`, `name`,
+    /// `url`, and `headers` as an array of `{name, value}`.
+    #[test]
+    fn http_serializes_with_its_tag_and_header_array() {
+        let value = serde_json::to_value(McpServerConfig::http(
+            "buzz-reads",
+            "http://127.0.0.1:41234/mcp",
+            "abc123",
+        ))
+        .expect("http entry serializes");
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "type": "http",
+                "name": "buzz-reads",
+                "url": "http://127.0.0.1:41234/mcp",
+                "headers": [{"name": "Authorization", "value": "Bearer abc123"}],
+            })
         );
     }
 
@@ -3875,7 +4053,7 @@ mod tests {
             .expect("initialize should succeed");
 
         let resp = client
-            .session_new_full("/tmp", vec![], None, Some("Fizz · #buzz-dev"))
+            .session_new_full("/tmp", vec![], None, Some("Fizz · #buzz-dev"), None)
             .await
             .expect("session_new_full should succeed");
 
@@ -3903,7 +4081,7 @@ mod tests {
             .expect("initialize should succeed");
 
         let resp = client
-            .session_new_full("/tmp", vec![], None, None)
+            .session_new_full("/tmp", vec![], None, None, None)
             .await
             .expect("session_new_full should succeed");
 

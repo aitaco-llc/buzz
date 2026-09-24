@@ -38,6 +38,11 @@ futures-util = { workspace = true }
 # HTTP (channel discovery REST API)
 reqwest = { workspace = true }
 
+# HTTP server for the per-session MCP endpoint served to an ACP worker.
+# Already a workspace dependency (buzz-relay), so this adds no new crate to the
+# tree — only to this binary.
+axum = { workspace = true }
+
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
