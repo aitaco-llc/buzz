@@ -343,4 +343,32 @@ final class BuzzUITests: XCTestCase {
     screenshot.lifetime = .keepAlways
     add(screenshot)
   }
+
+  /// A head reload replaces the whole row set: rows the relay's window no
+  /// longer carries leave and rows this device has never seen arrive. Refresh
+  /// is the one control that promises a return to recent messages, so it has to
+  /// land on the newest row rather than leave the reader wherever the rows it
+  /// replaced used to be — on a stale cache that left #general drawing nothing.
+  @MainActor func testRefreshReturnsAScrolledBackChannelToItsNewestMessage() throws {
+    XCUIDevice.shared.orientation = .landscapeLeft
+    let app = XCUIApplication()
+    app.launchArguments = ["--ui-testing", "--reset-test-data", "--history-fixture"]
+    app.launch()
+    let channel = app.staticTexts["channel-engineering"]
+    XCTAssertTrue(channel.waitForExistence(timeout: 15))
+    channel.tap()
+    let history = app.scrollViews["channel-history"]
+    XCTAssertTrue(history.waitForExistence(timeout: 10))
+    let newest = history.staticTexts["History message 120"]
+    XCTAssertTrue(newest.waitForExistence(timeout: 15))
+    for _ in 0..<6 { history.swipeDown() }
+    XCTAssertFalse(newest.isHittable, "the reader is still at the newest message")
+    app.otherElements["channel-toolbar"].buttons["Refresh"].tap()
+    let back = expectation(for: NSPredicate(format: "isHittable == true"), evaluatedWith: newest)
+    wait(for: [back], timeout: 20)
+    let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+    screenshot.name = "Refresh returns to the newest message"
+    screenshot.lifetime = .keepAlways
+    add(screenshot)
+  }
 }

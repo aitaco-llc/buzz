@@ -2368,6 +2368,11 @@ pub async fn run_prompt_task(
     };
     let observer_channel_id = source.channel_id();
     let turn_started_at = chrono::Utc::now().to_rfc3339();
+    // What this turn served, carried into every NIP-AM metric it publishes so a
+    // reader can join a turn to the work it was doing. Built once here because
+    // the batch is consumed further down and the twelve publish sites are
+    // spread across every stop path.
+    let turn_join = TurnJoin::for_batch(batch.as_ref());
     agent.acp.set_observer_context(observer::context_for_turn(
         observer_channel_id,
         None,
@@ -2814,6 +2819,7 @@ pub async fn run_prompt_task(
                         &session_id,
                         &format!("{turn_id}:initial"),
                         Some(acp_stop_to_core(&stop_reason)),
+                        &turn_join,
                     )
                     .await;
                 }
@@ -2849,6 +2855,7 @@ pub async fn run_prompt_task(
                                 &session_id,
                                 &format!("{turn_id}:initial"),
                                 Some(acp_stop_to_core(&stop_reason)),
+                                &turn_join,
                             )
                             .await;
                             agent.state.invalidate(&source);
@@ -3194,6 +3201,7 @@ pub async fn run_prompt_task(
                                     &session_id,
                                     &turn_id,
                                     Some(buzz_core::agent_turn_metric::StopReason::Cancelled),
+                                    &turn_join,
                                 )
                                 .await;
                                 send_prompt_result(
@@ -3230,6 +3238,7 @@ pub async fn run_prompt_task(
                                     &session_id,
                                     &turn_id,
                                     Some(buzz_core::agent_turn_metric::StopReason::Error),
+                                    &turn_join,
                                 )
                                 .await;
                                 send_prompt_result(
@@ -3296,6 +3305,7 @@ pub async fn run_prompt_task(
                             &session_id,
                             &turn_id,
                             Some(buzz_core::agent_turn_metric::StopReason::EndTurn),
+                            &turn_join,
                         )
                         .await;
                         send_prompt_result(
@@ -3371,6 +3381,7 @@ pub async fn run_prompt_task(
                 &session_id,
                 &turn_id,
                 Some(core_stop),
+                &turn_join,
             )
             .await;
 
@@ -3394,6 +3405,7 @@ pub async fn run_prompt_task(
                 &session_id,
                 &turn_id,
                 Some(buzz_core::agent_turn_metric::StopReason::Error),
+                &turn_join,
             )
             .await;
             send_prompt_result(
@@ -3426,6 +3438,7 @@ pub async fn run_prompt_task(
                         &session_id,
                         &turn_id,
                         Some(buzz_core::agent_turn_metric::StopReason::Cancelled),
+                        &turn_join,
                     )
                     .await;
                     // Timeout triggers respawn in handle_prompt_result —
@@ -3454,6 +3467,7 @@ pub async fn run_prompt_task(
                         &session_id,
                         &turn_id,
                         Some(buzz_core::agent_turn_metric::StopReason::Error),
+                        &turn_join,
                     )
                     .await;
                     send_prompt_result(
@@ -3479,6 +3493,7 @@ pub async fn run_prompt_task(
                         &session_id,
                         &turn_id,
                         Some(buzz_core::agent_turn_metric::StopReason::Error),
+                        &turn_join,
                     )
                     .await;
                     send_prompt_result(
@@ -3508,6 +3523,7 @@ pub async fn run_prompt_task(
                 &session_id,
                 &turn_id,
                 Some(buzz_core::agent_turn_metric::StopReason::Error),
+                &turn_join,
             )
             .await;
             send_prompt_result(
@@ -3535,6 +3551,7 @@ pub async fn run_prompt_task(
                 &session_id,
                 &turn_id,
                 Some(buzz_core::agent_turn_metric::StopReason::Error),
+                &turn_join,
             )
             .await;
             send_prompt_result(
@@ -5189,6 +5206,86 @@ impl Drop for TurnCompletionGuard {
     }
 }
 
+/// What a turn that returned [`PromptOutcome::Ok`] should be called in the
+/// journal and in the durable turn index.
+///
+/// `Ok` means the ACP conversation completed without the harness losing the
+/// agent — it does **not** mean the turn did its job. Four of the five stop
+/// reasons end a turn early, and one of them, `max_turn_requests`, is
+/// indistinguishable from success at every layer that used to read this:
+/// `outcome: ok` in the index, `Unknown` in the NIP-AM metric, a warn line in
+/// the journal, and nothing at all in the channel. rock's turn `a1208720`
+/// (2026-09-22 00:53Z) burned 40 tool calls, 91 s and $0.33 answering Lloyd
+/// about two bug reports, published no message, and was recorded as `ok`.
+///
+/// So each stop reason gets its own word, and `ok` is reserved for the turn
+/// that reached its own end. Callers that need to distinguish a *silent*
+/// exhausted turn from one that answered ask the relay, not this function.
+pub(crate) fn ok_outcome_label(stop_reason: &StopReason) -> &'static str {
+    match stop_reason {
+        StopReason::EndTurn => "ok",
+        StopReason::MaxTurnRequests => "exhausted",
+        StopReason::MaxTokens => "limited",
+        StopReason::Refusal => "refused",
+        StopReason::Cancelled => "cancelled",
+    }
+}
+
+/// What a turn served, carried into its NIP-AM `kind:44200` metric so a reader
+/// can join the turn to the work it was doing.
+///
+/// The join the task tracker needs is "which turns belong to this task": a task
+/// links a thread, and these two fields say which thread a turn ran in and
+/// which message started it. Without them a 44200 says what a turn cost and
+/// nothing about what it was for, and the owner's own metrics cannot be
+/// attributed to anything.
+///
+/// Both come off the batch the turn was dispatched with, so a heartbeat carries
+/// neither.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TurnJoin {
+    /// The thread a reply to this turn's trigger lands in: the trigger's own
+    /// NIP-10 root, or the trigger itself when it is top-level and the reply
+    /// would open the thread. Same key [`AnswerTarget`] judges ✅ by, and the
+    /// same one a task's `task-thread` link note points at — deliberately, so
+    /// the two join without a translation step.
+    ///
+    /// Read from the trigger rather than from the [`SessionScope`] because a
+    /// conversation-scoped session (a DM, or a channel under
+    /// `SessionPolicy::Channel`) has no thread root at all, and those turns
+    /// still serve a thread.
+    pub thread_root: Option<String>,
+    /// The newest event that triggered the turn. The turn index row carries
+    /// every trigger in `triggeringEventIds`; the metric carries the one a
+    /// reply is anchored to, which is the one a task is created from.
+    pub triggering_event_id: Option<String>,
+    /// When the turn started, for the `durationMs` a publish site computes at
+    /// the moment it publishes. A mid-turn metric (the initial-message arms)
+    /// therefore reports elapsed-so-far, which is what it means.
+    pub started_at: Option<std::time::Instant>,
+}
+
+impl TurnJoin {
+    fn for_batch(batch: Option<&FlushBatch>) -> Self {
+        let Some(trigger) = batch.and_then(|b| b.events.last()) else {
+            return Self::default();
+        };
+        let target = AnswerTarget::for_event(&trigger.event);
+        Self {
+            thread_root: Some(target.thread_key),
+            triggering_event_id: Some(target.event_id),
+            started_at: Some(std::time::Instant::now()),
+        }
+    }
+
+    /// Milliseconds since the turn started, saturating at `u64::MAX` rather
+    /// than wrapping. `None` when the turn carried no start (a heartbeat).
+    fn duration_ms(&self) -> Option<u64> {
+        self.started_at
+            .map(|at| u64::try_from(at.elapsed().as_millis()).unwrap_or(u64::MAX))
+    }
+}
+
 /// Map an ACP `StopReason` to the NIP-AM `StopReason` used in kind 44200 payloads.
 fn acp_stop_to_core(r: &StopReason) -> buzz_core::agent_turn_metric::StopReason {
     use buzz_core::agent_turn_metric::StopReason as CoreStop;
@@ -5196,8 +5293,93 @@ fn acp_stop_to_core(r: &StopReason) -> buzz_core::agent_turn_metric::StopReason 
         StopReason::EndTurn => CoreStop::EndTurn,
         StopReason::Cancelled => CoreStop::Cancelled,
         StopReason::MaxTokens => CoreStop::MaxTokens,
-        StopReason::MaxTurnRequests => CoreStop::Unknown,
-        StopReason::Refusal => CoreStop::Unknown,
+        // Both used to land on `Unknown`, which threw away the only two signals
+        // that distinguish a turn that stopped early from one that finished.
+        // An exhausted request budget in particular is the failure the owner's
+        // metrics could not see: `PromptOutcome::Ok`, `outcome: ok` in the
+        // index, and possibly not one published word.
+        StopReason::MaxTurnRequests => CoreStop::MaxTurnRequests,
+        StopReason::Refusal => CoreStop::Refusal,
+    }
+}
+
+#[cfg(test)]
+mod turn_outcome_tests {
+    use super::*;
+    use buzz_core::agent_turn_metric::StopReason as CoreStop;
+
+    /// The prompt result rock's harness really read at the end of turn
+    /// `a1208720` — Lloyd's "are you on top of these two bug reports??" in
+    /// #user-support, 2026-09-22 00:53Z. Copied verbatim out of
+    /// `~/.local/state/buzz-turns/rock/turns/2026-09-22/a1208720-….jsonl`, the
+    /// only place the signal survived: the index row for that turn says
+    /// `"outcome":"ok"`, the 44200 metric said `unknown`, and the channel got
+    /// nothing at all.
+    const EXHAUSTED_TURN: &str = include_str!("../tests/fixtures/turn-a1208720-prompt-result.json");
+
+    /// Replay the capture through the real wire parser and both mappers. This
+    /// is the check that fails on every build before this one: `ok` in the
+    /// index and `Unknown` in the metric.
+    #[test]
+    fn the_captured_exhausted_turn_is_not_called_ok_anywhere() {
+        let result: serde_json::Value = serde_json::from_str(EXHAUSTED_TURN).expect("fixture");
+        let raw = result["stopReason"].as_str().expect("stopReason");
+        let stop = StopReason::from_str(raw).expect("a stop reason buzz-acp knows");
+        assert_eq!(stop, StopReason::MaxTurnRequests);
+
+        assert_eq!(
+            ok_outcome_label(&stop),
+            "exhausted",
+            "the durable index row is what an audit and the watchdog read"
+        );
+        assert_eq!(
+            acp_stop_to_core(&stop),
+            CoreStop::MaxTurnRequests,
+            "the owner's NIP-AM metric must carry the same fact as the index"
+        );
+
+        // Named so the fixture cannot be quietly swapped for a friendlier one.
+        assert_eq!(
+            result["_meta"]["rebrand"]["termination"]["kind"],
+            "budget_exhausted"
+        );
+        assert_eq!(result["_meta"]["rebrand"]["toolCalls"], 40);
+    }
+
+    /// `ok` belongs to one stop reason and no other. Exhaustive by hand rather
+    /// than by wildcard: a sixth ACP stop reason must force this decision to be
+    /// made again, not inherit "ok" by default.
+    #[test]
+    fn only_a_turn_that_reached_its_own_end_is_called_ok() {
+        assert_eq!(ok_outcome_label(&StopReason::EndTurn), "ok");
+        for (stop, label) in [
+            (StopReason::MaxTurnRequests, "exhausted"),
+            (StopReason::MaxTokens, "limited"),
+            (StopReason::Refusal, "refused"),
+            (StopReason::Cancelled, "cancelled"),
+        ] {
+            assert_eq!(ok_outcome_label(&stop), label);
+            assert_ne!(
+                ok_outcome_label(&stop),
+                "ok",
+                "{stop:?} ends a turn early and must not read as success"
+            );
+        }
+    }
+
+    /// NIP-AM's own forward-compatibility rule is what makes the two added
+    /// values safe, so pin the wire spelling a consumer will see.
+    #[test]
+    fn the_two_added_stop_reasons_have_stable_wire_names() {
+        let name = |s: CoreStop| serde_json::to_value(s).expect("serialize");
+        assert_eq!(name(CoreStop::MaxTurnRequests), "max_turn_requests");
+        assert_eq!(name(CoreStop::Refusal), "refusal");
+        // Round-trip: an older publisher's values still read the same.
+        for wire in ["end_turn", "max_tokens", "cancelled", "error", "unknown"] {
+            let back: CoreStop =
+                serde_json::from_value(serde_json::Value::String(wire.into())).expect("parse");
+            assert_eq!(name(back), wire);
+        }
     }
 }
 
@@ -5277,6 +5459,7 @@ async fn publish_agent_turn_metric(
     session_id: &str,
     turn_id: &str,
     stop_reason: Option<buzz_core::agent_turn_metric::StopReason>,
+    join: &TurnJoin,
 ) {
     use buzz_core::agent_turn_metric::AgentTurnMetricPayload;
     use nostr::{EventBuilder, Kind, Tag};
@@ -5301,6 +5484,9 @@ async fn publish_agent_turn_metric(
         delta_reliable: usage.delta_reliable,
         stop_reason,
         pricing_identity: usage.pricing_identity.clone(),
+        thread_root: join.thread_root.clone(),
+        triggering_event_id: join.triggering_event_id.clone(),
+        duration_ms: join.duration_ms(),
     };
     let ciphertext = match buzz_core::agent_turn_metric::encrypt_agent_turn_metric(
         &ctx.agent_keys,
@@ -5417,6 +5603,12 @@ pub struct AnswerLedger {
     /// Inclusive lower bound (unix seconds) for the turn's replies. See
     /// [`AgentPool::answer_since`].
     since: u64,
+    /// Where a reply to this turn's triggers lands, for the harness's own
+    /// notice when the turn stopped early without leaving one. Same anchor
+    /// the usage-limit hold uses — a reply TO the newest trigger, so a
+    /// top-level ask gets a thread rather than a message at the channel root.
+    /// `None` for a heartbeat and for a batch with no events.
+    reply_to: Option<ThreadTags>,
 }
 
 impl AnswerLedger {
@@ -5429,7 +5621,48 @@ impl AnswerLedger {
                 .map(|be| AnswerTarget::for_event(&be.event))
                 .collect(),
             since,
+            reply_to: batch
+                .events
+                .last()
+                .map(|be| crate::queue::held_notice_target(&be.event)),
         }
+    }
+}
+
+/// A turn that ended before the model reached its own end of turn, and the
+/// line the harness owes the room if the turn left nothing behind.
+///
+/// Only the three stop reasons that *cut a turn off* qualify. `end_turn` never
+/// does, however silent: a model that finishes and chooses not to speak has
+/// answered, and our own team rules say silence is often the right answer.
+/// `cancelled` never does either — somebody asked for that.
+#[derive(Debug, Clone)]
+pub struct EarlyStop {
+    /// The word the turn index uses for this turn, for the log line.
+    pub label: &'static str,
+    /// The whole notice, opening with [`FAILURE_NOTICE_PREFIX`].
+    pub notice: String,
+}
+
+impl EarlyStop {
+    /// The notice a turn owes its room, or `None` when the turn was not cut off.
+    pub fn for_stop_reason(stop_reason: &StopReason) -> Option<Self> {
+        let (label, why) = match stop_reason {
+            StopReason::MaxTurnRequests => (
+                "exhausted",
+                "the turn ran out of tool calls before it replied",
+            ),
+            StopReason::MaxTokens => ("limited", "the turn ran out of context before it replied"),
+            StopReason::Refusal => ("refused", "the model refused this turn"),
+            StopReason::EndTurn | StopReason::Cancelled => return None,
+        };
+        Some(Self {
+            label,
+            notice: format!(
+                "{FAILURE_NOTICE_PREFIX} — {why}. Nothing was published, so nobody \
+                 is working on it. Please re-send if it is still needed."
+            ),
+        })
     }
 }
 
@@ -5473,27 +5706,55 @@ fn answered_event_ids(targets: &[AnswerTarget], replies: &serde_json::Value) -> 
     answered
 }
 
-/// The relay query for the seat's own replies in any target's thread since
-/// the turn started.
-fn answered_reply_filter(author: nostr::PublicKey, ledger: &AnswerLedger) -> nostr::Filter {
+/// The relay query for everything the seat published in the turn's channel
+/// since the turn started.
+///
+/// Scoped by channel (`#h`), not by thread: a turn answers its triggers with
+/// replies in their threads, but it also opens threads of its own — a fan-out
+/// root, a release post, a roll-up — and those carry no `e` tag at all. A
+/// query keyed on the targets' thread keys never returned them, so a NIP-AR
+/// receipt never named a top-level post, and a turn whose only message was one
+/// published no receipt. The channel query returns both kinds of message;
+/// `answered_event_ids` still judges ✅ by thread key on top of it.
+///
+/// The seat runs one turn at a time, so "ours, in this channel, since the turn
+/// started" is exactly this turn's output. A seat running concurrent turns in
+/// one channel would need per-turn tracking instead; nothing here supports
+/// that, and nothing here claims to.
+///
+/// A completion without a channel has no room to ask, and keeps the thread
+/// form so ✅ still settles from the targets' threads.
+fn turn_publications_filter(
+    author: nostr::PublicKey,
+    channel_id: Option<Uuid>,
+    ledger: &AnswerLedger,
+) -> nostr::Filter {
     use nostr::{Alphabet, SingleLetterTag};
 
-    let mut thread_keys: Vec<&str> = ledger
-        .targets
-        .iter()
-        .map(|t| t.thread_key.as_str())
-        .collect();
-    thread_keys.sort_unstable();
-    thread_keys.dedup();
-    nostr::Filter::new()
+    let filter = nostr::Filter::new()
         .kinds(
             ANSWER_REPLY_KINDS
                 .iter()
                 .map(|kind| nostr::Kind::Custom(*kind as u16)),
         )
         .author(author)
-        .custom_tags(SingleLetterTag::lowercase(Alphabet::E), thread_keys)
-        .since(nostr::Timestamp::from(ledger.since))
+        .since(nostr::Timestamp::from(ledger.since));
+    match channel_id {
+        Some(channel_id) => filter.custom_tags(
+            SingleLetterTag::lowercase(Alphabet::H),
+            [channel_id.to_string()],
+        ),
+        None => {
+            let mut thread_keys: Vec<&str> = ledger
+                .targets
+                .iter()
+                .map(|t| t.thread_key.as_str())
+                .collect();
+            thread_keys.sort_unstable();
+            thread_keys.dedup();
+            filter.custom_tags(SingleLetterTag::lowercase(Alphabet::E), thread_keys)
+        }
+    }
 }
 
 /// Whether a turn's outcome earns ✅ on the triggers it answered.
@@ -5533,6 +5794,11 @@ pub struct TurnCompletion {
     /// The receipt to publish for this turn, or `None` when no model could be
     /// named. A receipt that names the wrong model is worse than none.
     pub receipt: Option<AgentTurnReceiptPayload>,
+    /// Set when the turn was cut off ([`EarlyStop`]). The notice is published
+    /// only if the same relay query shows the turn left nothing in its
+    /// trigger's thread — so a turn that answered and *then* hit the cap stays
+    /// silent, and a turn that vanished mid-thought does not.
+    pub early_stop: Option<EarlyStop>,
 }
 
 /// The NIP-AR receipt a finished turn earned, or `None` when the harness cannot
@@ -5666,17 +5932,35 @@ fn build_turn_receipt_event(
     }
 }
 
+/// Everything a finished turn owes its room, decided from one relay answer.
+#[derive(Debug, Default)]
+pub(crate) struct TurnCompletionActions {
+    /// Triggers to mark ✅.
+    pub answered: Vec<String>,
+    /// The NIP-AR receipt to publish, when one is owed.
+    pub receipt: Option<nostr::Event>,
+    /// The harness's own notice, and where to post it: `(channel, anchor, text)`.
+    pub notice: Option<(Uuid, ThreadTags, String)>,
+}
+
 /// What a finished turn publishes, given the relay's answer to what it said.
 ///
-/// Pure, so the two gates stay falsifiable: ✅ is withheld unless the outcome
-/// earned it, while the receipt is owed by every turn that published — the
-/// refusals, caps and cancels burned tokens too.
+/// Pure, so all three gates stay falsifiable: ✅ is withheld unless the outcome
+/// earned it, the receipt is owed by every turn that published — the refusals,
+/// caps and cancels burned tokens too — and the notice is owed only by a turn
+/// that was cut off *and* left its trigger's thread empty.
+///
+/// The notice re-reads the thread itself rather than looking at `answered`:
+/// `answered` is empty by construction for a cut-off turn, because that outcome
+/// never earns ✅, so reusing it would post a notice under every early stop
+/// including the ones that had already replied.
 fn turn_completion_actions(
     keys: &nostr::Keys,
     completion: &TurnCompletion,
     replies: &serde_json::Value,
-) -> (Vec<String>, Option<nostr::Event>) {
-    let answered = if completion.earns_answered {
+) -> TurnCompletionActions {
+    let replied_in_thread = !answered_event_ids(&completion.ledger.targets, replies).is_empty();
+    let answered = if completion.earns_answered && replied_in_thread {
         answered_event_ids(&completion.ledger.targets, replies)
     } else {
         Vec::new()
@@ -5687,7 +5971,21 @@ fn turn_completion_actions(
         completion.receipt.as_ref(),
         replies,
     );
-    (answered, receipt)
+    let notice = match (
+        completion.early_stop.as_ref(),
+        completion.channel_id,
+        completion.ledger.reply_to.as_ref(),
+    ) {
+        (Some(early), Some(channel_id), Some(anchor)) if !replied_in_thread => {
+            Some((channel_id, anchor.clone(), early.notice.clone()))
+        }
+        _ => None,
+    };
+    TurnCompletionActions {
+        answered,
+        receipt,
+        notice,
+    }
 }
 
 /// Best-effort timeout for publishing one NIP-AR receipt.
@@ -5697,8 +5995,9 @@ const RECEIPT_TIMEOUT: Duration = Duration::from_secs(3);
 /// receipt from one relay query.
 ///
 /// Detection reads the relay, not the agent's tool calls: one query for our own
-/// reply-kind events created since the turn started that carry a target's
-/// thread key in an `e` tag. Agents publish with `buzz messages send`, which
+/// message-kind events in the turn's channel created since the turn started —
+/// replies in the triggers' threads and top-level posts alike, see
+/// [`turn_publications_filter`]. Agents publish with `buzz messages send`, which
 /// returns only once the relay has accepted the event, so every message a turn
 /// sent is queryable by the time its result reaches the main loop. A turn that
 /// heard a post and stayed out published nothing there: no ✅, no receipt.
@@ -5711,7 +6010,8 @@ pub(crate) fn spawn_turn_completion(rest: &RestClient, completion: TurnCompletio
     // Nothing to learn from the relay when neither output is owed — an adapter
     // that names no model and a turn that earned no ✅ must not cost a query on
     // every completion.
-    if !completion.earns_answered && completion.receipt.is_none() {
+    if !completion.earns_answered && completion.receipt.is_none() && completion.early_stop.is_none()
+    {
         return;
     }
     if completion.ledger.targets.is_empty() {
@@ -5719,7 +6019,11 @@ pub(crate) fn spawn_turn_completion(rest: &RestClient, completion: TurnCompletio
     }
     let rest = rest.clone();
     tokio::spawn(async move {
-        let filter = answered_reply_filter(rest.keys.public_key(), &completion.ledger);
+        let filter = turn_publications_filter(
+            rest.keys.public_key(),
+            completion.channel_id,
+            &completion.ledger,
+        );
         let replies = match timeout(Duration::from_millis(1_000), rest.query(&[filter])).await {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => {
@@ -5731,7 +6035,12 @@ pub(crate) fn spawn_turn_completion(rest: &RestClient, completion: TurnCompletio
                 return;
             }
         };
-        let (answered, receipt) = turn_completion_actions(&rest.keys, &completion, &replies);
+        let actions = turn_completion_actions(&rest.keys, &completion, &replies);
+        let TurnCompletionActions {
+            answered,
+            receipt,
+            notice,
+        } = actions;
 
         if let Some(event) = receipt {
             match timeout(RECEIPT_TIMEOUT, rest.submit_event(&event)).await {
@@ -5745,6 +6054,23 @@ pub(crate) fn spawn_turn_completion(rest: &RestClient, completion: TurnCompletio
                 }
                 Err(_) => tracing::warn!(target: "pool::receipt", "NIP-AR: publish timed out"),
             }
+        }
+
+        // Only the relay can say whether the turn spoke: the in-process
+        // `pending_delivered_event_ids` counts events delivered *to* the agent,
+        // not the ones it published. This query already asked, so the notice
+        // costs nothing extra. A failed or timed-out query returns above, which
+        // means an unknown answer posts nothing — the fleet watchdog is the
+        // backstop for that case, and a duplicate notice is worse than a late
+        // one.
+        if let Some((channel_id, anchor, text)) = notice {
+            tracing::warn!(
+                target: "pool::prompt",
+                outcome = completion.early_stop.as_ref().map(|e| e.label).unwrap_or(""),
+                channel_id = %channel_id,
+                "turn was cut off and published nothing in its trigger's thread — posting the harness notice"
+            );
+            post_failure_notice(&rest, channel_id, &anchor, &text).await;
         }
 
         if answered.is_empty() {
@@ -8789,7 +9115,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
     }
 
     #[test]
-    fn answered_reply_filter_asks_for_our_replies_in_target_threads_since_dispatch() {
+    fn turn_publications_filter_asks_for_everything_we_published_in_the_channel_since_dispatch() {
         let (top, root) = ("a".repeat(64), "b".repeat(64));
         let ledger = AnswerLedger {
             targets: vec![
@@ -8798,9 +9124,12 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
                 target(&"d".repeat(64), &root),
             ],
             since: 1_790_000_000,
+            reply_to: None,
         };
         let me = Keys::generate().public_key();
-        let filter = serde_json::to_value(answered_reply_filter(me, &ledger)).unwrap();
+        let channel = Uuid::new_v4();
+        let filter =
+            serde_json::to_value(turn_publications_filter(me, Some(channel), &ledger)).unwrap();
 
         let mut kinds: Vec<u64> = filter["kinds"]
             .as_array()
@@ -8811,6 +9140,39 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
         kinds.sort_unstable();
         assert_eq!(kinds, vec![9, 40002, 40008, 45003], "reply kinds, never 7");
         assert_eq!(filter["authors"], json!([me.to_hex()]));
+        assert_eq!(
+            filter["#h"],
+            json!([channel.to_string()]),
+            "scoped to the channel the turn ran in"
+        );
+        // The whole defect: keyed on the targets' threads, the query could not
+        // return a top-level post, so no receipt ever named one.
+        assert!(
+            filter.get("#e").is_none(),
+            "not keyed on the targets' threads: {filter}"
+        );
+        assert_eq!(filter["since"], json!(1_790_000_000u64));
+    }
+
+    #[test]
+    fn without_a_channel_the_filter_keeps_the_targets_threads() {
+        let (top, root) = ("a".repeat(64), "b".repeat(64));
+        let ledger = AnswerLedger {
+            targets: vec![
+                target(&top, &top),
+                target(&"c".repeat(64), &root),
+                target(&"d".repeat(64), &root),
+            ],
+            since: 1_790_000_000,
+            reply_to: None,
+        };
+        let me = Keys::generate().public_key();
+        let filter = serde_json::to_value(turn_publications_filter(me, None, &ledger)).unwrap();
+
+        assert!(
+            filter.get("#h").is_none(),
+            "no channel to scope to: {filter}"
+        );
         let mut keys: Vec<&str> = filter["#e"]
             .as_array()
             .unwrap()
@@ -8823,6 +9185,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             vec![top.as_str(), root.as_str()],
             "one key per thread"
         );
+        assert_eq!(filter["authors"], json!([me.to_hex()]));
         assert_eq!(filter["since"], json!(1_790_000_000u64));
     }
 
@@ -9006,14 +9369,18 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             ledger: AnswerLedger {
                 targets: vec![target(&trigger, &root)],
                 since: 1_790_000_000,
+                reply_to: None,
             },
             channel_id: Some(channel),
             earns_answered: earns_answered_reaction(&PromptOutcome::Cancelled),
             receipt: turn_receipt_payload(&agent, "claude-agent-acp"),
+            early_stop: None,
         };
         let replies = json!([published_reply(&"b".repeat(64), 1_790_000_100, "on it")]);
 
-        let (answered, receipt) = turn_completion_actions(&keys, &completion, &replies);
+        let TurnCompletionActions {
+            answered, receipt, ..
+        } = turn_completion_actions(&keys, &completion, &replies);
 
         assert!(answered.is_empty(), "a cancelled turn answered nothing");
         let receipt = receipt.expect("a cancelled turn that published still owes a receipt");
@@ -9026,6 +9393,112 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
         );
     }
 
+    /// The audited shape: rock's turn `a1208720` spent its whole tool-call
+    /// budget on Lloyd's question and published nothing. The harness owes that
+    /// thread a line, because the model that would have written one is the one
+    /// that ran out of turns.
+    #[tokio::test]
+    async fn a_cut_off_turn_that_said_nothing_owes_its_thread_a_line() {
+        let keys = Keys::generate();
+        let channel = Uuid::new_v4();
+        let agent = receipt_agent(None, Some(receipt_usage(Some("gemini-3.8-flash")))).await;
+        let root = "a".repeat(64);
+        let trigger = "d".repeat(64);
+        let anchor = ThreadTags {
+            root_event_id: Some(root.clone()),
+            parent_event_id: Some(trigger.clone()),
+            mentioned_pubkeys: Vec::new(),
+        };
+        let completion = TurnCompletion {
+            ledger: AnswerLedger {
+                targets: vec![target(&trigger, &root)],
+                since: 1_790_000_000,
+                reply_to: Some(anchor.clone()),
+            },
+            channel_id: Some(channel),
+            earns_answered: earns_answered_reaction(&PromptOutcome::Ok(
+                StopReason::MaxTurnRequests,
+            )),
+            receipt: turn_receipt_payload(&agent, "rebrand-acp"),
+            early_stop: EarlyStop::for_stop_reason(&StopReason::MaxTurnRequests),
+        };
+
+        let actions = turn_completion_actions(&keys, &completion, &json!([]));
+
+        let (notice_channel, notice_anchor, text) =
+            actions.notice.expect("a silent cut-off turn owes a notice");
+        assert_eq!(notice_channel, channel);
+        assert_eq!(
+            notice_anchor, anchor,
+            "the notice lands where an answer would have"
+        );
+        assert!(
+            text.starts_with(FAILURE_NOTICE_PREFIX),
+            "the notice must be excluded from reply detection: {text}"
+        );
+        assert!(text.contains("tool calls"), "say which limit: {text}");
+        assert!(actions.answered.is_empty(), "a cut-off turn never earns ✅");
+    }
+
+    /// The other half of the rule, and the one that keeps the notice from
+    /// being noise: a turn that replied and *then* ran out has already been
+    /// heard, so the harness says nothing.
+    #[tokio::test]
+    async fn a_cut_off_turn_that_already_replied_gets_no_notice() {
+        let keys = Keys::generate();
+        let agent = receipt_agent(None, Some(receipt_usage(Some("gemini-3.8-flash")))).await;
+        let root = "a".repeat(64);
+        let trigger = "d".repeat(64);
+        let completion = TurnCompletion {
+            ledger: AnswerLedger {
+                targets: vec![target(&trigger, &root)],
+                since: 1_790_000_000,
+                reply_to: Some(ThreadTags {
+                    root_event_id: Some(root.clone()),
+                    parent_event_id: Some(trigger.clone()),
+                    mentioned_pubkeys: Vec::new(),
+                }),
+            },
+            channel_id: Some(Uuid::new_v4()),
+            earns_answered: earns_answered_reaction(&PromptOutcome::Ok(
+                StopReason::MaxTurnRequests,
+            )),
+            receipt: turn_receipt_payload(&agent, "rebrand-acp"),
+            early_stop: EarlyStop::for_stop_reason(&StopReason::MaxTurnRequests),
+        };
+        // `published_reply` tags the thread root, so this lands in the thread.
+        let replies = json!([published_reply(
+            &"b".repeat(64),
+            1_790_000_100,
+            "here is what I found"
+        )]);
+
+        let actions = turn_completion_actions(&keys, &completion, &replies);
+
+        assert!(
+            actions.notice.is_none(),
+            "the thread was answered; a harness notice would contradict it"
+        );
+    }
+
+    /// A turn that reached its own end and chose not to speak has answered.
+    /// Our own rules say silence is often correct, so the harness must not
+    /// speak over it — only a turn that was *cut off* owes a line.
+    #[test]
+    fn a_silent_turn_that_finished_owes_nothing() {
+        assert!(EarlyStop::for_stop_reason(&StopReason::EndTurn).is_none());
+        assert!(EarlyStop::for_stop_reason(&StopReason::Cancelled).is_none());
+        for stop in [
+            StopReason::MaxTurnRequests,
+            StopReason::MaxTokens,
+            StopReason::Refusal,
+        ] {
+            let early = EarlyStop::for_stop_reason(&stop).expect("cut off");
+            assert!(early.notice.starts_with(FAILURE_NOTICE_PREFIX));
+            assert_eq!(early.label, ok_outcome_label(&stop));
+        }
+    }
+
     #[tokio::test]
     async fn a_turn_that_answered_earns_both_the_check_and_the_receipt_from_one_query() {
         let keys = Keys::generate();
@@ -9036,14 +9509,18 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             ledger: AnswerLedger {
                 targets: vec![target(&trigger, &root)],
                 since: 1_790_000_000,
+                reply_to: None,
             },
             channel_id: Some(Uuid::new_v4()),
             earns_answered: earns_answered_reaction(&PromptOutcome::Ok(StopReason::EndTurn)),
             receipt: turn_receipt_payload(&agent, "claude-agent-acp"),
+            early_stop: None,
         };
         let replies = json!([published_reply(&"b".repeat(64), 1_790_000_100, "answered")]);
 
-        let (answered, receipt) = turn_completion_actions(&keys, &completion, &replies);
+        let TurnCompletionActions {
+            answered, receipt, ..
+        } = turn_completion_actions(&keys, &completion, &replies);
 
         assert_eq!(answered, vec![trigger]);
         assert!(receipt.is_some());
@@ -9222,6 +9699,92 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
                 target(&cancelled.id.to_hex(), &cancelled.id.to_hex()),
             ]
         );
+        // The harness's own notice lands where an answer would: a reply TO the
+        // newest live trigger, inside the thread it already sits in. Taken from
+        // `events`, never from `cancelled_events` — the cancelled ones belong
+        // to a turn that has already been superseded.
+        assert_eq!(
+            ledger.reply_to,
+            Some(crate::queue::ThreadTags {
+                root_event_id: Some(root.clone()),
+                parent_event_id: Some(fresh.id.to_hex()),
+                mentioned_pubkeys: Vec::new(),
+            })
+        );
+    }
+
+    /// A turn's metric must say which thread it served, or the owner's own
+    /// numbers cannot be attributed to any piece of work.
+    #[test]
+    fn a_turn_in_a_thread_joins_on_that_threads_root() {
+        let root = "a".repeat(64);
+        let reply = signed_event_with_tags(vec![vec![
+            "e".into(),
+            root.clone(),
+            String::new(),
+            "reply".into(),
+        ]]);
+        let batch = batch_with_scope(thread_scope(Uuid::new_v4(), &root), reply.clone());
+
+        let join = TurnJoin::for_batch(Some(&batch));
+
+        assert_eq!(join.thread_root.as_deref(), Some(root.as_str()));
+        assert_eq!(
+            join.triggering_event_id.as_deref(),
+            Some(reply.id.to_hex().as_str())
+        );
+        assert!(join.duration_ms().is_some());
+    }
+
+    /// A top-level trigger has no thread yet, and the reply opens one rooted at
+    /// the trigger. Joining on the trigger is therefore joining on the thread
+    /// the answer will live in — the same key ✅ and the task link note use.
+    #[test]
+    fn a_top_level_trigger_joins_on_itself() {
+        let ch = Uuid::new_v4();
+        let top = signed_event_with_tags(vec![vec!["h".into(), ch.to_string()]]);
+        let batch = batch_with_scope(SessionScope::Conversation { channel_id: ch }, top.clone());
+
+        let join = TurnJoin::for_batch(Some(&batch));
+
+        assert_eq!(join.thread_root, Some(top.id.to_hex()));
+        assert_eq!(join.triggering_event_id, Some(top.id.to_hex()));
+    }
+
+    /// A heartbeat serves no room and no thread, so it claims neither. An empty
+    /// string or a zero duration here would be a claim the harness cannot make.
+    #[test]
+    fn a_heartbeat_joins_to_nothing() {
+        let join = TurnJoin::for_batch(None);
+        assert_eq!(join.thread_root, None);
+        assert_eq!(join.triggering_event_id, None);
+        assert_eq!(join.duration_ms(), None);
+    }
+
+    /// A top-level ask has no thread yet, so the notice must open one on the
+    /// trigger rather than land at the channel root where nobody is looking.
+    #[test]
+    fn a_top_level_trigger_gets_a_notice_anchor_on_itself() {
+        let ch = Uuid::new_v4();
+        let top = signed_event_with_tags(vec![vec!["h".into(), ch.to_string()]]);
+        let batch = batch_with_scope(SessionScope::Conversation { channel_id: ch }, top.clone());
+
+        let ledger = AnswerLedger::for_batch(&batch, 42);
+
+        assert_eq!(
+            ledger.reply_to,
+            Some(crate::queue::ThreadTags {
+                root_event_id: Some(top.id.to_hex()),
+                parent_event_id: Some(top.id.to_hex()),
+                mentioned_pubkeys: Vec::new(),
+            })
+        );
+    }
+
+    /// A heartbeat has no room to be accountable to, so it can owe no notice.
+    #[test]
+    fn a_ledger_with_no_events_has_nowhere_to_post() {
+        assert_eq!(AnswerLedger::default().reply_to, None);
     }
 
     #[tokio::test]
@@ -10669,11 +11232,23 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             acp_stop_to_core(&StopReason::MaxTokens),
             CoreStop::MaxTokens
         );
+        // These two used to be asserted as `Unknown`, which is how the owner's
+        // metric lost every exhausted turn. See `mod turn_outcome_tests`.
         assert_eq!(
             acp_stop_to_core(&StopReason::MaxTurnRequests),
-            CoreStop::Unknown
+            CoreStop::MaxTurnRequests
         );
-        assert_eq!(acp_stop_to_core(&StopReason::Refusal), CoreStop::Unknown);
+        assert_eq!(acp_stop_to_core(&StopReason::Refusal), CoreStop::Refusal);
+        // Nothing maps to `Unknown` any more: every ACP stop reason has a name.
+        for stop in [
+            StopReason::EndTurn,
+            StopReason::Cancelled,
+            StopReason::MaxTokens,
+            StopReason::MaxTurnRequests,
+            StopReason::Refusal,
+        ] {
+            assert_ne!(acp_stop_to_core(&stop), CoreStop::Unknown, "{stop:?}");
+        }
     }
 
     /// `publish_agent_turn_metric` is a no-op when `usage` is `None`.
@@ -10688,6 +11263,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             "sess-1",
             "turn-1",
             Some(buzz_core::agent_turn_metric::StopReason::EndTurn),
+            &TurnJoin::default(),
         )
         .await;
     }
@@ -10723,6 +11299,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             "sess-1",
             "turn-1",
             Some(buzz_core::agent_turn_metric::StopReason::EndTurn),
+            &TurnJoin::default(),
         )
         .await;
     }
@@ -10762,6 +11339,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             "sess-1",
             "turn-1",
             Some(buzz_core::agent_turn_metric::StopReason::EndTurn),
+            &TurnJoin::default(),
         )
         .await;
     }
@@ -10802,6 +11380,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             "sess-cancel",
             "turn-cancel",
             Some(buzz_core::agent_turn_metric::StopReason::Cancelled),
+            &TurnJoin::default(),
         )
         .await;
     }
@@ -10842,6 +11421,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             "sess-ba",
             "turn-ba",
             Some(buzz_core::agent_turn_metric::StopReason::EndTurn),
+            &TurnJoin::default(),
         )
         .await;
     }

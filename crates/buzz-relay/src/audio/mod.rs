@@ -13,6 +13,7 @@ pub mod handler;
 pub mod join;
 pub mod mesh;
 pub mod room;
+pub mod stats;
 pub mod wire;
 
 pub use handler::ws_audio_handler;

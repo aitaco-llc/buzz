@@ -137,10 +137,12 @@ PROOF_REBRAND_ACP_BIN=/path/to/rebrand-acp \
 ```
 
 Those protocol tests run the real `rebrand-acp` binary against a scripted model
-and relay: the narrowing, the schema on the answering turn, a forged citation,
-an invented code behind a real citation, an off-schema answer, cross-channel
-data, a model error inside HTTP 200, and cancellation (which must leave no
-rebrand-acp process behind). Nothing publishes but the success case.
+and relay: the narrowing, the schema on the answering turn (`minItems` and all),
+a forged citation, an invented code behind a real citation, an off-schema answer,
+an empty citation list from a turn that still had a tool on offer and so carried
+no schema, cross-channel data, a model error inside HTTP 200, and cancellation
+(which must leave no rebrand-acp process behind). Nothing publishes but the
+success case.
 
 The real-model run is `native/run.sh` with two more variables:
 

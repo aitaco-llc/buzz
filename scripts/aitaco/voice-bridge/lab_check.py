@@ -59,10 +59,17 @@ caller = json.loads(text("caller.json") or "{}")
 
 setups = [g for g in gemini if g["event"] == "setup"]
 client_texts = [g["text"] for g in gemini if g["event"] == "client_text"]
-asks = [r for r in dm if r.get("pubkey") == a.seat and tag(r, "voice-bridge") == "ask"]
+# A call-end post that carries the transcript is signed `ask` so it wakes the
+# seat, and labelled `t=huddle-transcript`; the asks proper carry no label.
+asks = [r for r in dm if r.get("pubkey") == a.seat and tag(r, "voice-bridge") == "ask"
+        and tag(r, "t") != "huddle-transcript"]
 answers = [r for r in dm if r.get("pubkey") == a.seat and tag(r, "voice-bridge") is None
            and f"ANSWER-{nonce}" in r.get("content", "")]
-dm_transcripts = [r for r in dm if tag(r, "voice-bridge") == "transcript"]
+recaps = [r for r in dm if r.get("pubkey") == a.seat and tag(r, "voice-bridge") is None
+          and f"RECAP-{nonce}" in r.get("content", "")]
+dm_transcripts = [r for r in dm if tag(r, "t") == "huddle-transcript"]
+ask_prompts = [p for p in prompts if not p.get("wrap_up")]
+wrap_up_prompts = [p for p in prompts if p.get("wrap_up")]
 lines = [r.get("content", "") for r in eph if r.get("pubkey") == a.seat]
 seat_audio = [r for r in caller.get("received", []) if r["pubkey"] == a.seat]
 
@@ -74,7 +81,7 @@ start = first(call_log, "call_start") or {}
 audio = last(call_log, "audio_stats") or {}
 inbound = audio.get("in") or [{}]
 ending = first(call_log, "call_end") or first(call_log, "call_failed") or {}
-outcome_posts = [r for r in dm if tag(r, "voice-bridge") == "transcript"
+outcome_posts = [r for r in dm if tag(r, "voice-bridge") in ("transcript", "ask")
                  and r.get("content", "").startswith("Voice call `")]
 
 instrumented = {
@@ -130,10 +137,10 @@ elif real:
     checks = {
         "gemini_session_opened": "gemini_connected" in call_events,
         "caller_speech_transcribed": any(l.startswith("Lloyd: ") for l in lines_logged),
-        "gemini_spoke_transcribed": any(l.startswith("rock (voice, Gemini): ") for l in lines_logged),
-        "ask_rock_called_and_posted": "ask_rock" in call_events and "ask_posted" in call_events,
-        "seat_woke_once_on_the_ask": len(prompts) == 1 and len(asks) == 1 and prompts[0]["event"] == asks[0]["id"],
-        "seat_answer_reached_gemini": "rock_answer" in call_events,
+        "gemini_spoke_transcribed": any(l.startswith("rock (voice): ") for l in lines_logged),
+        "work_called_and_posted": "work" in call_events and "ask_posted" in call_events,
+        "seat_woke_once_on_the_ask": len(ask_prompts) == 1 and len(asks) == 1 and ask_prompts[0]["event"] == asks[0]["id"],
+        "seat_answer_reached_gemini": "seat_answer" in call_events,
         "bridge_spoke_into_room": bool(seat_audio) and seat_audio[0]["frames"] > 100,
         "transcript_lines_tagged": bool(lines) and all(
             tag(r, "voice-bridge") == "transcript" for r in eph if r.get("pubkey") == a.seat),
@@ -143,29 +150,51 @@ else:
   checks = {
       # Gemini side
       "gemini_setup_key_model_tool": bool(setups) and setups[0]["key_ok"]
-          and setups[0]["model"] == "models/gemini-3.8-live" and setups[0]["tools"] == ["ask_rock"]
+          and setups[0]["model"] == "models/gemini-3.8-live" and setups[0]["tools"] == ["work"]
           and setups[0]["transcription"] and setups[0]["handle"] is None,
       "caller_audio_reached_gemini": any(g["event"] == "heard_caller" for g in gemini),
-      "tool_answered_asked": any(g["event"] == "tool_response" and g["response"]["response"].get("status") == "asked"
-                                 for g in gemini),
-      "seat_answer_reached_gemini": any(t.startswith("rock answered") and f"ANSWER-{nonce}" in t for t in client_texts),
+      # The tool is answered at once and quietly, so "one sec" never waits on
+      # the relay round trip.
+      "tool_answered_started_and_silent": any(
+          g["event"] == "tool_response" and g["response"]["response"].get("status") == "started"
+          and g["response"]["response"].get("scheduling") == "SILENT" for g in gemini),
+      "seat_answer_reached_gemini": any(t.startswith("Your work came back") and f"ANSWER-{nonce}" in t for t in client_texts),
       "resumed_with_handle_after_go_away": any(s["session"] == 2 and s["handle"] == "handle-1" for s in setups),
-      # Seat side: only the ask woke it
+      # The voice is the seat: nothing handed to Gemini speaks of it in the
+      # third person.
+      "nothing_reaches_the_voice_in_the_third_person": bool(client_texts) and not any(
+          "rock answered" in t or "checking with rock" in t or "rock is still working" in t for t in client_texts),
+      # Seat side: the ask woke it, with the call so far in hand
       "ask_tagged_and_mentions_seat": len(asks) == 1 and tag(asks[0], "p") == a.seat,
-      "seat_woke_once_on_the_ask": len(prompts) == 1 and bool(asks) and prompts[0]["event"] == asks[0]["id"],
+      "the_ask_carries_the_call_so_far": bool(asks)
+          and asks[0]["content"].startswith("Lloyd is on a voice call with you")
+          and "rock (voice): Hi Lloyd" in asks[0]["content"]
+          and "> what is the build status" in asks[0]["content"],
+      "seat_woke_once_on_the_ask": len(ask_prompts) == 1 and bool(asks) and ask_prompts[0]["event"] == asks[0]["id"],
       "seat_answered_in_thread": len(answers) == 1 and bool(asks) and any(
           t[0] == "e" and t[1] == asks[0]["id"] for t in answers[0].get("tags", [])),
-      # Transcript: every line tagged and labelled
+      # Transcript: every line tagged and labelled with the profile names
       "transcript_lines_tagged": bool(lines) and all(
           tag(r, "voice-bridge") == "transcript" for r in eph if r.get("pubkey") == a.seat),
       "transcript_names_speakers": any(l.startswith("Lloyd: what is the build status") for l in lines)
-          and any(l.startswith("rock (voice, Gemini): Hi Lloyd") for l in lines)
-          and any(l.startswith("rock (voice, Gemini): rock says the build is green") for l in lines),
+          and any(l.startswith("rock (voice): Hi Lloyd") for l in lines)
+          and any(l.startswith("rock (voice): The build is green") for l in lines),
       "full_transcript_in_parent": len(dm_transcripts) == 1 and "Lloyd: what is the build status" in dm_transcripts[0]["content"],
+      # The call is recorded: the transcript post wakes the seat, which
+      # replies in that thread with the recap.
+      "the_call_end_woke_the_seat_to_record_it": len(dm_transcripts) == 1
+          and tag(dm_transcripts[0], "voice-bridge") == "ask" and tag(dm_transcripts[0], "p") == a.seat
+          and "buzz issues create" in dm_transcripts[0]["content"]
+          and len(wrap_up_prompts) == 1 and wrap_up_prompts[0]["event"] == dm_transcripts[0]["id"],
+      "the_seat_recapped_in_the_transcript_thread": len(recaps) == 1 and bool(dm_transcripts) and any(
+          t[0] == "e" and t[1] == dm_transcripts[0]["id"] for t in recaps[0].get("tags", [])),
+      # The voice was given the channel's recent conversation before it spoke.
+      "the_history_was_fetched_before_the_call": (first(call_log, "history") or {}).get("lines") is not None
+          and "history_failed" not in call_events,
       # Room side
       "bridge_spoke_into_room": bool(seat_audio) and seat_audio[0]["frames"] > 50 and seat_audio[0]["peak_dbov"] > -40,
       "call_log_complete": all(e in call_events for e in
-                               ["call_start", "room_joined", "ask_posted", "rock_answer", "gemini_go_away", "call_end"])
+                               ["call_start", "room_joined", "ask_posted", "seat_answer", "gemini_go_away", "call_end"])
           and any(e["event"] == "gemini_connected" and e["data"].get("resumed") for e in call_log),
   }
 
@@ -181,12 +210,17 @@ if a.fault == "none" and seat_mode_top == "limited":
     dead_letters = [r for r in dm if "\u26a0\ufe0f I couldn't process" in r.get("content", "")]
     checks = {
         k: v for k, v in checks.items()
+        # The call-end wake is published and delivered, but buzz-acp holds it
+        # behind the usage limit without a prompt, so neither the recap nor
+        # the wrap-up prompt can be seen in this run.
         if k not in {"seat_answer_reached_gemini", "seat_answered_in_thread",
                      "transcript_names_speakers", "call_log_complete",
-                     "resumed_with_handle_after_go_away"}
+                     "resumed_with_handle_after_go_away",
+                     "the_call_end_woke_the_seat_to_record_it",
+                     "the_seat_recapped_in_the_transcript_thread"}
     }
     checks.update({
-        "the_seat_woke_and_could_not_run": len(prompts) >= 1 and not answers,
+        "the_seat_woke_and_could_not_run": len(ask_prompts) >= 1 and not answers,
         "the_held_trigger_was_announced_once": len(held) == 1,
         "the_notice_went_to_the_ask_thread":
             bool(held) and bool(asks)
@@ -200,7 +234,7 @@ if a.fault == "none" and seat_mode_top == "limited":
         # silence or a false "still working". No progress line ever fires,
         # because the refusal comes back in about a second.
         "the_voice_was_told_the_work_is_held":
-            any(t.startswith("rock answered") and "Nothing was lost" in t
+            any(t.startswith("Your work came back") and "Nothing was lost" in t
                 for t in client_texts),
         "no_progress_line_claimed_work":
             not [e for e in call_log if e["event"] == "waiting_tick"],
@@ -243,7 +277,9 @@ if a.fault == "none" and seat_mode_top == "silent":
         k: v for k, v in checks.items()
         if k not in {"seat_answer_reached_gemini", "seat_woke_once_on_the_ask",
                      "seat_answered_in_thread", "transcript_names_speakers",
-                     "call_log_complete", "resumed_with_handle_after_go_away"}
+                     "call_log_complete", "resumed_with_handle_after_go_away",
+                     "the_call_end_woke_the_seat_to_record_it",
+                     "the_seat_recapped_in_the_transcript_thread"}
     }
     checks.update({
         "the_ask_was_published_and_addressed_to_the_seat":
@@ -251,7 +287,7 @@ if a.fault == "none" and seat_mode_top == "silent":
         "nothing_ever_picked_the_ask_up": not prompts and not answers,
         "the_call_still_ran_and_ended_cleanly":
             all(e in call_events for e in ["call_start", "room_joined", "ask_posted", "call_end"])
-            and "rock_answer" not in call_events,
+            and "seat_answer" not in call_events,
         # Both directions still carry audio through a wait that never ends.
         # Outbound is the greeting only — an answer is what makes it grow —
         # so this is `>=` where the live run can demand more.
@@ -284,7 +320,7 @@ if a.fault == "none":
         "timings_on_join_connect_answer_and_end":
             (first(call_log, "room_joined") or {}).get("join_ms") is not None
             and (first(call_log, "gemini_connected") or {}).get("connect_ms") is not None
-            and (first(call_log, "rock_answer") or {}).get("waited_ms") is not None
+            and (first(call_log, "seat_answer") or {}).get("waited_ms") is not None
             and ending.get("duration_ms") is not None,
         "the_answer_latency_is_measured":
             any(e["event"] == "response_latency"
@@ -306,10 +342,10 @@ if a.fault == "none":
         # opening words is asserting the claim that was made about the seat.
         working_said = [g["text"] for g in gemini
                         if g["event"] == "client_text"
-                        and g["text"].startswith("rock is still working")]
+                        and g["text"].startswith("You are still working")]
         unpicked_said = [g["text"] for g in gemini
                          if g["event"] == "client_text"
-                         and g["text"].startswith("rock has not picked this up yet")]
+                         and g["text"].startswith("Your work has not started yet")]
         said = working_said if seat_mode == "live" else unpicked_said
         closed = next((g for g in gemini if g["event"] == "closed" and g["session"] == 1), {})
         bed_frames = (audio.get("out") or {}).get("bed_frames", 0)

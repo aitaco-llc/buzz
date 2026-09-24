@@ -868,6 +868,7 @@ pub fn build_repo_announcement(
     clone_urls: &[&str],
     web_url: Option<&str>,
     relays: &[&str],
+    maintainers: &[&str],
 ) -> Result<EventBuilder, SdkError> {
     // Validate repo_id
     check_repo_id(repo_id)?;
@@ -927,6 +928,24 @@ pub fn build_repo_announcement(
         }
     }
 
+    // Validate maintainers. NIP-34's `maintainers` is a multi-value tag of
+    // pubkeys the repository's owner vouches for; a reader that trusts a
+    // status, update or assignment event from one of them is trusting this
+    // list, so a malformed entry is refused rather than carried.
+    if maintainers.len() > 32 {
+        return Err(SdkError::InvalidInput(format!(
+            "too many maintainers (max 32, got {})",
+            maintainers.len()
+        )));
+    }
+    for maintainer in maintainers {
+        if maintainer.len() != 64 || !maintainer.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(SdkError::InvalidInput(format!(
+                "maintainer must be a 64-character hex pubkey (got {maintainer:?})"
+            )));
+        }
+    }
+
     // Validate relays
     if relays.len() > 10 {
         return Err(SdkError::InvalidInput(format!(
@@ -969,6 +988,11 @@ pub fn build_repo_announcement(
         let mut relay_tag = vec!["relays"];
         relay_tag.extend_from_slice(relays);
         tags.push(tag(&relay_tag)?);
+    }
+    if !maintainers.is_empty() {
+        let mut maintainer_tag = vec!["maintainers"];
+        maintainer_tag.extend_from_slice(maintainers);
+        tags.push(tag(&maintainer_tag)?);
     }
 
     Ok(EventBuilder::new(Kind::Custom(KIND_GIT_REPO_ANNOUNCEMENT as u16), "").tags(tags))
@@ -1261,6 +1285,83 @@ fn build_git_issue_assignee_operation(
         let prior = check_hex_exact(prior, 64, "prior assignment operation")?;
         tags.push(tag(&["prior", &prior])?);
     }
+
+    // `.allow_self_tagging()` is load-bearing here, not hygiene. These `p`
+    // tags ARE the payload: they name who is being assigned. nostr 0.44 strips
+    // a `p` tag matching the signer by default, so without this a
+    // self-assignment — which is every `pickup`, and the one operation any
+    // seat is always allowed to perform on itself — reaches the relay with no
+    // `p` tag at all and reduces to nothing. It is accepted, it is signed, and
+    // it does nothing. Found live on 2026-09-23: `buzz issues assign
+    // --assignee <self>` left the task Unassigned on the board.
+    Ok(EventBuilder::new(Kind::Custom(1), content)
+        .tags(tags)
+        .allow_self_tagging())
+}
+
+/// What a task link note says about the thing it points at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitIssueLinkKind {
+    /// The turns in this thread belong to this issue. Written for the thread
+    /// an issue was created from, and by any seat that opens a fan-out for it.
+    TaskThread,
+    /// This issue waits on another issue. The blocker is named in the `mention`
+    /// tag, and the blocked issue leaves the default board to render under it.
+    BlockedBy,
+}
+
+impl GitIssueLinkKind {
+    /// The `t` label a reader keys on.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::TaskThread => "task-thread",
+            Self::BlockedBy => "blocked-by",
+        }
+    }
+}
+
+/// Build an issue link note (kind:1) — a labeled comment that points an issue
+/// at a working thread, or at the issue blocking it.
+///
+/// Tag layout, deliberately the same shape as an assignment note
+/// ([`build_git_issue_assignment`]): `["e", <issue>, "", "root"]`,
+/// `["a", <repo>]`, `["t", <label>]`, and `["e", <target>, "", "mention"]`.
+/// Same shape means the same trust rule — an issue's author, its repository's
+/// owner, or one of that repository's declared maintainers — and the same
+/// reducers, rather than a second parallel notion of a labeled note.
+///
+/// Carries no `h` tag, so it never enters a channel timeline: a link note is
+/// structure, not conversation, and the iPad's strict kind allowlist reads only
+/// what a channel page carries.
+///
+/// `target` is the thread root for [`TaskThread`](GitIssueLinkKind::TaskThread)
+/// and the blocking issue for [`BlockedBy`](GitIssueLinkKind::BlockedBy). It
+/// must not be the issue itself: an issue that links its own thread to itself,
+/// or blocks on itself, is a cycle a reader cannot resolve.
+pub fn build_git_issue_link(
+    repo: &GitRepoCoord,
+    issue_id: &str,
+    target_id: &str,
+    kind: GitIssueLinkKind,
+    content: &str,
+) -> Result<EventBuilder, SdkError> {
+    check_content(content, 64 * 1024)?;
+    let issue = check_hex_exact(issue_id, 64, "issue")?;
+    let target = check_hex_exact(target_id, 64, "link target")?;
+    if issue == target {
+        return Err(SdkError::InvalidInput(format!(
+            "an issue cannot be {} to itself",
+            kind.label()
+        )));
+    }
+    let a_value = repo.to_a_tag_value()?;
+
+    let tags = vec![
+        tag(&["e", &issue, "", "root"])?,
+        tag(&["a", &a_value])?,
+        tag(&["t", kind.label()])?,
+        tag(&["e", &target, "", "mention"])?,
+    ];
 
     Ok(EventBuilder::new(Kind::Custom(1), content).tags(tags))
 }
@@ -3514,6 +3615,7 @@ mod tests {
                 &["https://github.com/example/my-repo.git"],
                 Some("https://github.com/example/my-repo"),
                 &["wss://relay.example.com"],
+                &["a".repeat(64).as_str(), "b".repeat(64).as_str()],
             )
             .unwrap(),
         );
@@ -3538,7 +3640,8 @@ mod tests {
 
     #[test]
     fn repo_announcement_happy_path_minimal() {
-        let ev = sign(build_repo_announcement("bare-repo", None, None, &[], None, &[]).unwrap());
+        let ev =
+            sign(build_repo_announcement("bare-repo", None, None, &[], None, &[], &[]).unwrap());
         assert_eq!(ev.kind.as_u16(), 30617);
         assert_eq!(ev.content, "");
         assert!(has_tag(&ev, "d", "bare-repo"));
@@ -3583,33 +3686,91 @@ mod tests {
 
     #[test]
     fn repo_announcement_rejects_empty_repo_id() {
-        let err = build_repo_announcement("", None, None, &[], None, &[]).unwrap_err();
+        let err = build_repo_announcement("", None, None, &[], None, &[], &[]).unwrap_err();
         assert!(matches!(err, SdkError::InvalidInput(_)));
     }
 
     #[test]
     fn repo_announcement_rejects_leading_dot() {
-        let err = build_repo_announcement(".hidden", None, None, &[], None, &[]).unwrap_err();
+        let err = build_repo_announcement(".hidden", None, None, &[], None, &[], &[]).unwrap_err();
         assert!(matches!(err, SdkError::InvalidInput(_)));
     }
 
     #[test]
     fn repo_announcement_rejects_double_dot() {
-        let err = build_repo_announcement("some..repo", None, None, &[], None, &[]).unwrap_err();
+        let err =
+            build_repo_announcement("some..repo", None, None, &[], None, &[], &[]).unwrap_err();
         assert!(matches!(err, SdkError::InvalidInput(_)));
     }
 
     #[test]
     fn repo_announcement_rejects_repo_id_over_64_chars() {
         let long_id = "a".repeat(65);
-        let err = build_repo_announcement(&long_id, None, None, &[], None, &[]).unwrap_err();
+        let err = build_repo_announcement(&long_id, None, None, &[], None, &[], &[]).unwrap_err();
         assert!(matches!(err, SdkError::InvalidInput(_)));
     }
 
     #[test]
     fn repo_announcement_rejects_invalid_chars_in_repo_id() {
-        let err = build_repo_announcement("bad repo!", None, None, &[], None, &[]).unwrap_err();
+        let err =
+            build_repo_announcement("bad repo!", None, None, &[], None, &[], &[]).unwrap_err();
         assert!(matches!(err, SdkError::InvalidInput(_)));
+    }
+
+    /// `maintainers` is the NIP-34 multi-value tag that says who, besides the
+    /// owner, may move an issue's status or assignment. Buzz did not emit it
+    /// until this builder did; `docs/nips/NIP-MP.md` and the CLI's issue
+    /// reducer both read it, so its shape is load-bearing.
+    #[test]
+    fn repo_announcement_maintainers_is_one_multi_value_tag() {
+        let a = "a".repeat(64);
+        let b = "b".repeat(64);
+        let ev =
+            sign(build_repo_announcement("tasks", None, None, &[], None, &[], &[&a, &b]).unwrap());
+        let tag = ev
+            .tags
+            .iter()
+            .map(|t| t.clone().to_vec())
+            .find(|t| t.first().map(String::as_str) == Some("maintainers"))
+            .expect("maintainers tag");
+        assert_eq!(tag, vec!["maintainers".to_owned(), a, b]);
+    }
+
+    /// A repository with no maintainers carries no tag at all, rather than an
+    /// empty one: a reader must be able to tell "nobody was vouched for" from
+    /// "this publisher does not speak the tag".
+    #[test]
+    fn repo_announcement_without_maintainers_omits_the_tag() {
+        let ev = sign(build_repo_announcement("tasks", None, None, &[], None, &[], &[]).unwrap());
+        assert!(!ev
+            .tags
+            .iter()
+            .any(|t| t.clone().to_vec().first().map(String::as_str) == Some("maintainers")));
+    }
+
+    /// The tag decides who may act on someone else's task, so a malformed
+    /// entry is refused at the builder rather than published and ignored
+    /// downstream.
+    #[test]
+    fn repo_announcement_rejects_a_maintainer_that_is_not_a_pubkey() {
+        for bad in [
+            "",
+            "not-hex",
+            &"a".repeat(63),
+            &"a".repeat(65),
+            &"g".repeat(64),
+        ] {
+            let err =
+                build_repo_announcement("tasks", None, None, &[], None, &[], &[bad]).unwrap_err();
+            assert!(
+                format!("{err}").contains("maintainer must be a 64-character hex pubkey"),
+                "{bad:?} produced {err}"
+            );
+        }
+        let many: Vec<String> = (0..33).map(|i| format!("{i:064x}")).collect();
+        let refs: Vec<&str> = many.iter().map(String::as_str).collect();
+        let err = build_repo_announcement("tasks", None, None, &[], None, &[], &refs).unwrap_err();
+        assert!(format!("{err}").contains("too many maintainers"), "{err}");
     }
 
     #[test]
@@ -3624,6 +3785,7 @@ mod tests {
                     "ssh://git@github.com/org/multi-clone.git",
                 ],
                 None,
+                &[],
                 &[],
             )
             .unwrap(),
@@ -3643,6 +3805,115 @@ mod tests {
         assert_eq!(vals.len(), 2);
         assert_eq!(vals[0], "https://relay.example.com/git/abc/multi-clone");
         assert_eq!(vals[1], "ssh://git@github.com/org/multi-clone.git");
+    }
+
+    /// A link note is read by the same trust rule and the same reducers as an
+    /// assignment, so it must carry the same shape: the issue as `root`, the
+    /// repo coordinate, the label, and the target as `mention`.
+    #[test]
+    fn git_issue_link_carries_the_assignment_shape() {
+        let owner = "a".repeat(64);
+        let repo = GitRepoCoord {
+            owner: owner.clone(),
+            id: "tasks".to_string(),
+        };
+        let issue = "b".repeat(64);
+        let thread = "c".repeat(64);
+
+        let ev = sign(
+            build_git_issue_link(
+                &repo,
+                &issue,
+                &thread,
+                GitIssueLinkKind::TaskThread,
+                "Working thread for this task",
+            )
+            .unwrap(),
+        );
+
+        assert_eq!(ev.kind.as_u16(), 1);
+        assert!(has_tag(&ev, "a", &format!("30617:{owner}:tasks")));
+        assert!(has_tag(&ev, "t", "task-thread"));
+        let e_tags: Vec<Vec<String>> = ev
+            .tags
+            .iter()
+            .map(|t| t.clone().to_vec())
+            .filter(|t| t.first().map(String::as_str) == Some("e"))
+            .collect();
+        assert_eq!(
+            e_tags,
+            vec![
+                vec!["e".into(), issue.clone(), String::new(), "root".into()],
+                vec!["e".into(), thread, String::new(), "mention".into()],
+            ],
+            "the issue is the root and the target is a mention, in that order"
+        );
+        assert!(
+            !ev.tags
+                .iter()
+                .any(|t| t.clone().to_vec().first().map(String::as_str) == Some("h")),
+            "a link note is structure, not conversation: no channel tag, so no \
+             channel timeline and nothing for the iPad's kind allowlist to read"
+        );
+    }
+
+    #[test]
+    fn git_issue_link_labels_a_blocker_differently() {
+        let repo = GitRepoCoord {
+            owner: "a".repeat(64),
+            id: "tasks".to_string(),
+        };
+        let ev = sign(
+            build_git_issue_link(
+                &repo,
+                &"b".repeat(64),
+                &"c".repeat(64),
+                GitIssueLinkKind::BlockedBy,
+                "waits on the relay deploy",
+            )
+            .unwrap(),
+        );
+        assert!(has_tag(&ev, "t", "blocked-by"));
+        assert!(!has_tag(&ev, "t", "task-thread"));
+    }
+
+    /// A self-link is a cycle no reader can resolve: a task blocked on itself
+    /// never leaves the board, and a thread that is its own task has no turns.
+    #[test]
+    fn git_issue_link_refuses_to_point_at_itself() {
+        let repo = GitRepoCoord {
+            owner: "a".repeat(64),
+            id: "tasks".to_string(),
+        };
+        let issue = "b".repeat(64);
+        for kind in [GitIssueLinkKind::TaskThread, GitIssueLinkKind::BlockedBy] {
+            let err = build_git_issue_link(&repo, &issue, &issue, kind, "").unwrap_err();
+            assert!(
+                format!("{err}").contains("cannot be"),
+                "{kind:?} produced {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn git_issue_link_rejects_a_target_that_is_not_an_event_id() {
+        let repo = GitRepoCoord {
+            owner: "a".repeat(64),
+            id: "tasks".to_string(),
+        };
+        for bad in ["", "not-hex", &"c".repeat(63), &"c".repeat(65)] {
+            assert!(
+                build_git_issue_link(
+                    &repo,
+                    &"b".repeat(64),
+                    bad,
+                    GitIssueLinkKind::TaskThread,
+                    ""
+                )
+                .is_err(),
+                "{bad:?} must not build"
+            );
+        }
     }
 
     #[test]
@@ -3747,6 +4018,50 @@ mod tests {
         };
         let err = build_git_issue(&repo, "", "body", &GitIssueMeta::default()).unwrap_err();
         assert!(matches!(err, SdkError::InvalidInput(_)));
+    }
+
+    /// The case the happy path could not see: the assignee IS the signer.
+    ///
+    /// `git_issue_assignment_happy_path` assigns c and d and signs with a
+    /// random key, so no `p` tag ever matched the signer and nostr 0.44's
+    /// default scrub never fired. Every self-assignment — which is what
+    /// `pickup` is, and the one operation a seat may always perform on
+    /// itself — shipped with no `p` tag and reduced to nothing.
+    #[test]
+    fn a_self_assignment_keeps_the_p_tag_that_is_its_payload() {
+        let keys = Keys::generate();
+        let me = keys.public_key().to_hex();
+        let repo = GitRepoCoord {
+            owner: "a".repeat(64),
+            id: "tasks".to_string(),
+        };
+        let issue = "b".repeat(64);
+
+        for builder in [
+            build_git_issue_assignment(&repo, &issue, std::slice::from_ref(&me), "Picked this up")
+                .unwrap(),
+            build_git_issue_unassignment(
+                &repo,
+                &issue,
+                std::slice::from_ref(&me),
+                "Handing it back",
+            )
+            .unwrap(),
+        ] {
+            let ev = builder.sign_with_keys(&keys).expect("sign");
+            let ps: Vec<String> = ev
+                .tags
+                .iter()
+                .map(|t| t.clone().to_vec())
+                .filter(|t| t.first().map(String::as_str) == Some("p"))
+                .filter_map(|t| t.get(1).cloned())
+                .collect();
+            assert_eq!(
+                ps,
+                vec![me.clone()],
+                "the signer's own pubkey is the payload here, not a self-mention"
+            );
+        }
     }
 
     #[test]

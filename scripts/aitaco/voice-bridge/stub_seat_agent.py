@@ -50,10 +50,12 @@ for line in sys.stdin:
         text = json.dumps(message["params"]["prompt"])
         event = re.search(r"Event ID: ([0-9a-f]{64})", text)
         channel = re.search(r"Channel: [^\\\n]*?\(#?([0-9a-f-]{36})\)", text)
+        wrap_up = "huddle-transcript" in text
         with open(LOG, "a") as out:
             out.write(json.dumps({"event": event and event.group(1),
                                   "channel": channel and channel.group(1),
-                                  "voice_bridge_ask": "voice-bridge" in text}) + "\n")
+                                  "voice_bridge_ask": "voice-bridge" in text,
+                                  "wrap_up": wrap_up}) + "\n")
         if RATE_LIMIT:
             # The report rides a notification, in a different message from the
             # error — which is the whole reason buzz-acp has to collect it
@@ -78,10 +80,15 @@ for line in sys.stdin:
             }})
             continue
         if event and channel:
-            time.sleep(DELAY)
+            # The delay models a slow answer on the call. The call-end wrap-up
+            # is answered at once so the lab's fetch sees the recap.
+            if not wrap_up:
+                time.sleep(DELAY)
+            content = (f"RECAP-{NONCE}: no action items"
+                       if wrap_up else f"ANSWER-{NONCE}: the build is green")
             subprocess.run(["buzz", "--format", "compact", "messages", "send",
                             "--channel", channel.group(1), "--reply-to", event.group(1),
-                            "--content", f"ANSWER-{NONCE}: the build is green"],
+                            "--content", content],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         send({"jsonrpc": "2.0", "id": mid, "result": {"stopReason": "end_turn"}})
     elif mid is not None:

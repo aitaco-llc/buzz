@@ -3227,6 +3227,40 @@ mod tests {
             .expect("failed to spawn test script")
     }
 
+    /// Spawn a script these tests just wrote, retrying while the kernel still
+    /// sees an open writable fd to it.
+    ///
+    /// The suite runs in parallel, and a sibling test's `fork` inherits this
+    /// thread's writable fd to the file being written. `ETXTBSY` is decided at
+    /// `exec` from the inode's writer count, so our own `exec` of that file
+    /// fails until the sibling's `exec` closes the inherited fd (Rust opens
+    /// files `O_CLOEXEC`, which makes the window short but not empty).
+    /// Reproduced at `5b54d91af`: 2 failures in 30 runs of the `spawn_` tests
+    /// at `--test-threads=8`, both `Os { code: 26, kind: ExecutableFileBusy }`.
+    ///
+    /// Retry the spawn, not the test, and only on that one error — anything
+    /// else is a real failure and panics on the spot.
+    #[cfg(unix)]
+    async fn spawn_retrying_while_the_file_is_still_open_for_writing(
+        path: &str,
+        extra_env: &[(String, String)],
+        what: &str,
+    ) -> AcpClient {
+        const ATTEMPTS: u32 = 100;
+        for attempt in 1..=ATTEMPTS {
+            match AcpClient::spawn(path, &[], extra_env, false).await {
+                Ok(client) => return client,
+                Err(AcpError::Io(e))
+                    if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < ATTEMPTS =>
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                Err(e) => panic!("{what} ({path}): {e:?}"),
+            }
+        }
+        unreachable!("the loop returns or panics on the last attempt")
+    }
+
     #[cfg(unix)]
     async fn spawn_named_script(name: &str, script: &str) -> (AcpClient, std::path::PathBuf) {
         use std::os::unix::fs::PermissionsExt;
@@ -3245,9 +3279,12 @@ mod tests {
             .permissions();
         permissions.set_mode(0o755);
         std::fs::set_permissions(&path, permissions).expect("chmod fake adapter");
-        let client = AcpClient::spawn(path.to_str().expect("utf8 path"), &[], &[], false)
-            .await
-            .expect("spawn named fake adapter");
+        let client = spawn_retrying_while_the_file_is_still_open_for_writing(
+            path.to_str().expect("utf8 path"),
+            &[],
+            "spawn named fake adapter",
+        )
+        .await;
         (client, dir)
     }
 
@@ -3274,14 +3311,12 @@ mod tests {
         permissions.set_mode(0o700);
         std::fs::set_permissions(&path, permissions).expect("chmod probe");
 
-        let mut client = AcpClient::spawn(
+        let mut client = spawn_retrying_while_the_file_is_still_open_for_writing(
             path.to_str().expect("probe path is UTF-8"),
-            &[],
             extra_env,
-            false,
+            "spawn env probe script",
         )
-        .await
-        .expect("spawn env probe script");
+        .await;
         let observed = client
             .reader
             .next()
@@ -4753,7 +4788,7 @@ mod tests {
         let script = r#"
             read -r REQ
             ID=$(printf '%s' "$REQ" | sed -E 's/.*"id":([0-9]+).*/\1/')
-            echo '{"jsonrpc":"2.0","id":'"$ID"',"result":{"stopReason":"end_turn","usage":{"inputTokens":5000,"outputTokens":200,"thoughtTokens":800,"cachedReadTokens":4096,"totalTokens":6000}}}'
+            echo '{"jsonrpc":"2.0","id":'"$ID"',"result":{"stopReason":"end_turn","usage":{"inputTokens":5000,"outputTokens":200,"thoughtTokens":800,"cachedReadTokens":4096,"totalTokens":6000,"costUsd":0.0123}}}'
             sleep 1
         "#;
         let (mut client, dir) = spawn_named_script("rebrand-acp", script).await;
@@ -4776,9 +4811,21 @@ mod tests {
         assert_eq!(usage.turn_output_tokens, Some(1_000));
         assert_eq!(usage.turn_total_tokens, Some(6_000));
         assert_eq!(usage.turn_cache_read_tokens, Some(4_096));
+        // `rebrand-acp` DOES send `usage.costUsd`, and has since rebrand
+        // `fcd9f15` (2026-09-21) — `crates/of-acp/src/outcome.rs` `usage()`.
+        // `PromptResponseUsage` has no field for it, so serde drops it and
+        // every rebrand seat's NIP-AM metric and NIP-AR receipt carries no
+        // cost. That is deliberate for now, not an oversight: the number is
+        // computed inside `of-acp` by `of::pricing::calculate_cost` against a
+        // hardcoded per-million table (`of/src/pricing.rs`), so it is
+        // manifest-estimated, and NIP-AM §Numeric validity forbids merging a
+        // manifest-estimated cost with a wire-reported one in an unlabeled
+        // field — which `TokenCounts::cost_usd` is. Ingesting it needs a
+        // provenance field first. The fixture carries `costUsd` so this stays
+        // a decision on the record rather than a field nobody noticed.
         assert_eq!(
             usage.turn_cost_usd, None,
-            "rebrand-acp reports no cost; a reader prices the tokens itself"
+            "rebrand-acp's own price estimate is dropped until cost carries provenance"
         );
         let _ = std::fs::remove_dir_all(dir);
     }

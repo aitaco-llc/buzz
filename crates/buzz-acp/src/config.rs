@@ -380,13 +380,57 @@ pub struct CliArgs {
     #[arg(long, env = "BUZZ_ACP_NO_IGNORE_SELF")]
     pub no_ignore_self: bool,
 
-    /// Wake on a self-authored event only when it carries this tag, written
-    /// `name=value` (e.g. `voice-bridge=ask`). This lets a companion process
-    /// that signs with this agent's key, such as a voice bridge, hand the
-    /// agent work. Every other self-authored event is still dropped. Off by
-    /// default.
+    /// Wake on a self-authored event only when it carries one of these tags,
+    /// written `name=value` and comma-separated (e.g.
+    /// `voice-bridge=ask,job=done`). This lets a companion process that signs
+    /// with this agent's key — a voice bridge, or `buzz-wake` reporting that a
+    /// bench or CI run the agent started has finished — hand the agent work.
+    /// Every other self-authored event is still dropped. Off by default.
     #[arg(long, env = "BUZZ_ACP_SELF_WAKE_TAG", value_parser = parse_self_wake_tag)]
     pub self_wake_tag: Option<SelfWakeTag>,
+
+    /// Pubkeys whose messages are read for tasks before the turn is queued.
+    ///
+    /// Absent by default: with no authors listed, nothing is extracted and no
+    /// model call is made. Comma-separated 64-hex.
+    ///
+    /// Extraction runs at trigger receipt, **after the author gate and before
+    /// the subscription rules**, because the corpus says zero of the owner's
+    /// eleven readable utterances carry a `p` tag — he addresses people in
+    /// prose and posts top level. A seat that is not woken by a message still
+    /// has to capture the work in it.
+    ///
+    /// `hide_env_values` is not because these are secret — a pubkey is public,
+    /// and the seat's own allowlist prints. It is because
+    /// `secret_env_args_hide_their_values_in_help` matches `AUTH` inside
+    /// `AUTHORS`, and a blunt guard that occasionally over-hides is the right
+    /// trade against one that has to be argued with per-arg.
+    #[arg(long, env = "BUZZ_ACP_TASK_EXTRACT_AUTHORS", value_delimiter = ',',
+          value_parser = parse_hex64, hide_env_values = true)]
+    pub task_extract_authors: Vec<String>,
+
+    /// OpenAI-compatible endpoint for the task extractor.
+    #[arg(long, env = "BUZZ_ACP_TASK_EXTRACT_ENDPOINT")]
+    pub task_extract_endpoint: Option<String>,
+
+    /// Served model id for the task extractor.
+    #[arg(
+        long,
+        env = "BUZZ_ACP_TASK_EXTRACT_MODEL",
+        default_value = "gemini-3.8-flash"
+    )]
+    pub task_extract_model: String,
+
+    /// Publish the extraction instead of only recording it.
+    ///
+    /// Off by default, and that is the rollout rather than an afterthought.
+    /// The extractor makes judgements — which asks are work, which are already
+    /// on the board — and the cheapest way to find out whether it makes them
+    /// well on real traffic is to let it decide in the open for a while
+    /// without writing anything anyone has to close. Turn it on once the
+    /// recorded decisions read right.
+    #[arg(long, env = "BUZZ_ACP_TASK_EXTRACT_PUBLISH")]
+    pub task_extract_publish: bool,
 
     /// Announce provider usage-limit warnings to this channel.
     ///
@@ -590,6 +634,15 @@ pub struct Config {
     pub ignore_self: bool,
     /// The one tag that lets a self-authored event through `ignore_self`.
     pub self_wake_tag: Option<SelfWakeTag>,
+    /// Pubkeys whose messages are read for tasks. Empty = extraction off.
+    pub task_extract_authors: HashSet<String>,
+    /// OpenAI-compatible endpoint for the extractor. `None` = extraction off
+    /// even when authors are listed: an extractor with nowhere to ask is a
+    /// per-message warning, not a feature.
+    pub task_extract_endpoint: Option<String>,
+    pub task_extract_model: String,
+    /// Publish the extraction, rather than only recording the decision.
+    pub task_extract_publish: bool,
     pub kinds_override: Option<Vec<u32>>,
     pub channels_override: Option<Vec<String>>,
     pub no_mention_filter: bool,
@@ -759,31 +812,56 @@ fn compose_session_title_with_limit(
 /// (for example, ones a voice bridge sharing its key signs) may wake it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelfWakeTag {
-    pub name: String,
-    pub value: String,
+    /// Each accepted `(name, value)` pair, in configuration order, deduplicated.
+    pub pairs: Vec<(String, String)>,
 }
 
 impl SelfWakeTag {
-    /// True when `event` has a tag whose first two elements are exactly
-    /// `[name, value]`.
+    /// True when `event` has a tag whose first two elements are exactly one of
+    /// the configured `[name, value]` pairs.
     pub fn matches(&self, event: &nostr::Event) -> bool {
-        event.tags.iter().any(|tag| {
-            let parts = tag.as_slice();
-            parts.first().map(String::as_str) == Some(self.name.as_str())
-                && parts.get(1).map(String::as_str) == Some(self.value.as_str())
+        self.matching(event).is_some()
+    }
+
+    /// The configured pair `event` matched, for the admission log line.
+    pub fn matching(&self, event: &nostr::Event) -> Option<&(String, String)> {
+        self.pairs.iter().find(|(name, value)| {
+            event.tags.iter().any(|tag| {
+                let parts = tag.as_slice();
+                parts.first().map(String::as_str) == Some(name.as_str())
+                    && parts.get(1).map(String::as_str) == Some(value.as_str())
+            })
         })
     }
 }
 
 impl std::fmt::Display for SelfWakeTag {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}={}", self.name, self.value)
+        let joined: Vec<String> = self
+            .pairs
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect();
+        f.write_str(&joined.join(","))
     }
 }
 
-/// Parse `BUZZ_ACP_SELF_WAKE_TAG`. Single-letter names are refused: those are
-/// the relay-indexed tags (`p`, `e`, `h`, ...) that ordinary messages carry.
+/// Parse `BUZZ_ACP_SELF_WAKE_TAG`: one or more comma-separated `name=value`
+/// pairs. Single-letter names are refused: those are the relay-indexed tags
+/// (`p`, `e`, `h`, ...) that ordinary messages carry, and admitting one would
+/// wake the agent on its own ordinary posts.
 pub fn parse_self_wake_tag(raw: &str) -> Result<SelfWakeTag, String> {
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for part in raw.split(',').map(str::trim) {
+        let pair = parse_self_wake_pair(part)?;
+        if !pairs.contains(&pair) {
+            pairs.push(pair);
+        }
+    }
+    Ok(SelfWakeTag { pairs })
+}
+
+fn parse_self_wake_pair(raw: &str) -> Result<(String, String), String> {
     let (name, value) = raw
         .split_once('=')
         .ok_or_else(|| format!("self-wake tag must be name=value, got {raw:?}"))?;
@@ -803,10 +881,23 @@ pub fn parse_self_wake_tag(raw: &str) -> Result<SelfWakeTag, String> {
             "self-wake tag name must be at least two characters (single letters are relay-indexed tags), got {name:?}"
         ));
     }
-    Ok(SelfWakeTag {
-        name: name.to_owned(),
-        value: value.to_owned(),
-    })
+    Ok((name.to_owned(), value.to_owned()))
+}
+
+/// Parse one 64-hex pubkey from a CLI value, lowercased.
+///
+/// A malformed author here would silently extract nothing rather than fail
+/// loudly, and "the extractor is quiet" is indistinguishable from "nobody
+/// asked for anything" — so it is refused at startup instead.
+pub fn parse_hex64(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim().to_ascii_lowercase();
+    if trimmed.len() != 64 || !trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!(
+            "expected exactly 64 hex characters, got {raw:?} ({} chars)",
+            trimmed.chars().count()
+        ));
+    }
+    Ok(trimmed)
 }
 
 /// Validate and deduplicate allowlist entries: each must be exactly 64 hex chars.
@@ -1363,6 +1454,13 @@ impl Config {
             multiple_event_handling: args.multiple_event_handling,
             ignore_self: !args.no_ignore_self,
             self_wake_tag: args.self_wake_tag,
+            task_extract_authors: args.task_extract_authors.iter().cloned().collect(),
+            task_extract_endpoint: args
+                .task_extract_endpoint
+                .clone()
+                .filter(|e| !e.trim().is_empty()),
+            task_extract_model: args.task_extract_model.clone(),
+            task_extract_publish: args.task_extract_publish,
             kinds_override: args.kinds,
             channels_override: args.channels,
             no_mention_filter: args.no_mention_filter,
@@ -1732,9 +1830,18 @@ mod tests {
     #[test]
     fn test_parse_self_wake_tag() {
         let tag = parse_self_wake_tag("voice-bridge=ask").expect("valid");
-        assert_eq!(tag.name, "voice-bridge");
-        assert_eq!(tag.value, "ask");
+        assert_eq!(
+            tag.pairs,
+            vec![("voice-bridge".to_owned(), "ask".to_owned())]
+        );
         assert_eq!(tag.to_string(), "voice-bridge=ask");
+        let many =
+            parse_self_wake_tag("voice-bridge=ask, job=done,voice-bridge=ask").expect("valid");
+        assert_eq!(
+            many.to_string(),
+            "voice-bridge=ask,job=done",
+            "trimmed and deduplicated"
+        );
         for bad in [
             "voice-bridge",
             "=ask",
@@ -1742,6 +1849,9 @@ mod tests {
             "p=ask",
             "voice bridge=ask",
             "a=b=c",
+            "voice-bridge=ask,",
+            "voice-bridge=ask,p=x",
+            "",
         ] {
             assert!(parse_self_wake_tag(bad).is_err(), "{bad:?} must be refused");
         }
@@ -1762,12 +1872,46 @@ mod tests {
         assert!(!tag.matches(&event(&["voice-bridge", "asked"])));
         assert!(!tag.matches(&event(&["voice-bridge", "transcript"])));
         assert!(!tag.matches(&event(&["t", "voice-bridge", "ask"])));
+
+        let many = parse_self_wake_tag("voice-bridge=ask,job=done").expect("valid");
+        assert!(many.matches(&event(&["voice-bridge", "ask"])));
+        assert!(many.matches(&event(&["job", "done"])));
+        assert_eq!(
+            many.matching(&event(&["job", "done"])),
+            Some(&("job".to_owned(), "done".to_owned()))
+        );
+        assert!(!many.matches(&event(&["job", "started"])));
+        assert!(!many.matches(&event(&["voice-bridge", "transcript"])));
+    }
+
+    #[test]
+    fn a_malformed_extract_author_is_refused_at_startup() {
+        // A bad pubkey here would extract nothing and say nothing, and "the
+        // extractor is quiet" is indistinguishable from "nobody asked for
+        // anything". Fail at startup instead.
+        assert!(parse_hex64(&"a".repeat(64)).is_ok());
+        assert_eq!(
+            parse_hex64(&"A".repeat(64)).unwrap(),
+            "a".repeat(64),
+            "lowercased"
+        );
+        assert!(parse_hex64(&"a".repeat(63)).is_err());
+        assert!(parse_hex64(&"a".repeat(65)).is_err());
+        assert!(parse_hex64(&"z".repeat(64)).is_err());
+        assert!(parse_hex64("npub1abc").is_err());
+        // A trimmed value is still valid: comma-separated env values arrive
+        // with spaces around them.
+        assert!(parse_hex64(&format!("  {}  ", "b".repeat(64))).is_ok());
     }
 
     /// Build a minimal Config for testing without CLI parsing.
     fn test_config(mode: SubscribeMode) -> Config {
         Config {
             limit_warning_channel: None,
+            task_extract_authors: Default::default(),
+            task_extract_endpoint: None,
+            task_extract_model: "gemini-3.8-flash".to_string(),
+            task_extract_publish: false,
             keys: nostr::Keys::generate(),
             relay_url: "ws://localhost:3000".into(),
             agent_command: "goose".into(),

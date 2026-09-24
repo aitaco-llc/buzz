@@ -239,6 +239,10 @@ async function fetchProjectIssues(
     issueEvents,
     statusEvents,
     mergeEventsById(commentEvents, assignmentEvents),
+    // The repository's own `maintainers`, parsed off its kind:30617 by
+    // `eventToRepository`. These are the pubkeys its owner vouched for, and
+    // NIP-34 trusts them for status and assignment as it trusts the owner.
+    project.maintainers ?? [],
   );
 }
 
@@ -279,6 +283,7 @@ async function fetchProjectPullRequests(
     updateEvents,
     commentEvents,
     statusEvents,
+    project.maintainers ?? [],
   );
 }
 

@@ -226,6 +226,33 @@ test("honors status events from the PR author and repo owner", () => {
   assert.equal(closedPullRequest.status, "Closed");
 });
 
+test("honors status events from a maintainer the repository vouched for", () => {
+  const MAINTAINER = "d".repeat(64);
+  const merged = statusEvent({
+    kind: 1631,
+    pubkey: MAINTAINER,
+    createdAt: 300,
+  });
+
+  assert.equal(
+    eventToProjectPullRequest(
+      pullRequestEvent(),
+      [],
+      [],
+      [merged],
+      [MAINTAINER],
+    ).status,
+    "Merged",
+  );
+
+  // The control: the same event, from a repository that vouched for nobody.
+  assert.equal(
+    eventToProjectPullRequest(pullRequestEvent(), [], [], [merged]).status,
+    "Open",
+    "an unvouched signer must not be able to merge someone's PR in the UI",
+  );
+});
+
 function commentEvent({
   id,
   pubkey,

@@ -1,0 +1,21 @@
+[Unit]
+Description=Run fleet-watchdog every 10 minutes
+
+[Timer]
+# OnCalendar rather than OnBootSec+OnUnitActiveSec. The pair looks tidier and
+# schedules nothing when the timer is enabled after OnBootSec has already
+# elapsed — `systemctl list-timers` then prints NEXT as "-" and the watchdog
+# silently never runs, which is the exact failure it exists to catch.
+OnCalendar=*:0/10
+
+# The tick does not need to be on the minute, and letting systemd batch it
+# keeps it out of the way of whatever the seats are doing.
+AccuracySec=30s
+RandomizedDelaySec=60s
+
+# A laptop that was asleep should check once on waking rather than replay every
+# tick it missed.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

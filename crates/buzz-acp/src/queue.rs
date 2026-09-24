@@ -1280,7 +1280,7 @@ impl Default for EventQueue {
 }
 
 /// Parsed thread relationship from NIP-10 `e` tags.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ThreadTags {
     /// Root event ID (hex). Present for all thread replies.
     pub root_event_id: Option<String>,
@@ -5838,6 +5838,87 @@ mod tests {
             !prompt.contains(&format!("--reply-to {parent_id}")),
             "instruction should NOT anchor to the parent event id"
         );
+    }
+
+    /// An agent-to-agent turn is given no `IMPORTANT:` anchor line — by
+    /// design, so agent subthreads can nest — which leaves the base prompt as
+    /// the only thing telling that seat to thread at all. It sends the agent
+    /// to `Thread root:` in `<context>`, or to the `Event ID:` of the
+    /// `<buzz-event>`. Bind both markers to the strings this module actually
+    /// prints, so a rename on either side fails here rather than in a seat
+    /// that has quietly stopped threading.
+    #[test]
+    fn agent_to_agent_turn_carries_the_markers_the_base_prompt_sends_it_to() {
+        let base = include_str!("base_prompt.md");
+        let ch = Uuid::new_v4();
+        let root_id = "c".repeat(64);
+        let event = make_event_with_tags(
+            "@agent-b status?",
+            vec![
+                vec!["e".into(), root_id.clone(), "".into(), "root".into()],
+                vec!["e".into(), root_id.clone(), "".into(), "reply".into()],
+                vec!["p".into(), AGENT_B_PK.into()],
+            ],
+        );
+        let event_id = event.id.to_hex();
+        let sender = event.pubkey.to_hex();
+        let lookup: PromptProfileLookup = HashMap::from([
+            (sender, profile(true)),
+            (AGENT_B_PK.to_string(), profile(true)),
+        ]);
+        let batch = FlushBatch {
+            channel_id: ch,
+            scope: conv(ch),
+            events: vec![BatchEvent {
+                event,
+                prompt_tag: "@mention".into(),
+                received_at: Instant::now(),
+            }],
+            cancelled_events: vec![],
+            cancel_reason: None,
+        };
+
+        let prompt = format_prompt(
+            &batch,
+            &FormatPromptArgs {
+                profile_lookup: Some(&lookup),
+                ..Default::default()
+            },
+        )
+        .join("\n\n");
+
+        assert!(
+            !prompt.contains("--reply-to"),
+            "agent-to-agent turn should carry no anchor line: {prompt}"
+        );
+        assert!(
+            prompt.contains(&format!("Thread root: {root_id}")),
+            "fallback 2 must be present: {prompt}"
+        );
+        assert!(
+            prompt.contains(&format!("Event ID: {event_id}")),
+            "fallback 3 must be present: {prompt}"
+        );
+
+        // The human-facing line the base prompt calls fallback 1.
+        let mut human = String::new();
+        append_reply_instruction(&mut human, &root_id);
+        assert!(human.contains("IMPORTANT:"), "{human}");
+        let mut new_thread = String::new();
+        append_new_thread_reply_instruction(&mut new_thread, &event_id);
+        assert!(new_thread.contains("IMPORTANT:"), "{new_thread}");
+
+        for marker in [
+            "--reply-to <event-id>",
+            "the `IMPORTANT:` line of `<context>`",
+            "`Thread root:` in `<context>`",
+            "the `Event ID:` of the `<buzz-event>`",
+        ] {
+            assert!(
+                base.contains(marker),
+                "base prompt must name the marker it sends the agent to: {marker}"
+            );
+        }
     }
 
     #[test]

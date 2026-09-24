@@ -261,6 +261,9 @@ enum Cmd {
     /// Create, get, list, and set status on git issues (NIP-34)
     #[command(subcommand)]
     Issues(IssuesCmd),
+    /// The task board — NIP-34 issues labelled `t=task`, state derived
+    #[command(subcommand)]
+    Tasks(TasksCmd),
     /// Open, update, list, and set status on git pull requests (NIP-34)
     #[command(subcommand)]
     Pr(PrCmd),
@@ -282,6 +285,10 @@ enum Cmd {
     /// Relay administration — NIP-43 relay membership
     #[command(subcommand)]
     Relay(RelayCmd),
+    /// Wake yourself when background work finishes: run a command to
+    /// completion (after `--`), then post a self-signed `job=done` message
+    /// addressed to you. Needs `BUZZ_ACP_SELF_WAKE_TAG` to include the tag.
+    Wake(commands::wake::WakeArgs),
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -1235,6 +1242,12 @@ pub enum ReposCmd {
         /// Preferred Nostr relay(s) for repo discovery — can be specified multiple times
         #[arg(long = "nostr-relay")]
         relays: Vec<String>,
+        /// Pubkey (64-char hex) the owner vouches for — can be specified
+        /// multiple times. A NIP-34 reader trusts a maintainer's status and
+        /// assignment events on this repository's issues as it trusts the
+        /// owner's, so this is who may close or reassign someone else's task.
+        #[arg(long = "maintainer")]
+        maintainers: Vec<String>,
         /// Channel UUID to bind the repo to. The `buzz-channel` tag is the
         /// git ACL: without it the relay 404s every clone/fetch/push until
         /// the author runs `buzz repos bind` (issue #3527).
@@ -1871,6 +1884,72 @@ pub enum IssuesCmd {
         #[arg(long)]
         label: Option<String>,
     },
+    /// Link an issue to a working thread, or to the issue blocking it.
+    ///
+    /// A labeled kind:1 note in the same shape as an assignment, so it is read
+    /// under the same trust rule — the issue's author, the repository's owner,
+    /// or one of that repository's declared maintainers. It carries no channel
+    /// tag, so it never lands in a channel timeline.
+    Link {
+        /// Issue event id (64-char hex)
+        #[arg(long)]
+        issue: String,
+        /// Repo owner pubkey (64-char hex)
+        #[arg(long)]
+        repo_owner: String,
+        /// Repo identifier (d-tag)
+        #[arg(long)]
+        repo_id: String,
+        /// What this link says: `thread` marks a thread whose turns belong to
+        /// the issue; `blocked-by` names the issue this one waits on.
+        #[arg(long, value_name = "KIND")]
+        kind: IssueLinkKindArg,
+        /// The thread root, or the blocking issue's event id (64-char hex).
+        #[arg(long)]
+        target: String,
+        /// Markdown note body ('-' to read from stdin). Defaults to a line
+        /// naming the link.
+        #[arg(long)]
+        content: Option<String>,
+    },
+}
+
+/// What a `buzz issues link` note says about its target.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+pub enum IssueLinkKindArg {
+    /// The turns in this thread belong to the issue.
+    Thread,
+    /// The issue waits on the target issue.
+    BlockedBy,
+}
+
+/// The task board: NIP-34 issues labelled `t=task`, with their state derived
+/// from public events only (`buzz_core::task_board`).
+#[derive(Subcommand)]
+pub enum TasksCmd {
+    /// Show the task board for a repository.
+    ///
+    /// State is derived, never stored: `Unassigned` and `Blocked` outrank the
+    /// rest, then `In Progress` (activity within 24 h) and `Up Next`. `Done`
+    /// is hidden unless asked for.
+    Board {
+        /// Repo owner pubkey (64-char hex)
+        #[arg(long)]
+        repo_owner: String,
+        /// Repo identifier (d-tag)
+        #[arg(long)]
+        repo_id: String,
+        /// Include closed tasks.
+        #[arg(long)]
+        show_done: bool,
+        /// Only tasks assigned to this pubkey (64-char hex).
+        #[arg(long)]
+        assignee: Option<String>,
+        /// Emit the rows as JSON. What the fleet watchdog reads, so it applies
+        /// the nudge rules without a second copy of the derivation.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2248,12 +2327,14 @@ async fn run(cli: Cli) -> Result<(), CliError> {
         Cmd::Projects(sub) => commands::projects::dispatch(sub, &client).await,
         Cmd::Patches(sub) => commands::patches::dispatch(sub, &client).await,
         Cmd::Issues(sub) => commands::issues::dispatch(sub, &client).await,
+        Cmd::Tasks(sub) => commands::tasks::dispatch(sub, &client).await,
         Cmd::Pr(sub) => commands::pr::dispatch(sub, &client).await,
         Cmd::Media(sub) => commands::upload::dispatch_media(sub, &client).await,
         Cmd::Upload(sub) => commands::upload::dispatch(sub, &client).await,
         Cmd::Mem(sub) => commands::mem::dispatch(sub, &client).await,
         Cmd::Moderation(sub) => commands::moderation::dispatch(sub, &client, &cli.format).await,
         Cmd::Relay(sub) => commands::relay::dispatch(sub, &client).await,
+        Cmd::Wake(args) => commands::wake::cmd_wake(&client, args).await,
         Cmd::Pack(_) => unreachable!("handled above"),
     }
 }
@@ -2424,6 +2505,39 @@ mod tests {
     }
 
     #[test]
+    fn wake_takes_its_command_after_a_double_dash() {
+        let channel = "daa0371a-17fc-41a8-bb70-272b7c7e8be0";
+        let cli = Cli::try_parse_from([
+            "buzz",
+            "wake",
+            "--channel",
+            channel,
+            "--",
+            "gh",
+            "pr",
+            "checks",
+            "78",
+            "--watch",
+        ])
+        .expect("parse");
+        match cli.command {
+            Cmd::Wake(args) => {
+                assert_eq!(args.channel, channel);
+                assert_eq!(args.tag, "job=done", "the default wake tag");
+                assert_eq!(args.command, ["gh", "pr", "checks", "78", "--watch"]);
+            }
+            _ => panic!("expected wake"),
+        }
+        let bare = Cli::try_parse_from(["buzz", "wake", "--channel", channel, "--content", "done"])
+            .expect("a wake with no command is a plain note");
+        assert!(matches!(bare.command, Cmd::Wake(ref a) if a.command.is_empty()));
+        assert!(
+            Cli::try_parse_from(["buzz", "wake"]).is_err(),
+            "--channel is required"
+        );
+    }
+
+    #[test]
     fn command_inventory_is_stable() {
         let expected_groups: Vec<&str> = vec![
             "agents",
@@ -2447,8 +2561,10 @@ mod tests {
             "relay",
             "repos",
             "social",
+            "tasks",
             "upload",
             "users",
+            "wake",
             "workflows",
         ];
 
@@ -2615,7 +2731,7 @@ mod tests {
         );
         assert_eq!(
             names(&cmd, "issues"),
-            vec!["assign", "create", "get", "list", "status", "unassign"]
+            vec!["assign", "create", "get", "link", "list", "status", "unassign"]
         );
         assert_eq!(names(&cmd, "media"), vec!["get"]);
         assert_eq!(names(&cmd, "upload"), vec!["file"]);
@@ -2656,7 +2772,7 @@ mod tests {
             ("dms", 4),
             ("emoji", 5),
             ("feed", 1),
-            ("issues", 6),
+            ("issues", 7),
             ("media", 1),
             ("messages", 8),
             ("pack", 2),
@@ -2667,6 +2783,7 @@ mod tests {
             ("relay", 1),
             ("repos", 6),
             ("social", 7),
+            ("tasks", 1),
             ("upload", 1),
             ("users", 5),
             ("workflows", 8),
