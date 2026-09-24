@@ -297,7 +297,10 @@ pub struct Extraction {
 impl Extraction {
     /// An extraction that never got an answer.
     pub fn failed(reason: impl Into<String>) -> Self {
-        Self { error: Some(reason.into()), ..Default::default() }
+        Self {
+            error: Some(reason.into()),
+            ..Default::default()
+        }
     }
 
     /// Normalised subjects of the `create` tasks, deduplicated.
@@ -377,14 +380,21 @@ impl TaskExtractor {
         let mut best: Option<Extraction> = None;
 
         for attempt in 1..=attempts {
-            let try_cfg = TaskExtractConfig { max_tokens: budget, ..cfg.clone() };
+            let try_cfg = TaskExtractConfig {
+                max_tokens: budget,
+                ..cfg.clone()
+            };
             // A retry must take a DIFFERENT path through the model or it is not
             // a retry at all. Gemini's `RECITATION` content filter is a
             // property of the sampled continuation, so identical greedy calls
             // are blocked identically — measured on `46c1401d`, which lost all
             // three attempts at temperature 0 and answered on the first
             // non-greedy one.
-            let temperature = if attempt == 1 { cfg.temperature } else { cfg.temperature.max(0.4) };
+            let temperature = if attempt == 1 {
+                cfg.temperature
+            } else {
+                cfg.temperature.max(0.4)
+            };
             match self.ask(&try_cfg, input, temperature).await {
                 Ok((raw_reply, finish_reason, items)) => {
                     let mut extraction = validate(items, input, &self.known_pubkeys);
@@ -422,7 +432,10 @@ impl TaskExtractor {
                         );
                     }
                     for i in &extraction.thin {
-                        warn!(index = i, "task extraction produced a create with no doneWhen");
+                        warn!(
+                            index = i,
+                            "task extraction produced a create with no doneWhen"
+                        );
                     }
                     if cfg.board_match && !input.board.is_empty() {
                         self.match_against_board(cfg, input, &mut extraction).await;
@@ -485,9 +498,7 @@ impl TaskExtractor {
             .iter()
             .enumerate()
             .filter_map(|(i, t)| match t {
-                TaskAction::Create { ask, subject, .. } => {
-                    Some((i, ask.clone(), subject.clone()))
-                }
+                TaskAction::Create { ask, subject, .. } => Some((i, ask.clone(), subject.clone())),
                 _ => None,
             })
             .collect();
@@ -524,9 +535,10 @@ impl TaskExtractor {
         }
 
         for (index, id) in conversions.into_iter().rev() {
-            let already = extraction.tasks.iter().any(|t| {
-                matches!(t, TaskAction::Attach { attach_to, .. } if attach_to == &id)
-            });
+            let already = extraction
+                .tasks
+                .iter()
+                .any(|t| matches!(t, TaskAction::Attach { attach_to, .. } if attach_to == &id));
             let ask = extraction.tasks[index].ask().to_string();
             if already {
                 // A second link to the same board item is one link.
@@ -553,8 +565,12 @@ impl TaskExtractor {
         for t in input.board.iter().take(MAX_BOARD_ENTRIES) {
             list.push_str(&format!("  {} — {}\n", t.id, t.subject));
         }
-        let ids: Vec<&str> =
-            input.board.iter().map(|t| t.id.as_str()).take(MAX_BOARD_ENTRIES).collect();
+        let ids: Vec<&str> = input
+            .board
+            .iter()
+            .map(|t| t.id.as_str())
+            .take(MAX_BOARD_ENTRIES)
+            .collect();
         let body = serde_json::json!({
             "model": cfg.model,
             "temperature": 0,
@@ -595,7 +611,9 @@ impl TaskExtractor {
         }
         let trimmed = reply.trim();
         let parsed: Match = serde_json::from_str(trimmed).or_else(|_| {
-            let start = trimmed.find('{').ok_or("no JSON object in board-match reply")?;
+            let start = trimmed
+                .find('{')
+                .ok_or("no JSON object in board-match reply")?;
             let end = trimmed
                 .rfind('}')
                 .filter(|e| *e > start)
@@ -631,15 +649,18 @@ impl TaskExtractor {
             );
         }
 
-        let (reply, finish) = self
-            .post(cfg, body)
-            .await
-            .map_err(|e| ParseFailure { error: e, reply: String::new() })?;
+        let (reply, finish) = self.post(cfg, body).await.map_err(|e| ParseFailure {
+            error: e,
+            reply: String::new(),
+        })?;
         // A parse failure is exactly when the raw text is worth having, so it
         // rides out with the error rather than being lost to `?`. Without this
         // a schema/struct field-name mismatch reports `rawReply: null`, which
         // is the one row where the bytes would have named the bug instantly.
-        let items = parse_items(&reply).map_err(|e| ParseFailure { error: e, reply: reply.clone() })?;
+        let items = parse_items(&reply).map_err(|e| ParseFailure {
+            error: e,
+            reply: reply.clone(),
+        })?;
         Ok((reply, finish, items))
     }
 
@@ -823,7 +844,11 @@ pub fn output_schema(board: &[BoardTask]) -> serde_json::Value {
     // choice the decoder can already see, where creating still costs a fresh
     // `subject` and `doneWhen`. It also makes a hallucinated id unreachable
     // rather than merely rejected after the fact.
-    let board_ids: Vec<&str> = board.iter().map(|t| t.id.as_str()).take(MAX_BOARD_ENTRIES).collect();
+    let board_ids: Vec<&str> = board
+        .iter()
+        .map(|t| t.id.as_str())
+        .take(MAX_BOARD_ENTRIES)
+        .collect();
     let attach = serde_json::json!({
         "type": "object",
         "additionalProperties": false,
@@ -953,13 +978,16 @@ pub fn parse_items(reply: &str) -> Result<Vec<RawItem>, String> {
             trimmed.chars().take(200).collect::<String>()
         )
     })?;
-    let end = trimmed.rfind('}').filter(|end| *end > start).ok_or_else(|| {
-        let tail: String = trimmed.chars().rev().take(80).collect();
-        format!(
-            "JSON object never closes — the reply looks truncated: …{}",
-            tail.chars().rev().collect::<String>()
-        )
-    })?;
+    let end = trimmed
+        .rfind('}')
+        .filter(|end| *end > start)
+        .ok_or_else(|| {
+            let tail: String = trimmed.chars().rev().take(80).collect();
+            format!(
+                "JSON object never closes — the reply looks truncated: …{}",
+                tail.chars().rev().collect::<String>()
+            )
+        })?;
     serde_json::from_str::<RawExtraction>(&trimmed[start..=end])
         .map(|p| p.items)
         .map_err(|e| e.to_string())
@@ -992,8 +1020,10 @@ pub fn validate(
             "create" => {
                 let subject = item.subject.unwrap_or_default().trim().to_string();
                 if subject.is_empty() {
-                    out.dropped
-                        .push(Dropped { index, reason: "create with empty subject".into() });
+                    out.dropped.push(Dropped {
+                        index,
+                        reason: "create with empty subject".into(),
+                    });
                     continue;
                 }
                 if subject.chars().count() > MAX_SUBJECT_CHARS {
@@ -1034,7 +1064,10 @@ pub fn validate(
                     Some(i) if i >= 0 => {
                         // Out of range or self-referential: keep the task, lose
                         // the link. The ordering is worth less than the work.
-                        warn!(blocked_by = i, index, "blockedBy is not a usable index — dropping the link only");
+                        warn!(
+                            blocked_by = i,
+                            index, "blockedBy is not a usable index — dropping the link only"
+                        );
                     }
                     _ => {}
                 }
@@ -1051,8 +1084,10 @@ pub fn validate(
             "attach" => {
                 let attach_to = item.attach_to.unwrap_or_default().trim().to_string();
                 if attach_to.is_empty() {
-                    out.dropped
-                        .push(Dropped { index, reason: "attach with no attachTo".into() });
+                    out.dropped.push(Dropped {
+                        index,
+                        reason: "attach with no attachTo".into(),
+                    });
                     continue;
                 }
                 // The constraint that makes a hallucinated id fail validation
@@ -1088,7 +1123,10 @@ pub fn validate(
             }
             other => out.dropped.push(Dropped {
                 index,
-                reason: format!("unknown disposition `{}`", other.chars().take(40).collect::<String>()),
+                reason: format!(
+                    "unknown disposition `{}`",
+                    other.chars().take(40).collect::<String>()
+                ),
             }),
         }
     }
@@ -1128,7 +1166,10 @@ pub fn render_input(input: &ExtractInput) -> String {
         s.push_str("OPEN TASKS (the only legal `attachTo` values):\n");
         for t in input.board.iter().take(MAX_BOARD_ENTRIES) {
             let who = t.assignee.as_deref().unwrap_or("unassigned");
-            s.push_str(&format!("  {} [{}] {} — {}\n", t.id, t.state, t.subject, who));
+            s.push_str(&format!(
+                "  {} [{}] {} — {}\n",
+                t.id, t.state, t.subject, who
+            ));
         }
         s.push('\n');
     }
@@ -1335,8 +1376,9 @@ mod tests {
         // This is the fault that cost the first two corpus replays. A reply cut
         // off at the token budget is a half-written object, and calling it
         // "malformed" sends the reader after a model bug instead of a budget.
-        let err = parse_items(r#"{"items":[{"ask":"a","disposition":"create","subject":"half a su"#)
-            .unwrap_err();
+        let err =
+            parse_items(r#"{"items":[{"ask":"a","disposition":"create","subject":"half a su"#)
+                .unwrap_err();
         assert!(err.contains("truncated"), "{err}");
         assert!(err.contains("half a su"), "the tail is the evidence: {err}");
     }
@@ -1353,7 +1395,10 @@ mod tests {
                 "steps":[{"subject":"b"},{"subject":"c"}]}]}"#,
         )
         .unwrap_err();
-        assert!(err.contains("steps"), "the unknown key must be named: {err}");
+        assert!(
+            err.contains("steps"),
+            "the unknown key must be named: {err}"
+        );
     }
 
     #[test]
@@ -1399,7 +1444,11 @@ mod tests {
         );
         assert_eq!(e.verdict(), Verdict::Create { count: 2 });
         assert_eq!(e.duplicate_subjects(), 1);
-        assert_eq!(e.tasks.len(), 3, "the duplicate is still published, just not counted twice");
+        assert_eq!(
+            e.tasks.len(),
+            3,
+            "the duplicate is still published, just not counted twice"
+        );
     }
 
     #[test]
@@ -1430,10 +1479,16 @@ mod tests {
 
     #[test]
     fn an_attach_to_an_id_not_on_the_board_is_dropped() {
-        let e = check(r#"{"items":[{"ask":"a","disposition":"attach","attachTo":"0000000000000000"}]}"#);
+        let e = check(
+            r#"{"items":[{"ask":"a","disposition":"attach","attachTo":"0000000000000000"}]}"#,
+        );
         assert!(e.tasks.is_empty());
         assert_eq!(e.dropped.len(), 1);
-        assert!(e.dropped[0].reason.contains("not on the supplied board"), "{:?}", e.dropped);
+        assert!(
+            e.dropped[0].reason.contains("not on the supplied board"),
+            "{:?}",
+            e.dropped
+        );
         assert_eq!(e.verdict(), Verdict::None { count: 0 });
     }
 
@@ -1449,7 +1504,10 @@ mod tests {
             id = "a".repeat(64)
         ));
         assert_eq!(e.verdict(), Verdict::Attach { count: 1 });
-        assert!(e.dropped.is_empty(), "a collapse is not a validation failure");
+        assert!(
+            e.dropped.is_empty(),
+            "a collapse is not a validation failure"
+        );
     }
 
     #[test]
@@ -1482,7 +1540,13 @@ mod tests {
         );
         assert_eq!(e.tasks.len(), 2);
         assert_eq!(e.dropped.len(), 1);
-        assert!(matches!(&e.tasks[1], TaskAction::Create { blocked_by: Some(0), .. }));
+        assert!(matches!(
+            &e.tasks[1],
+            TaskAction::Create {
+                blocked_by: Some(0),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1493,7 +1557,16 @@ mod tests {
                 r#"{{"items":[{{"ask":"a","disposition":"create","subject":"only","doneWhen":"x",{bad}}}]}}"#
             ));
             assert_eq!(e.tasks.len(), 1, "{bad}");
-            assert!(matches!(&e.tasks[0], TaskAction::Create { blocked_by: None, .. }), "{bad}");
+            assert!(
+                matches!(
+                    &e.tasks[0],
+                    TaskAction::Create {
+                        blocked_by: None,
+                        ..
+                    }
+                ),
+                "{bad}"
+            );
             assert!(e.dropped.is_empty(), "{bad}");
         }
     }
@@ -1509,7 +1582,10 @@ mod tests {
             "f".repeat(64)
         ));
         assert_eq!(e.tasks.len(), 1);
-        assert!(matches!(&e.tasks[0], TaskAction::Create { assignee: None, .. }));
+        assert!(matches!(
+            &e.tasks[0],
+            TaskAction::Create { assignee: None, .. }
+        ));
         assert!(e.dropped.is_empty());
     }
 
@@ -1519,7 +1595,13 @@ mod tests {
             r#"{{"items":[{{"ask":"a","disposition":"create","subject":"s","doneWhen":"x","assignee":"{}"}}]}}"#,
             "c".repeat(64)
         ));
-        assert!(matches!(&e.tasks[0], TaskAction::Create { assignee: Some(_), .. }));
+        assert!(matches!(
+            &e.tasks[0],
+            TaskAction::Create {
+                assignee: Some(_),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1553,7 +1635,11 @@ mod tests {
     #[test]
     fn a_runaway_array_is_capped() {
         let items: Vec<String> = (0..MAX_ITEMS + 20)
-            .map(|i| format!(r#"{{"ask":"a{i}","disposition":"create","subject":"s{i}","doneWhen":"x"}}"#))
+            .map(|i| {
+                format!(
+                    r#"{{"ask":"a{i}","disposition":"create","subject":"s{i}","doneWhen":"x"}}"#
+                )
+            })
             .collect();
         let e = check(&format!(r#"{{"items":[{}]}}"#, items.join(",")));
         assert_eq!(e.tasks.len(), MAX_ITEMS);
@@ -1589,7 +1675,9 @@ mod tests {
                 assignee: None,
             })
             .collect();
-        input.thread_context = (0..MAX_CONTEXT_ENTRIES + 5).map(|i| format!("entry {i}")).collect();
+        input.thread_context = (0..MAX_CONTEXT_ENTRIES + 5)
+            .map(|i| format!("entry {i}"))
+            .collect();
         input.message.as_mut().unwrap().text = "z".repeat(MAX_CONTENT_CHARS + 500);
 
         let rendered = render_input(&input);
@@ -1613,15 +1701,23 @@ mod tests {
             serde_json::json!(["items"]),
             "one array, not two"
         );
-        let shapes = schema["properties"]["items"]["items"]["oneOf"].as_array().unwrap();
+        let shapes = schema["properties"]["items"]["items"]["oneOf"]
+            .as_array()
+            .unwrap();
         assert_eq!(shapes.len(), 3, "one shape per disposition");
         let mut seen = Vec::new();
         for shape in shapes {
             assert_eq!(shape["additionalProperties"], serde_json::json!(false));
-            let d = shape["properties"]["disposition"]["enum"][0].as_str().unwrap();
+            let d = shape["properties"]["disposition"]["enum"][0]
+                .as_str()
+                .unwrap();
             seen.push(d.to_string());
-            let required: Vec<&str> =
-                shape["required"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+            let required: Vec<&str> = shape["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect();
             assert!(required.contains(&"ask") && required.contains(&"disposition"));
             // Per-disposition requirements are the point. A flat schema that
             // asked only for `ask` and `disposition` let the model emit
@@ -1630,9 +1726,15 @@ mod tests {
             match d {
                 "create" => {
                     assert!(required.contains(&"subject"), "create must name a subject");
-                    assert!(required.contains(&"doneWhen"), "a task nobody can close is a defect");
+                    assert!(
+                        required.contains(&"doneWhen"),
+                        "a task nobody can close is a defect"
+                    );
                 }
-                "attach" => assert!(required.contains(&"attachTo"), "attach must name its target"),
+                "attach" => assert!(
+                    required.contains(&"attachTo"),
+                    "attach must name its target"
+                ),
                 "none" => assert!(!required.contains(&"subject")),
                 other => panic!("unexpected disposition {other}"),
             }
@@ -1649,10 +1751,15 @@ mod tests {
         // unwritten because the budget was gone — four creates, none of them
         // closable.
         let schema = output_schema(&board());
-        for shape in schema["properties"]["items"]["items"]["oneOf"].as_array().unwrap() {
+        for shape in schema["properties"]["items"]["items"]["oneOf"]
+            .as_array()
+            .unwrap()
+        {
             for (name, prop) in shape["properties"].as_object().unwrap() {
-                if matches!(name.as_str(), "why" | "doneWhen" | "note" | "reason" | "ask" | "subject")
-                {
+                if matches!(
+                    name.as_str(),
+                    "why" | "doneWhen" | "note" | "reason" | "ask" | "subject"
+                ) {
                     assert!(
                         prop["maxLength"].is_number(),
                         "{name} is unbounded free text"
@@ -1669,7 +1776,9 @@ mod tests {
         // where creating still costs a fresh subject and doneWhen. Three prose
         // attempts at the same effect recovered at most a quarter of `attach`.
         let schema = output_schema(&board());
-        let shapes = schema["properties"]["items"]["items"]["oneOf"].as_array().unwrap();
+        let shapes = schema["properties"]["items"]["items"]["oneOf"]
+            .as_array()
+            .unwrap();
         let attach = shapes
             .iter()
             .find(|s| s["properties"]["disposition"]["enum"][0] == "attach")
@@ -1689,10 +1798,14 @@ mod tests {
         // harness would have to drop is worse than one the model could never
         // propose.
         let schema = output_schema(&[]);
-        let shapes = schema["properties"]["items"]["items"]["oneOf"].as_array().unwrap();
+        let shapes = schema["properties"]["items"]["items"]["oneOf"]
+            .as_array()
+            .unwrap();
         assert_eq!(shapes.len(), 2);
         assert!(
-            !shapes.iter().any(|s| s["properties"]["disposition"]["enum"][0] == "attach"),
+            !shapes
+                .iter()
+                .any(|s| s["properties"]["disposition"]["enum"][0] == "attach"),
             "nothing to attach to"
         );
     }
@@ -1708,14 +1821,22 @@ mod tests {
             })
             .collect();
         let schema = output_schema(&big);
-        let shapes = schema["properties"]["items"]["items"]["oneOf"].as_array().unwrap();
+        let shapes = schema["properties"]["items"]["items"]["oneOf"]
+            .as_array()
+            .unwrap();
         let attach = shapes
             .iter()
             .find(|s| s["properties"]["disposition"]["enum"][0] == "attach")
             .unwrap();
         // The prompt only lists MAX_BOARD_ENTRIES rows; offering the decoder an
         // id the model was never shown is an attach nobody can justify.
-        assert_eq!(attach["properties"]["attachTo"]["enum"].as_array().unwrap().len(), MAX_BOARD_ENTRIES);
+        assert_eq!(
+            attach["properties"]["attachTo"]["enum"]
+                .as_array()
+                .unwrap()
+                .len(),
+            MAX_BOARD_ENTRIES
+        );
     }
 
     #[test]
@@ -1754,7 +1875,10 @@ mod tests {
     /// request body it was sent.
     async fn stub_endpoint(
         replies: Vec<String>,
-    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>) {
+    ) -> (
+        String,
+        std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    ) {
         let bodies: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>> =
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let recorded = bodies.clone();
@@ -1763,7 +1887,9 @@ mod tests {
         tokio::spawn(async move {
             let mut n = 0usize;
             loop {
-                let Ok((mut sock, _)) = listener.accept().await else { return };
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
                 use tokio::io::{AsyncReadExt, AsyncWriteExt};
                 let mut buf = Vec::new();
                 let mut chunk = [0u8; 4096];
@@ -1779,7 +1905,11 @@ mod tests {
                         }
                     }
                 }
-                let reply = replies.get(n).or_else(|| replies.last()).cloned().unwrap_or_default();
+                let reply = replies
+                    .get(n)
+                    .or_else(|| replies.last())
+                    .cloned()
+                    .unwrap_or_default();
                 n += 1;
                 let body = reply.into_bytes();
                 let head = format!(
@@ -1817,7 +1947,10 @@ mod tests {
     }
 
     fn match_cfg(endpoint: String) -> TaskExtractConfig {
-        TaskExtractConfig { board_match: true, ..cfg_for(endpoint, 1) }
+        TaskExtractConfig {
+            board_match: true,
+            ..cfg_for(endpoint, 1)
+        }
     }
 
     #[tokio::test]
@@ -1836,7 +1969,9 @@ mod tests {
             .await;
 
         assert_eq!(extraction.verdict(), Verdict::None { count: 0 });
-        let err = extraction.error.expect("a give-up must be an error, not a verdict");
+        let err = extraction
+            .error
+            .expect("a give-up must be an error, not a verdict");
         assert!(err.contains("truncated"), "{err}");
 
         let sent = bodies.lock().unwrap();
@@ -1854,7 +1989,11 @@ mod tests {
             .iter()
             .filter_map(|b| b.pointer("/max_tokens").and_then(|v| v.as_u64()))
             .collect();
-        assert_eq!(budgets, vec![100, 200, 400], "the budget doubles on a retry");
+        assert_eq!(
+            budgets,
+            vec![100, 200, 400],
+            "the budget doubles on a retry"
+        );
     }
 
     #[tokio::test]
@@ -1882,7 +2021,8 @@ mod tests {
     async fn the_raw_reply_and_finish_reason_are_kept_for_the_replay() {
         // Nobody could rule out a nesting explanation for the one-task collapse
         // because the raw text was not saved. It is now.
-        let content = r#"{"items":[{"ask":"a","disposition":"create","subject":"s","doneWhen":"x"}]}"#;
+        let content =
+            r#"{"items":[{"ask":"a","disposition":"create","subject":"s","doneWhen":"x"}]}"#;
         let (endpoint, _) = stub_endpoint(vec![reply_with(content)]).await;
         let extraction = TaskExtractor::new(None, HashSet::new())
             .extract(&cfg_for(endpoint, 3), &input_with_board())
@@ -1899,9 +2039,13 @@ mod tests {
         let (endpoint, bodies) = stub_endpoint(vec![reply_with(r#"{"items":[]}"#)]).await;
         let mut cfg = cfg_for(endpoint, 1);
         cfg.temperature = 0.7;
-        let _ = TaskExtractor::new(None, HashSet::new()).extract(&cfg, &input_with_board()).await;
+        let _ = TaskExtractor::new(None, HashSet::new())
+            .extract(&cfg, &input_with_board())
+            .await;
         assert_eq!(
-            bodies.lock().unwrap()[0].pointer("/temperature").and_then(|v| v.as_f64()),
+            bodies.lock().unwrap()[0]
+                .pointer("/temperature")
+                .and_then(|v| v.as_f64()),
             Some(0.7)
         );
     }
@@ -1930,7 +2074,10 @@ mod tests {
         match &extraction.tasks[0] {
             TaskAction::Attach { attach_to, ask, .. } => {
                 assert_eq!(attach_to, &"a".repeat(64));
-                assert_eq!(ask, "add Luna to the comparison", "the ask survives the conversion");
+                assert_eq!(
+                    ask, "add Luna to the comparison",
+                    "the ask survives the conversion"
+                );
             }
             other => panic!("expected an attach, got {other:?}"),
         }
@@ -1939,10 +2086,21 @@ mod tests {
         // board, with none of the extraction prompt's judgement in it.
         let sent = bodies.lock().unwrap();
         assert_eq!(sent.len(), 2);
-        let sys = sent[1].pointer("/messages/0/content").unwrap().as_str().unwrap();
+        let sys = sent[1]
+            .pointer("/messages/0/content")
+            .unwrap()
+            .as_str()
+            .unwrap();
         assert!(sys.contains("whether one of the open tasks is already this work"));
-        assert!(!sys.contains("WHEN IN DOUBT"), "no extraction judgement here");
-        let user = sent[1].pointer("/messages/1/content").unwrap().as_str().unwrap();
+        assert!(
+            !sys.contains("WHEN IN DOUBT"),
+            "no extraction judgement here"
+        );
+        let user = sent[1]
+            .pointer("/messages/1/content")
+            .unwrap()
+            .as_str()
+            .unwrap();
         assert!(user.contains("Compare Luna, Flash and Spark"));
         assert!(user.contains(&"a".repeat(64)));
     }
@@ -1977,7 +2135,10 @@ mod tests {
             .extract(&match_cfg(endpoint), &input_with_board())
             .await;
         assert_eq!(extraction.verdict(), Verdict::Create { count: 1 });
-        assert!(extraction.error.is_none(), "a soft failure is not an extraction failure");
+        assert!(
+            extraction.error.is_none(),
+            "a soft failure is not an extraction failure"
+        );
         assert_eq!(extraction.rematched, 0);
     }
 
@@ -2007,8 +2168,9 @@ mod tests {
             r#"{"items":[{"ask":"a","disposition":"create","subject":"s","doneWhen":"x"}]}"#,
         )])
         .await;
-        let extraction =
-            TaskExtractor::new(None, HashSet::new()).extract(&match_cfg(endpoint), &input).await;
+        let extraction = TaskExtractor::new(None, HashSet::new())
+            .extract(&match_cfg(endpoint), &input)
+            .await;
         assert_eq!(extraction.verdict(), Verdict::Create { count: 1 });
         assert_eq!(bodies.lock().unwrap().len(), 1, "one call, not two");
     }

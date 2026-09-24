@@ -414,7 +414,11 @@ pub struct CliArgs {
     pub task_extract_endpoint: Option<String>,
 
     /// Served model id for the task extractor.
-    #[arg(long, env = "BUZZ_ACP_TASK_EXTRACT_MODEL", default_value = "gemini-3.8-flash")]
+    #[arg(
+        long,
+        env = "BUZZ_ACP_TASK_EXTRACT_MODEL",
+        default_value = "gemini-3.8-flash"
+    )]
     pub task_extract_model: String,
 
     /// Publish the extraction instead of only recording it.
@@ -1886,7 +1890,11 @@ mod tests {
         // extractor is quiet" is indistinguishable from "nobody asked for
         // anything". Fail at startup instead.
         assert!(parse_hex64(&"a".repeat(64)).is_ok());
-        assert_eq!(parse_hex64(&"A".repeat(64)).unwrap(), "a".repeat(64), "lowercased");
+        assert_eq!(
+            parse_hex64(&"A".repeat(64)).unwrap(),
+            "a".repeat(64),
+            "lowercased"
+        );
         assert!(parse_hex64(&"a".repeat(63)).is_err());
         assert!(parse_hex64(&"a".repeat(65)).is_err());
         assert!(parse_hex64(&"z".repeat(64)).is_err());

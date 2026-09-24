@@ -45,7 +45,11 @@ pub struct ChannelRepo {
 impl ChannelRepo {
     /// The NIP-34 `a` coordinate an issue tags.
     pub fn coordinate(&self) -> String {
-        format!("{KIND_REPO_ANNOUNCEMENT}:{}:{}", self.owner.to_ascii_lowercase(), self.id)
+        format!(
+            "{KIND_REPO_ANNOUNCEMENT}:{}:{}",
+            self.owner.to_ascii_lowercase(),
+            self.id
+        )
     }
 }
 
@@ -83,7 +87,9 @@ pub fn repo_from_announcements(events: &[serde_json::Value], channel: &str) -> O
 pub fn reduce_open(issues: &[serde_json::Value], statuses: &[serde_json::Value]) -> Vec<BoardTask> {
     let mut newest: HashMap<&str, (u64, &str, u16)> = HashMap::new();
     for s in statuses {
-        let Some(kind) = s.get("kind").and_then(|k| k.as_u64()) else { continue };
+        let Some(kind) = s.get("kind").and_then(|k| k.as_u64()) else {
+            continue;
+        };
         if !(1630..=1633).contains(&kind) {
             continue;
         }
@@ -102,7 +108,9 @@ pub fn reduce_open(issues: &[serde_json::Value], statuses: &[serde_json::Value])
         if issue.get("kind").and_then(|k| k.as_u64()) != Some(KIND_ISSUE as u64) {
             continue;
         }
-        let Some(id) = issue.get("id").and_then(|i| i.as_str()) else { continue };
+        let Some(id) = issue.get("id").and_then(|i| i.as_str()) else {
+            continue;
+        };
         // 1630 is open; 1631 applied, 1632 closed, 1633 draft are not.
         if let Some((_, _, kind)) = newest.get(id) {
             if *kind != 1630 {
@@ -186,7 +194,10 @@ pub fn repo_filter(channel: &str) -> serde_json::Value {
 /// An empty board is not an error: a channel with no repository has nothing to
 /// attach to, and the extractor skips its board-match pass rather than paying
 /// for a call with nothing to compare against.
-pub async fn fetch(relay: &crate::relay::RestClient, channel: &str) -> Result<Vec<BoardTask>, String> {
+pub async fn fetch(
+    relay: &crate::relay::RestClient,
+    channel: &str,
+) -> Result<Vec<BoardTask>, String> {
     let announcements = query(relay, vec![repo_filter(channel)]).await?;
     let Some(repo) = repo_from_announcements(&announcements, channel) else {
         debug!(%channel, "no repository bound to this channel — extracting against an empty board");
@@ -253,7 +264,10 @@ mod tests {
         let unbound = announcement("cc", "loose", None);
         assert_eq!(
             repo_from_announcements(&[theirs.clone(), ours.clone()], "chan-1"),
-            Some(ChannelRepo { owner: "aa".into(), id: "buzz".into() })
+            Some(ChannelRepo {
+                owner: "aa".into(),
+                id: "buzz".into()
+            })
         );
         // The only announcement returned is still not this channel's repo.
         assert_eq!(repo_from_announcements(&[theirs, unbound], "chan-1"), None);
@@ -261,7 +275,10 @@ mod tests {
 
     #[test]
     fn the_coordinate_lowercases_the_owner_because_the_a_tag_does() {
-        let repo = ChannelRepo { owner: "AABB".into(), id: "buzz".into() };
+        let repo = ChannelRepo {
+            owner: "AABB".into(),
+            id: "buzz".into(),
+        };
         assert_eq!(repo.coordinate(), "30617:aabb:buzz");
         let filter = &issue_filters(&repo)[0];
         assert_eq!(filter["#a"][0], "30617:aabb:buzz");
@@ -285,7 +302,10 @@ mod tests {
             &[issue("i1", "Done thing"), issue("i2", "Live thing")],
             &[status("s1", 1632, "i1", 100)],
         );
-        assert_eq!(open.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), vec!["i2"]);
+        assert_eq!(
+            open.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
+            vec!["i2"]
+        );
     }
 
     #[test]
@@ -303,11 +323,17 @@ mod tests {
         // on relay ordering.
         let a = reduce_open(
             &[issue("i1", "x")],
-            &[status("aaa", 1630, "i1", 100), status("bbb", 1632, "i1", 100)],
+            &[
+                status("aaa", 1630, "i1", 100),
+                status("bbb", 1632, "i1", 100),
+            ],
         );
         let b = reduce_open(
             &[issue("i1", "x")],
-            &[status("bbb", 1632, "i1", 100), status("aaa", 1630, "i1", 100)],
+            &[
+                status("bbb", 1632, "i1", 100),
+                status("aaa", 1630, "i1", 100),
+            ],
         );
         assert_eq!(a.len(), b.len());
         assert!(a.is_empty(), "the higher id wins, and it is the close");
@@ -321,7 +347,8 @@ mod tests {
 
     #[test]
     fn an_issue_with_no_subject_falls_back_to_the_first_line_of_the_body() {
-        let bare = json!({ "kind": 1621, "id": "i1", "tags": [], "content": "Fix the thing\n\nmore" });
+        let bare =
+            json!({ "kind": 1621, "id": "i1", "tags": [], "content": "Fix the thing\n\nmore" });
         let open = reduce_open(&[bare], &[]);
         assert_eq!(open[0].subject, "Fix the thing");
     }

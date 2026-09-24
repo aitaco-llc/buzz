@@ -338,6 +338,24 @@ fn effective_prompt_author(
 /// Encapsulation, not a test, is what closes that seam: `InboundAuthorGate {
 /// relay_self: None, .. }` is now a privacy error outside this module, and
 /// dropping the load inside it fails the construction regressions.
+/// The extractor's API key.
+///
+/// `BUZZ_ACP_TASK_EXTRACT_API_KEY` when set, otherwise `GEMINI_API_KEY` — which
+/// `deploy/buzz-agent-run` already fetches from Secret Manager at seat start
+/// for any seat whose adapter is `rebrand-acp --provider gemini`, the seat this
+/// runs on first.
+///
+/// The fallback is the point. That launcher's own comment says secrets are
+/// "fetched at start rather than stored in an EnvironmentFile", and adding a
+/// second variable for the same key to the same model would have meant writing
+/// one into `rock.env` to avoid touching a file this crate does not own.
+fn task_extract_api_key() -> Option<String> {
+    std::env::var("BUZZ_ACP_TASK_EXTRACT_API_KEY")
+        .ok()
+        .or_else(|| std::env::var("GEMINI_API_KEY").ok())
+        .filter(|k| !k.trim().is_empty())
+}
+
 /// Read one of the owner's messages for tasks, and record or publish what it
 /// found.
 ///
@@ -389,7 +407,12 @@ async fn task_extract_turn(
     }
     for task in &extraction.tasks {
         match task {
-            task_extract::TaskAction::Create { ask, subject, done_when, .. } => {
+            task_extract::TaskAction::Create {
+                ask,
+                subject,
+                done_when,
+                ..
+            } => {
                 tracing::info!(
                     source = %source_id, %channel, %subject, %done_when, %ask,
                     published = publish,
@@ -2980,7 +3003,7 @@ async fn tokio_main() -> Result<()> {
             );
             (
                 Some(std::sync::Arc::new(task_extract::TaskExtractor::new(
-                    std::env::var("BUZZ_ACP_TASK_EXTRACT_API_KEY").ok(),
+                    task_extract_api_key(),
                     known,
                 ))),
                 Some(task_extract::TaskExtractConfig {

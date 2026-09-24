@@ -95,7 +95,10 @@ fn parse_args() -> Args {
             "--endpoint" => endpoint = it.next().unwrap_or(endpoint),
             "--model" => model = it.next().unwrap_or(model),
             "--temperature" => {
-                temperature = it.next().and_then(|v| v.parse().ok()).unwrap_or(temperature)
+                temperature = it
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(temperature)
             }
             // `none` sends no field at all, so the endpoint's own default
             // thinking budget applies.
@@ -128,7 +131,11 @@ fn parse_args() -> Args {
 ///
 /// Traceable on sight: the first 62 hex of the source event, then the index.
 fn synthetic_id(event_id: &str, n: usize) -> String {
-    let mut base: String = event_id.chars().filter(|c| c.is_ascii_hexdigit()).take(62).collect();
+    let mut base: String = event_id
+        .chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .take(62)
+        .collect();
     while base.len() < 62 {
         base.push('0');
     }
@@ -138,7 +145,9 @@ fn synthetic_id(event_id: &str, n: usize) -> String {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = parse_args();
-    let api_key = std::env::var("TASK_EXTRACT_API_KEY").ok().filter(|k| !k.is_empty());
+    let api_key = std::env::var("TASK_EXTRACT_API_KEY")
+        .ok()
+        .filter(|k| !k.is_empty());
     if api_key.is_none() {
         eprintln!(
             "TASK_EXTRACT_API_KEY is empty. A replay with no key scores the endpoint's \
@@ -161,8 +170,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!(
         "  temperature={}  reasoning_effort={}  board={}",
         args.temperature,
-        args.reasoning_effort.as_deref().unwrap_or("<endpoint default>"),
-        if pinned.is_some() { "pinned snapshot" } else { "grown sequentially" }
+        args.reasoning_effort
+            .as_deref()
+            .unwrap_or("<endpoint default>"),
+        if pinned.is_some() {
+            "pinned snapshot"
+        } else {
+            "grown sequentially"
+        }
     );
     eprintln!(
         "  board-match second pass: {}",
@@ -263,7 +278,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut emitted = Vec::new();
         for task in extraction.tasks.iter() {
             match task {
-                TaskAction::Create { ask, subject, done_when, blocked_by, .. } => {
+                TaskAction::Create {
+                    ask,
+                    subject,
+                    done_when,
+                    blocked_by,
+                    ..
+                } => {
                     let id = synthetic_id(&u.event_id, board.len());
                     emitted.push(serde_json::json!({
                         "ask": ask, "id": id, "subject": subject,
@@ -278,7 +299,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         });
                     }
                 }
-                TaskAction::Attach { ask, attach_to, note } => {
+                TaskAction::Attach {
+                    ask,
+                    attach_to,
+                    note,
+                } => {
                     emitted.push(serde_json::json!({
                         "ask": ask, "attachTo": attach_to, "note": note
                     }));
@@ -308,7 +333,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }));
     }
 
-    std::fs::write(&args.out, serde_json::to_string_pretty(&predictions)? + "\n")?;
+    std::fs::write(
+        &args.out,
+        serde_json::to_string_pretty(&predictions)? + "\n",
+    )?;
     eprintln!("wrote {}", args.out.display());
     if let Some(path) = &args.detail {
         std::fs::write(path, serde_json::to_string_pretty(&detail)? + "\n")?;
