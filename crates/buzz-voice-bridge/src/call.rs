@@ -1,13 +1,18 @@
 //! One call: the huddle's audio room on one side, a Gemini Live session on the
-//! other, and the seat reachable through `ask_rock`.
+//! other, and the seat reachable through the voice's `work` tool.
 //!
 //! ```text
 //! room (Opus 20 ms) ──decode 16 kHz──▶ Gemini realtimeInput
 //! room ◀──encode 24 kHz Opus, paced 20 ms── Gemini audio
 //! Gemini transcription ──▶ speaker-labelled lines in the huddle channel
-//! Gemini ask_rock ──▶ voice-bridge=ask event in the parent (wakes the seat)
-//! seat's reply in that thread ──▶ Gemini user turn "rock answered …"
+//! Gemini `work` ──▶ voice-bridge=ask event in the parent (wakes the seat)
+//! seat's reply in that thread ──▶ Gemini user turn "Your work came back …"
+//! call end ──▶ transcript + wake in the parent (the seat records the work)
 //! ```
+//!
+//! The voice is the seat. It is one identity with two speeds: Gemini talks,
+//! and everything that needs tools, memory or a decision goes through the
+//! seat and comes back in the voice's own first person.
 //!
 //! Every call writes one JSONL log, and every call writes an ending: either
 //! `call_end` with a reason or `call_failed` with the error chain that stopped
@@ -27,8 +32,11 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use crate::gemini::{self, GeminiStream, ServerEvent, SessionConfig};
+use crate::config::Names;
+use crate::context;
+use crate::gemini::{self, GeminiStream, Scheduling, ServerEvent, SessionConfig};
 use crate::jsonl::{JsonlLog, RateLimit};
+use crate::outcome::CallOutcome;
 use crate::relay_io::{is_bridge_event, Provenance, Publisher};
 use crate::room::{self, parse_control, RoomEvent};
 use crate::transcript::{Line, Transcript};
@@ -78,9 +86,12 @@ pub struct CallParams {
     pub publisher: Publisher,
     pub gemini_url: String,
     pub gemini_key: String,
-    pub session: SessionConfig,
-    pub human_label: String,
-    pub voice_label: String,
+    /// Everything that shapes the Gemini session: model, voice, persona and
+    /// context files. The system instruction is built per call, once the
+    /// channel history has been fetched.
+    pub args: crate::config::Args,
+    /// The resolved names the call speaks with.
+    pub names: Names,
     pub log_path: PathBuf,
     pub ask_timeout: Duration,
     /// How often, while the seat is working, its voice says so and for how
@@ -353,15 +364,26 @@ enum AskUpdate {
     /// The ask event is published; answer Gemini's tool call.
     Asked { call_id: String, event_id: EventId },
     /// Publishing the ask failed; tell Gemini so it can say so.
-    Failed { call_id: String, error: String },
-    /// The seat replied in the ask thread.
+    Failed {
+        call_id: String,
+        request: String,
+        error: String,
+    },
+    /// The seat replied in the ask thread. `follow_up` marks a further reply
+    /// to an ask that already had one: a seat that says "on it" and then
+    /// answers, or answers in two messages, is heard both times.
     Answer {
         request: String,
         text: String,
         waited_ms: u128,
+        follow_up: bool,
     },
     /// No reply within the ask timeout.
     TimedOut { request: String, waited_ms: u128 },
+    /// Whether the seat is working on something right now, as far as the
+    /// asker can tell: an ask with no reply yet, or one it replied to and is
+    /// still typing after. Drives the working sound; sent on every change.
+    Working(bool),
     /// The wait is still on. Carries the elapsed time the voice is allowed to
     /// speak, counted here so it is not one the model invented, and what the
     /// bridge actually knows about the seat — which decides what may be said.
@@ -411,11 +433,11 @@ const TYPING_STALE_AFTER: Duration = Duration::from_secs(10);
 /// When an update may reach Gemini.
 ///
 /// Cutting the voice off mid-word is the harshest thing the bridge can do, so
-/// only a tool response Gemini is blocked on goes in regardless.
+/// nothing here goes in while it is speaking. The one thing Gemini blocks on,
+/// the tool response, is sent the moment the tool call arrives and never
+/// passes through here.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Delivery {
-    /// Gemini is waiting on this; send it now whatever else is happening.
-    Now,
     /// Send when the voice is quiet, and hold it until then.
     WhenQuiet,
     /// Send only if the voice is already quiet, and drop it otherwise. A
@@ -436,9 +458,40 @@ struct Pending {
     picked_up: bool,
     /// The ask's own event id, to match a `trigger`-tagged indicator to it.
     event_id: Option<EventId>,
+    /// When the seat's first reply landed. The ask is told to reply once
+    /// with what it is doing and again with the result, so a first reply
+    /// ends the timeout but not the watch: while the seat keeps typing after
+    /// it, it is still working on this.
+    replied_at: Option<Instant>,
 }
 
 impl Pending {
+    /// Still owed a first reply.
+    fn unanswered(&self) -> bool {
+        self.replied_at.is_none()
+    }
+
+    /// Replied, and the seat has typed since: the "on it, then the result"
+    /// shape, mid-way.
+    fn working_after_reply(&self, last_typing_at: Option<Instant>) -> bool {
+        match (self.replied_at, last_typing_at) {
+            (Some(replied), Some(typed)) => typed > replied && typed.elapsed() < TYPING_STALE_AFTER,
+            _ => false,
+        }
+    }
+
+    /// Replied, and the seat has been quiet since for longer than the
+    /// staleness window: whatever it said was the whole answer.
+    fn settled(&self, last_typing_at: Option<Instant>) -> bool {
+        match self.replied_at {
+            Some(replied) => {
+                let quiet_since = last_typing_at.filter(|t| *t > replied).unwrap_or(replied);
+                quiet_since.elapsed() >= TYPING_STALE_AFTER
+            }
+            None => false,
+        }
+    }
+
     /// Count a typing indicator against this ask, if it can belong to it.
     ///
     /// Two ways to decide, in order of how much they prove:
@@ -489,6 +542,9 @@ fn wait_state(picked_up: bool, last_typing_at: Option<Instant>) -> WaitState {
 struct AskRequest {
     call_id: String,
     request: String,
+    /// The last few transcript lines, so the seat knows what the request is
+    /// about without being on the call.
+    recent: String,
 }
 
 pub async fn run_call(params: CallParams, cancel: CancellationToken) -> Result<()> {
@@ -499,7 +555,9 @@ pub async fn run_call(params: CallParams, cancel: CancellationToken) -> Result<(
         json!({
             "ephemeral": params.ephemeral,
             "parent": params.parent,
-            "model": params.session.model,
+            "pubkey": params.publisher.keys().public_key().to_hex(),
+            "model": params.args.model,
+            "names": params.names.as_json(),
             "build_sha": crate::BUILD_SHA,
             "version": crate::VERSION,
             "pid": std::process::id(),
@@ -508,9 +566,9 @@ pub async fn run_call(params: CallParams, cancel: CancellationToken) -> Result<(
     );
     info!(ephemeral = %params.ephemeral, parent = %params.parent, build_sha = crate::BUILD_SHA, "joining huddle");
 
-    let mut transcript = Transcript::new(&params.human_label, &params.voice_label);
+    let mut transcript = Transcript::new(&params.names.human, &params.names.voice);
     let mut outcome = Outcome {
-        phase: "room_join",
+        phase: "starting",
         ..Outcome::default()
     };
     let result = run_call_inner(
@@ -551,14 +609,40 @@ pub async fn run_call(params: CallParams, cancel: CancellationToken) -> Result<(
         }
     };
 
-    post_outcome(
-        &params,
-        &mut log,
-        &transcript,
-        &outcome,
-        &end_reason,
+    let peers = if outcome.peers.is_empty() {
+        "none".to_owned()
+    } else {
+        outcome
+            .peers
+            .iter()
+            .map(|pubkey| {
+                if params.starters.contains(pubkey) {
+                    params.names.human.clone()
+                } else {
+                    pubkey.chars().take(8).collect()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    CallOutcome {
+        parent: params.parent,
+        ephemeral: params.ephemeral,
+        end_reason,
         duration,
-    )
+        peers,
+        asks: outcome.asks.into(),
+        answers: outcome.answers.into(),
+        timeouts: outcome.timeouts.into(),
+        ask_failures: outcome.ask_failures.into(),
+        reconnects: outcome.reconnects.into(),
+        errors: outcome.errors.into(),
+        log_path: params.log_path.display().to_string(),
+        transcript: transcript.full_text(),
+        names: params.names.clone(),
+        recovered: false,
+    }
+    .post(&params.publisher, &mut log)
     .await;
     result.map(|_| ())
 }
@@ -575,8 +659,37 @@ async fn run_call_inner(
     let keys = params.publisher.keys().clone();
     let me = keys.public_key().to_hex();
 
+    // The room join runs alongside the history fetch and the Gemini connect.
+    // The bridge is in the room within a second of the huddle start, so a
+    // caller who joins and hiccups while Gemini is still connecting does not
+    // leave the room empty (the relay archives an empty huddle); and Gemini's
+    // connect is not held behind the join. The history is context, not a
+    // precondition: it is bounded, and the call goes on without it. A huddle
+    // that ends during all this is an ending, not a failure.
+    let mut labels: HashMap<String, String> = HashMap::new();
+    labels.insert(me.clone(), params.names.agent.clone());
+    for starter in &params.starters {
+        labels.insert(starter.clone(), params.names.human.clone());
+    }
+    outcome.phase = "starting";
     let joining = Instant::now();
-    let mut room = join_room_with_retry(params, &keys, cancel, log).await?;
+    let startup = async {
+        tokio::join!(
+            join_room_with_retry(params, &keys, cancel, log),
+            open_gemini(params, &labels),
+        )
+    };
+    let (room, opened) = tokio::select! {
+        _ = cancel.cancelled() => return Ok("huddle ended before the call started".into()),
+        joined = startup => joined,
+    };
+    let mut room = match room {
+        Ok(room) => room,
+        Err(error) => {
+            outcome.phase = "room_join";
+            return Err(error);
+        }
+    };
     for pubkey in room.peers.values() {
         if *pubkey != me {
             outcome.peers.insert(pubkey.clone());
@@ -590,17 +703,16 @@ async fn run_call_inner(
             "join_ms": joining.elapsed().as_millis(),
         }),
     );
-
-    outcome.phase = "gemini_connect";
-    let setup = gemini::setup_message(&params.session, None);
-    let connecting = Instant::now();
-    let mut gemini = gemini::connect(&params.gemini_url, &params.gemini_key, &setup)
-        .await
-        .context("open the Gemini Live session")?;
-    log.record(
-        "gemini_connected",
-        json!({ "resumed": false, "connect_ms": connecting.elapsed().as_millis() }),
-    );
+    for (event, data) in &opened.records {
+        log.record(event, data.clone());
+    }
+    let (session, mut gemini) = match opened.result {
+        Ok(opened) => opened,
+        Err(error) => {
+            outcome.phase = "gemini_connect";
+            return Err(error);
+        }
+    };
     outcome.phase = "in_call";
 
     // Gemini's server messages, audio elided, when VOICE_BRIDGE_TRACE_FRAMES
@@ -617,8 +729,8 @@ async fn run_call_inner(
     // Greet once the caller is actually in the room: the bridge usually joins
     // first, on the huddle-start event, before the caller's audio connects.
     let greeting = gemini::user_turn(&format!(
-        "{} just joined the call. Greet him in one short sentence.",
-        params.human_label
+        "{} just joined the call. Greet them in one short sentence, as yourself.",
+        params.names.human
     ));
     let mut greeted = false;
     if room.peers.values().any(|p| params.starters.contains(p)) {
@@ -645,6 +757,7 @@ async fn run_call_inner(
         params.parent,
         params.ephemeral,
         me.clone(),
+        params.names.clone(),
         params.ask_timeout,
         params.progress_every,
         ask_rx,
@@ -940,8 +1053,20 @@ async fn run_call_inner(
                     Err(error) => {
                         outcome.errors += 1;
                         let error = error.to_string();
-                        match reconnect_gemini(params, resume_handle.as_deref(), &mut reconnects, log, &error, outcome).await {
-                            Ok(fresh) => { gemini = fresh; continue; }
+                        match reconnect_gemini(params, &session, resume_handle.as_deref(), &mut reconnects, log, &error, outcome).await {
+                            Ok(fresh) => {
+                                gemini = fresh;
+                                // The turn that was playing died with the
+                                // socket; nothing will send its TurnComplete.
+                                // Left true, every held answer waits forever,
+                                // and an idle line sends no message to drain
+                                // them on, so they go now.
+                                speaking = false;
+                                for message in held.drain(..) {
+                                    gemini.send(Message::Text(message.to_string().into())).await.ok();
+                                }
+                                continue;
+                            }
                             Err(error) => break format!("Gemini session lost: {error}"),
                         }
                     }
@@ -1006,14 +1131,32 @@ async fn run_call_inner(
                         }
                         ServerEvent::ToolCall(calls) => {
                             for call in calls {
-                                if call.name == gemini::ASK_ROCK {
+                                if call.name == gemini::WORK_TOOL {
                                     let request = call.args["request"].as_str().unwrap_or_default().trim().to_owned();
-                                    log.record("ask_rock", json!({ "call_id": call.id, "request": request }));
-                                    ask_tx.send(AskRequest { call_id: call.id, request }).ok();
+                                    log.record("work", json!({ "call_id": call.id, "request": request }));
+                                    // Answer the tool at once, quietly, so the
+                                    // voice's "one sec" is never held behind
+                                    // the relay round trip. The tool is
+                                    // NON_BLOCKING; the outcome of the publish
+                                    // and the answer itself arrive as user
+                                    // turns, which also survive a reconnect.
+                                    gemini.send(Message::Text(gemini::tool_response(
+                                        &call.id, &call.name,
+                                        json!({
+                                            "status": "started",
+                                            "note": format!(
+                                                "You are on it. Say a short aside if you have not already, then wait; a working sound plays for {}. The result arrives as a message that starts with \"{}\".",
+                                                params.names.human, gemini::ANSWER_PREFIX
+                                            ),
+                                        }),
+                                        Scheduling::Silent,
+                                    ).to_string().into())).await.ok();
+                                    let recent = transcript.tail(params.args.ask_context_lines);
+                                    ask_tx.send(AskRequest { call_id: call.id, request, recent }).ok();
                                 } else {
                                     log.record("unknown_tool", json!({ "name": call.name }));
                                     gemini.send(Message::Text(gemini::tool_response(
-                                        &call.id, &call.name, json!({ "error": "no such tool" }),
+                                        &call.id, &call.name, json!({ "error": "no such tool" }), Scheduling::WhenIdle,
                                     ).to_string().into())).await.ok();
                                 }
                             }
@@ -1049,8 +1192,14 @@ async fn run_call_inner(
                     }
                 }
                 if go_away {
-                    match reconnect_gemini(params, resume_handle.as_deref(), &mut reconnects, log, "goAway", outcome).await {
-                        Ok(fresh) => gemini = fresh,
+                    match reconnect_gemini(params, &session, resume_handle.as_deref(), &mut reconnects, log, "goAway", outcome).await {
+                        Ok(fresh) => {
+                            gemini = fresh;
+                            speaking = false;
+                            for message in held.drain(..) {
+                                gemini.send(Message::Text(message.to_string().into())).await.ok();
+                            }
+                        }
                         Err(error) => break format!("Gemini session lost after goAway: {error}"),
                     }
                 }
@@ -1062,47 +1211,56 @@ async fn run_call_inner(
                     AskUpdate::Asked { call_id, event_id } => {
                         outcome.asks += 1;
                         log.record("ask_posted", json!({ "call_id": call_id, "event_id": event_id.to_hex() }));
+                        // The tool was already answered when the call came
+                        // in; nothing needs to reach Gemini now. The working
+                        // sound follows `AskUpdate::Working`, which the asker
+                        // sends right after this.
+                        continue;
+                    }
+                    AskUpdate::Working(now_working) => {
                         // The wait starts here, not at the tool call: this is
                         // the moment the seat could first have seen it.
-                        working_since = Some(Instant::now());
-                        if let Some(bed) = bed.as_mut() {
-                            bed.rewind();
+                        match (now_working, working_since) {
+                            (true, None) => {
+                                working_since = Some(Instant::now());
+                                if let Some(bed) = bed.as_mut() {
+                                    bed.rewind();
+                                }
+                            }
+                            (false, Some(_)) => working_since = None,
+                            _ => {}
                         }
-                        (gemini::tool_response(&call_id, gemini::ASK_ROCK, json!({
-                            "status": "asked",
-                            "note": format!("rock has the request. Tell {} briefly that you are checking with rock, then wait. {} can hear a working sound while rock works, so silence is fine. The answer will arrive later as a message that starts with \"rock answered\".", params.human_label, params.human_label),
-                        })), Delivery::Now)
+                        continue;
                     }
-                    AskUpdate::Failed { call_id, error } => {
+                    AskUpdate::Failed { call_id, request, error } => {
                         outcome.ask_failures += 1;
                         outcome.errors += 1;
                         log.record("ask_failed", json!({ "call_id": call_id, "error": error }));
-                        working_since = None;
-                        (gemini::tool_response(&call_id, gemini::ASK_ROCK, json!({
-                            "status": "failed",
-                            "note": "The request did not reach rock. Say so plainly.",
-                        })), Delivery::Now)
+                        (gemini::user_turn(&format!(
+                            "Your work on \"{request}\" could not start: the request never reached your tools. Tell {} that plainly, in one sentence, and that they can ask again.",
+                            params.names.human
+                        )), Delivery::WhenQuiet)
                     }
-                    AskUpdate::Answer { request, text, waited_ms } => {
+                    AskUpdate::Answer { request, text, waited_ms, follow_up } => {
                         outcome.answers += 1;
-                        log.record("rock_answer", json!({ "request": request, "text": text, "waited_ms": waited_ms }));
-                        working_since = None;
+                        log.record("seat_answer", json!({ "request": request, "text": text, "waited_ms": waited_ms, "follow_up": follow_up }));
                         answer_at = Some(Instant::now());
                         answer_handed_at = None;
                         answer_audio = None;
                         (gemini::user_turn(&format!(
-                            "rock answered {}'s request \"{request}\": {text}\n\nTell {} this now, briefly and faithfully. Add nothing rock did not say.",
-                            params.human_label, params.human_label
+                            "{} on \"{request}\": {text}\n\nTell {} this now, in your own words, first person, briefly. Add nothing it did not say.",
+                            gemini::ANSWER_PREFIX,
+                            params.names.human
                         )), Delivery::WhenQuiet)
                     }
                     AskUpdate::TimedOut { request, waited_ms } => {
                         outcome.timeouts += 1;
                         log.record("ask_timed_out", json!({ "request": request, "waited_ms": waited_ms }));
-                        working_since = None;
                         (gemini::user_turn(&format!(
-                            "rock answered {}'s request \"{request}\": no answer yet after {} minutes. Tell him the request is waiting in his DM with rock.",
-                            params.human_label,
-                            params.ask_timeout.as_secs() / 60
+                            "{} on \"{request}\" with nothing after {} minutes: no answer yet. Tell {} that it is still open and that the request is waiting in your written chat with them, where the answer will land.",
+                            gemini::ANSWER_PREFIX,
+                            params.ask_timeout.as_secs() / 60,
+                            params.names.human
                         )), Delivery::WhenQuiet)
                     }
                     AskUpdate::Waiting { elapsed_secs, state } => {
@@ -1115,32 +1273,31 @@ async fn run_call_inner(
                         // bridge has seen. "Still working" is a claim about a
                         // turn that is running, so it is reserved for the one
                         // state that has evidence of one.
+                        let human = &params.names.human;
                         let line = match state {
                             WaitState::NotPickedUp => format!(
-                                "rock has not picked this up yet. It has been {elapsed_secs} seconds. Tell {} \
-                                 exactly that: that rock has not picked it up yet and how long it has been. Do \
-                                 not say rock is working on it, because it is not. Do not guess why, do not \
-                                 guess how much longer, and do not answer his request yourself.",
-                                params.human_label
+                                "Your work has not started yet: nothing has picked it up. It has been \
+                                 {elapsed_secs} seconds. Tell {human} exactly that, in one sentence: it has not \
+                                 started yet and how long it has been. Do not say you are working on it, because \
+                                 nothing is. Do not guess why, do not guess how much longer, and do not answer the \
+                                 request yourself."
                             ),
                             WaitState::Working => format!(
-                                "rock is still working. It has been {elapsed_secs} seconds. Tell {} that rock is \
-                                 still working and that it has been {elapsed_secs} seconds. Say only those two \
-                                 things. Do not say what rock is doing, do not guess how much longer, and do not \
-                                 answer his request yourself.",
-                                params.human_label
+                                "{}. It has been {elapsed_secs} seconds. Tell {human} you are still on it and that \
+                                 it has been {elapsed_secs} seconds. Say only those two things. Do not say what you \
+                                 are doing, do not guess how much longer, and do not answer the request yourself.",
+                                gemini::PROGRESS_PREFIX
                             ),
-                            // Deliberately not "rock stopped". The indicator is
+                            // Deliberately not "it stopped". The indicator is
                             // best-effort — buzz-acp drops it when its publish
                             // queue is full, and this watcher can lose its own
                             // subscription — so its silence is only ever a fact
                             // about what the bridge saw, never a proven death.
                             WaitState::Stalled => format!(
-                                "rock picked this up, and the bridge has stopped seeing it work. There is still \
-                                 no answer and it has been {elapsed_secs} seconds. Tell {} exactly that. Do not \
-                                 say rock is still working, do not say what went wrong or guess why, and do not \
-                                 answer his request yourself.",
-                                params.human_label
+                                "Your work started and then went quiet; the bridge has stopped seeing it. There is \
+                                 still no answer and it has been {elapsed_secs} seconds. Tell {human} exactly that. \
+                                 Do not say you are still working, do not say what went wrong or guess why, and do \
+                                 not answer the request yourself."
                             ),
                         };
                         (gemini::user_turn(&line), Delivery::IfQuiet)
@@ -1214,88 +1371,6 @@ fn elide_audio(value: &Value) -> Value {
     }
 }
 
-/// One human-readable line about the call, with the transcript under it, in the
-/// parent channel. This is the artifact someone reads after a bad call, so it
-/// is posted whether the call ended cleanly or failed, and it names the log.
-async fn post_outcome(
-    params: &CallParams,
-    log: &mut CallLog,
-    transcript: &Transcript,
-    outcome: &Outcome,
-    end_reason: &str,
-    duration: Duration,
-) {
-    let peers = if outcome.peers.is_empty() {
-        "none".to_owned()
-    } else {
-        outcome
-            .peers
-            .iter()
-            .map(|pubkey| {
-                if params.starters.contains(pubkey) {
-                    params.human_label.clone()
-                } else {
-                    pubkey.chars().take(8).collect()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    let mut body = format!(
-        "Voice call `{}` ended: {end_reason}. {} · peers: {peers} · asks {} asked / {} answered / {} timed out / {} failed · {} · {} · log `{}`",
-        &params.ephemeral.to_string()[..8],
-        human_duration(duration),
-        outcome.asks,
-        outcome.answers,
-        outcome.timeouts,
-        outcome.ask_failures,
-        plural(outcome.reconnects, "Gemini reconnect"),
-        plural(outcome.errors, "error"),
-        params.log_path.display(),
-    );
-    if !transcript.is_empty() {
-        body.push_str(&format!(
-            "\n\nTranscript, {} and {}. Written by the voice bridge; lines labelled {} are Gemini speaking with this key.\n\n{}",
-            params.human_label,
-            params.voice_label,
-            params.voice_label,
-            transcript.full_text()
-        ));
-    }
-    let body: String = body.chars().take(60 * 1024).collect();
-    match buzz_sdk::build_message(params.parent, &body, None, &[], false, &[], &[]) {
-        Ok(builder) => match params
-            .publisher
-            .publish(builder, Provenance::Transcript)
-            .await
-        {
-            Ok(event) => log.record(
-                "outcome_posted",
-                json!({ "event_id": event.id.to_hex(), "with_transcript": !transcript.is_empty() }),
-            ),
-            Err(error) => log.record("outcome_post_failed", json!({ "error": error.to_string() })),
-        },
-        Err(error) => log.record("outcome_post_failed", json!({ "error": error.to_string() })),
-    }
-}
-
-/// "1 error", "2 errors". The outcome line is read by a person.
-fn plural(count: u32, noun: &str) -> String {
-    match count {
-        1 => format!("1 {noun}"),
-        other => format!("{other} {noun}s"),
-    }
-}
-
-fn human_duration(duration: Duration) -> String {
-    let seconds = duration.as_secs();
-    if seconds >= 60 {
-        format!("{}m{:02}s", seconds / 60, seconds % 60)
-    } else {
-        format!("{}.{:01}s", seconds, duration.subsec_millis() / 100)
-    }
-}
-
 fn emit(
     transcript: &Transcript,
     lines: Vec<Line>,
@@ -1322,6 +1397,74 @@ async fn post_lines(publisher: Publisher, channel: Uuid, mut rx: mpsc::Unbounded
             warn!(%error, "transcript line not posted");
         }
     }
+}
+
+/// What opening the Gemini side produced: the records to write (in order,
+/// once the room join has written its own) and the session or the error.
+struct Opened {
+    records: Vec<(&'static str, Value)>,
+    result: Result<(SessionConfig, GeminiStream)>,
+}
+
+/// Fetch the channel history, build the session instruction on it, and open
+/// the Gemini session. Runs beside the room join, so it records nothing
+/// itself and hands its records back.
+async fn open_gemini(params: &CallParams, labels: &HashMap<String, String>) -> Opened {
+    let mut records: Vec<(&'static str, Value)> = Vec::new();
+    let fetching = Instant::now();
+    let history = match tokio::time::timeout(
+        context::FETCH_TIMEOUT,
+        context::recent_history(
+            &params.publisher,
+            params.parent,
+            params.args.history_limit,
+            params.args.history_days,
+            labels,
+        ),
+    )
+    .await
+    {
+        Ok(Ok(history)) => history,
+        Ok(Err(error)) => {
+            records.push(("history_failed", json!({ "error": format!("{error:#}") })));
+            None
+        }
+        Err(_) => {
+            records.push(("history_failed", json!({ "error": "timed out" })));
+            None
+        }
+    };
+    records.push((
+        "history",
+        json!({
+            "lines": history.as_deref().map_or(0, |h| h.lines().count()),
+            "chars": history.as_deref().map_or(0, |h| h.chars().count()),
+            "limit": params.args.history_limit,
+            "days": params.args.history_days,
+            "fetch_ms": fetching.elapsed().as_millis(),
+        }),
+    ));
+    let session = SessionConfig {
+        model: params.args.model.clone(),
+        system_instruction: params
+            .args
+            .system_instruction(&params.names, history.as_deref()),
+        voice: params.args.voice.clone(),
+        human: params.names.human.clone(),
+    };
+    let setup = gemini::setup_message(&session, None);
+    let connecting = Instant::now();
+    let result = match gemini::connect(&params.gemini_url, &params.gemini_key, &setup).await {
+        Ok(stream) => {
+            records.push((
+                "gemini_connected",
+                json!({ "resumed": false, "connect_ms": connecting.elapsed().as_millis() }),
+            ));
+            Ok((session, stream))
+        }
+        Err(error) => Err(error.context("open the Gemini Live session")),
+    };
+    Opened { records, result }
 }
 
 async fn join_room_with_retry(
@@ -1354,6 +1497,7 @@ async fn join_room_with_retry(
 
 async fn reconnect_gemini(
     params: &CallParams,
+    session: &SessionConfig,
     handle: Option<&str>,
     reconnects: &mut u32,
     log: &mut CallLog,
@@ -1368,7 +1512,7 @@ async fn reconnect_gemini(
                 "{MAX_GEMINI_RECONNECTS} reconnects failed; last cause: {reason}"
             ));
         }
-        let setup = gemini::setup_message(&params.session, handle);
+        let setup = gemini::setup_message(session, handle);
         let connecting = Instant::now();
         match gemini::connect(&params.gemini_url, &params.gemini_key, &setup).await {
             Ok(stream) => {
@@ -1396,6 +1540,90 @@ async fn reconnect_gemini(
     }
 }
 
+/// What the seat reads when the voice hands it a request: who is asking, what
+/// they said, and the last few lines of the call, so the seat is on the call
+/// in everything but audio.
+fn ask_content(names: &Names, ephemeral: Uuid, request: &str, recent: &str) -> String {
+    let mut content = format!(
+        "{human} is on a voice call with you (huddle `{}`) and just asked you, in their words:\n\n> {}\n\n",
+        &ephemeral.to_string()[..8],
+        request.replace('\n', "\n> "),
+        human = names.human,
+    );
+    if !recent.trim().is_empty() {
+        content.push_str(&format!(
+            "The last few things said on the call, oldest first:\n\n> {}\n\n",
+            recent.replace('\n', "\n> ")
+        ));
+    }
+    content.push_str(&format!(
+        "Reply in this thread. Your reply is spoken to {human} on the call in your own voice, so write it the way \
+         you would say it: first person, short, plain words, no markdown, no links or hashes read aloud. If it will \
+         take a while, reply once now with what you are doing, then reply again with the result; both are spoken. \
+         Do the work with your tools before you answer; do not guess.",
+        human = names.human,
+    ));
+    content
+}
+
+/// Which ask a reply belongs to.
+enum Matched {
+    /// An ask still in the queue: its first reply, or a further one.
+    Pending { index: usize },
+    /// An ask that already left the queue (answered and settled, or timed
+    /// out): more of that answer, by request text.
+    Known(String),
+    /// Nothing this reply names is known; taken as the answer to the oldest
+    /// ask still waiting, if any.
+    Unmatched,
+}
+
+/// The event ids a reply says it is replying to, most specific first: the
+/// `reply`-marked `e` tag, then the rest in tag order. A threaded reply in a
+/// DM carries both the thread root (the call's first ask) and the ask it
+/// answers, so the root must not win just for being first.
+fn replied_to(reply: &Event) -> Vec<EventId> {
+    let tags: Vec<&[String]> = reply
+        .tags
+        .iter()
+        .map(|tag| tag.as_slice())
+        .filter(|tag| tag.first().map(String::as_str) == Some("e"))
+        .collect();
+    let id_of = |tag: &&[String]| tag.get(1).and_then(|id| EventId::from_hex(id).ok());
+    let mut ids: Vec<EventId> = tags
+        .iter()
+        .filter(|tag| tag.get(3).map(String::as_str) == Some("reply"))
+        .filter_map(id_of)
+        .collect();
+    for id in tags.iter().filter_map(id_of) {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids
+}
+
+/// Match a reply to its ask by the event it replies to, whatever order the
+/// seat answers in. buzz-acp replies with `--reply-to <the ask>`, so the ask
+/// id is the reply's `reply`-marked `e` tag. Asks still in the queue are
+/// checked first, most specific id first; then asks that already left it.
+fn match_reply(
+    reply: &Event,
+    pending: &VecDeque<Pending>,
+    known: &HashMap<EventId, String>,
+) -> Matched {
+    let ids = replied_to(reply);
+    for id in &ids {
+        if let Some(index) = pending.iter().position(|p| p.event_id == Some(*id)) {
+            return Matched::Pending { index };
+        }
+    }
+    if let Some(request) = ids.iter().find_map(|id| known.get(id)) {
+        return Matched::Known(request.clone());
+    }
+    Matched::Unmatched
+}
+
 /// Publish asks in one thread per call and watch that thread for the seat's
 /// replies: kind:9 events signed with the same key, in the thread, without the
 /// bridge's provenance tag.
@@ -1406,6 +1634,7 @@ async fn run_asks(
     parent: Uuid,
     ephemeral: Uuid,
     me: String,
+    names: Names,
     ask_timeout: Duration,
     progress_every: Duration,
     mut ask_rx: mpsc::UnboundedReceiver<AskRequest>,
@@ -1416,10 +1645,17 @@ async fn run_asks(
     let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<Event>();
     let (typing_tx, mut typing_rx) = mpsc::unbounded_channel::<(Instant, Option<EventId>)>();
     let mut pending: VecDeque<Pending> = VecDeque::new();
+    // Asks that have left the queue, by event id, so a late or further reply
+    // in their thread is heard as more of that answer rather than counted
+    // against the next ask in line. Bounded by the asks of one call.
+    let mut known: HashMap<EventId, String> = HashMap::new();
     // The seat's last observed typing indicator, for the whole call rather
     // than per ask: a channel-keyed indicator cannot be attributed to one ask
     // (see `watch_typing`), and the seat answers one ask at a time anyway.
     let mut last_typing_at: Option<Instant> = None;
+    // What the call loop was last told about work in progress; the working
+    // sound follows it.
+    let mut working = false;
     let mut check = tokio::time::interval(Duration::from_secs(5));
     // One second so a progress line lands within a second of its due time
     // whatever `progress_every` is; the tick itself costs nothing.
@@ -1429,11 +1665,7 @@ async fn run_asks(
             _ = cancel.cancelled() => return,
             ask = ask_rx.recv() => {
                 let Some(ask) = ask else { return };
-                let content = format!(
-                    "Voice request from Lloyd, relayed by your voice bridge (Gemini) from huddle `{}`:\n\n> {}\n\nReply in this thread. The bridge speaks your reply to Lloyd, so keep it short and speakable.",
-                    &ephemeral.to_string()[..8],
-                    ask.request.replace('\n', "\n> "),
-                );
+                let content = ask_content(&names, ephemeral, &ask.request, &ask.recent);
                 let thread = root.map(|root| buzz_sdk::ThreadRef { root_event_id: root, parent_event_id: root });
                 let built = buzz_sdk::build_message(parent, &content, thread.as_ref(), &[me.as_str()], false, &[], &[]);
                 let result = match built {
@@ -1469,35 +1701,82 @@ async fn run_asks(
                             last_progress: now,
                             picked_up: false,
                             event_id: Some(event.id),
+                            replied_at: None,
                         });
                         update_tx.send(AskUpdate::Asked { call_id: ask.call_id, event_id: event.id }).ok();
                     }
                     Err(error) => {
-                        update_tx.send(AskUpdate::Failed { call_id: ask.call_id, error: format!("{error:#}") }).ok();
+                        update_tx.send(AskUpdate::Failed { call_id: ask.call_id, request: ask.request, error: format!("{error:#}") }).ok();
                     }
                 }
             }
             reply = reply_rx.recv() => {
                 let Some(reply) = reply else { continue };
-                let done = pending.pop_front().unwrap_or_else(|| Pending {
-                    request: "earlier request".into(),
-                    asked_at: Instant::now(),
-                    last_progress: Instant::now(),
-                    picked_up: true,
-                    event_id: None,
-                });
-                update_tx.send(AskUpdate::Answer {
-                    request: done.request,
-                    text: reply.content.clone(),
-                    waited_ms: done.asked_at.elapsed().as_millis(),
-                }).ok();
+                let update = match match_reply(&reply, &pending, &known) {
+                    Matched::Pending { index } => {
+                        let ask = &mut pending[index];
+                        let follow_up = ask.replied_at.is_some();
+                        if !follow_up {
+                            ask.replied_at = Some(Instant::now());
+                        }
+                        AskUpdate::Answer {
+                            request: ask.request.clone(),
+                            text: reply.content.clone(),
+                            waited_ms: ask.asked_at.elapsed().as_millis(),
+                            follow_up,
+                        }
+                    }
+                    Matched::Known(request) => AskUpdate::Answer {
+                        request,
+                        text: reply.content.clone(),
+                        waited_ms: 0,
+                        follow_up: true,
+                    },
+                    Matched::Unmatched => {
+                        // A reply that names no ask of ours: the oldest ask
+                        // still owed a first reply, else whatever was last.
+                        match pending.iter_mut().find(|p| p.unanswered()) {
+                            Some(ask) => {
+                                ask.replied_at = Some(Instant::now());
+                                AskUpdate::Answer {
+                                    request: ask.request.clone(),
+                                    text: reply.content.clone(),
+                                    waited_ms: ask.asked_at.elapsed().as_millis(),
+                                    follow_up: false,
+                                }
+                            }
+                            None => AskUpdate::Answer {
+                                request: "your earlier request".to_owned(),
+                                text: reply.content.clone(),
+                                waited_ms: 0,
+                                follow_up: true,
+                            },
+                        }
+                    }
+                };
+                update_tx.send(update).ok();
             }
             _ = check.tick() => {
-                while pending.front().is_some_and(|p| p.asked_at.elapsed() >= ask_timeout) {
-                    if let Some(late) = pending.pop_front() {
+                // Unanswered asks past the timeout are given up on, aloud.
+                // Replied asks whose seat has gone quiet are settled, silently:
+                // what it said was the answer.
+                let mut index = 0;
+                while index < pending.len() {
+                    let ask = &pending[index];
+                    let timed_out = ask.unanswered() && ask.asked_at.elapsed() >= ask_timeout;
+                    let settled = ask.settled(last_typing_at);
+                    if !(timed_out || settled) {
+                        index += 1;
+                        continue;
+                    }
+                    let Some(done) = pending.remove(index) else { break };
+                    if let Some(id) = done.event_id {
+                        known.insert(id, done.request.clone());
+                    }
+                    if timed_out {
                         update_tx.send(AskUpdate::TimedOut {
-                            waited_ms: late.asked_at.elapsed().as_millis(),
-                            request: late.request,
+                            waited_ms: done.asked_at.elapsed().as_millis(),
+                            request: done.request,
                         }).ok();
                     }
                 }
@@ -1505,23 +1784,41 @@ async fn run_asks(
             seen = typing_rx.recv() => {
                 let Some((seen, trigger)) = seen else { continue };
                 last_typing_at = Some(seen);
-                if let Some(front) = pending.front_mut() {
+                if let Some(front) = pending.iter_mut().find(|p| p.unanswered()) {
                     front.note_typing(seen, trigger.as_ref());
                 }
             }
             _ = progress.tick() => {
-                // The oldest outstanding ask only. Two lines about two waits
-                // is noise, and the human asked one question at a time.
-                if let Some(front) = pending.front_mut() {
-                    if front.last_progress.elapsed() >= progress_every {
-                        front.last_progress = Instant::now();
+                // The oldest ask still owed a first reply, if any: two lines
+                // about two waits is noise, and the human asked one question
+                // at a time. An ask the seat replied to and is still typing
+                // after gets the same line, as plain still-working.
+                if let Some(ask) = pending.iter_mut().find(|p| p.unanswered()) {
+                    if ask.last_progress.elapsed() >= progress_every {
+                        ask.last_progress = Instant::now();
                         update_tx.send(AskUpdate::Waiting {
-                            elapsed_secs: front.asked_at.elapsed().as_secs(),
-                            state: wait_state(front.picked_up, last_typing_at),
+                            elapsed_secs: ask.asked_at.elapsed().as_secs(),
+                            state: wait_state(ask.picked_up, last_typing_at),
+                        }).ok();
+                    }
+                } else if let Some(ask) = pending.iter_mut().find(|p| p.working_after_reply(last_typing_at)) {
+                    if ask.last_progress.elapsed() >= progress_every {
+                        ask.last_progress = Instant::now();
+                        update_tx.send(AskUpdate::Waiting {
+                            elapsed_secs: ask.asked_at.elapsed().as_secs(),
+                            state: WaitState::Working,
                         }).ok();
                     }
                 }
             }
+        }
+        // One place decides whether the line should sound like work.
+        let now_working = pending
+            .iter()
+            .any(|p| p.unanswered() || p.working_after_reply(last_typing_at));
+        if now_working != working {
+            working = now_working;
+            update_tx.send(AskUpdate::Working(working)).ok();
         }
     }
 }
@@ -1685,6 +1982,7 @@ mod tests {
             last_progress: asked_at,
             picked_up: false,
             event_id: None,
+            replied_at: None,
         }
     }
 
@@ -2021,20 +2319,6 @@ mod tests {
     }
 
     #[test]
-    fn counts_read_as_a_human_would_say_them() {
-        assert_eq!(plural(0, "error"), "0 errors");
-        assert_eq!(plural(1, "Gemini reconnect"), "1 Gemini reconnect");
-        assert_eq!(plural(2, "Gemini reconnect"), "2 Gemini reconnects");
-    }
-
-    #[test]
-    fn durations_read_as_a_human_would_say_them() {
-        assert_eq!(human_duration(Duration::from_millis(3400)), "3.4s");
-        assert_eq!(human_duration(Duration::from_secs(72)), "1m12s");
-        assert_eq!(human_duration(Duration::from_secs(3600)), "60m00s");
-    }
-
-    #[test]
     fn the_outcome_counts_carry_the_phase_and_every_tally() {
         let outcome = Outcome {
             phase: "gemini_connect",
@@ -2054,5 +2338,164 @@ mod tests {
         assert_eq!(counts["timeouts"], 1);
         assert_eq!(counts["reconnects"], 3);
         assert_eq!(counts["errors"], 4);
+    }
+
+    fn names() -> Names {
+        Names {
+            agent: "rock".into(),
+            human: "Lloyd".into(),
+            voice: "rock (voice)".into(),
+        }
+    }
+
+    fn reply_to(keys: &Keys, ids: &[EventId], text: &str) -> Event {
+        let mut builder = nostr::EventBuilder::new(nostr::Kind::Custom(9), text);
+        for id in ids {
+            builder =
+                builder.tag(nostr::Tag::parse(["e", &id.to_hex(), "", "reply"]).expect("tag"));
+        }
+        builder.sign_with_keys(keys).expect("sign")
+    }
+
+    fn pending_for(id: EventId, request: &str) -> Pending {
+        Pending {
+            request: request.into(),
+            asked_at: Instant::now(),
+            last_progress: Instant::now(),
+            picked_up: true,
+            event_id: Some(id),
+            replied_at: None,
+        }
+    }
+
+    /// A reply the way buzz-acp sends one in a DM thread: the thread root
+    /// marked `root`, the ask it answers marked `reply`.
+    fn threaded_reply(keys: &Keys, root: EventId, to: EventId, text: &str) -> Event {
+        nostr::EventBuilder::new(nostr::Kind::Custom(9), text)
+            .tag(nostr::Tag::parse(["e", &root.to_hex(), "", "root"]).expect("tag"))
+            .tag(nostr::Tag::parse(["e", &to.to_hex(), "", "reply"]).expect("tag"))
+            .sign_with_keys(keys)
+            .expect("sign")
+    }
+
+    #[test]
+    fn a_reply_finds_its_ask_by_the_event_it_answers_whatever_the_order() {
+        let keys = Keys::generate();
+        let pending: VecDeque<Pending> =
+            [pending_for(id(1), "first"), pending_for(id(2), "second")].into();
+        let known = HashMap::new();
+        // The seat answers the second ask first, threaded under the first
+        // (the root). The root tag must not steal the reply.
+        match match_reply(
+            &threaded_reply(&keys, id(1), id(2), "two"),
+            &pending,
+            &known,
+        ) {
+            Matched::Pending { index } => assert_eq!(pending[index].request, "second"),
+            _ => panic!("a reply to a waiting ask is its answer"),
+        }
+        match match_reply(&reply_to(&keys, &[id(1)], "one"), &pending, &known) {
+            Matched::Pending { index } => assert_eq!(pending[index].request, "first"),
+            _ => panic!("the root ask is answered by a reply marked for it"),
+        }
+    }
+
+    #[test]
+    fn a_reply_to_an_ask_that_left_the_queue_is_more_of_that_answer_not_the_next_asks() {
+        let keys = Keys::generate();
+        let pending: VecDeque<Pending> = [pending_for(id(2), "second")].into();
+        // Ask 1 settled or timed out; its id is remembered.
+        let known: HashMap<EventId, String> = [(id(1), "first".to_owned())].into();
+        match match_reply(
+            &reply_to(&keys, &[id(1)], "and one more thing"),
+            &pending,
+            &known,
+        ) {
+            Matched::Known(request) => assert_eq!(request, "first"),
+            _ => panic!("the second ask must keep waiting"),
+        }
+        // A late answer to a timed-out ask, threaded under it as the root.
+        match match_reply(
+            &threaded_reply(&keys, id(1), id(1), "late"),
+            &pending,
+            &known,
+        ) {
+            Matched::Known(request) => assert_eq!(request, "first"),
+            _ => panic!("a late answer is not the next ask's"),
+        }
+    }
+
+    #[test]
+    fn a_reply_that_names_nothing_known_is_unmatched() {
+        let keys = Keys::generate();
+        let pending: VecDeque<Pending> = [pending_for(id(1), "first")].into();
+        assert!(matches!(
+            match_reply(&reply_to(&keys, &[], "plain"), &pending, &HashMap::new()),
+            Matched::Unmatched
+        ));
+        assert!(matches!(
+            match_reply(
+                &reply_to(&keys, &[id(9)], "elsewhere"),
+                &pending,
+                &HashMap::new()
+            ),
+            Matched::Unmatched
+        ));
+    }
+
+    #[test]
+    fn a_replied_ask_keeps_counting_as_work_while_the_seat_types_and_settles_when_it_stops() {
+        let mut ask = pending_for(id(1), "first");
+        assert!(ask.unanswered());
+        assert!(!ask.settled(None));
+
+        // "On it" arrives; the seat types on after it.
+        ask.replied_at = Some(ago(5));
+        assert!(!ask.unanswered());
+        assert!(
+            ask.working_after_reply(Some(ago(1))),
+            "typing after the reply is work"
+        );
+        assert!(
+            !ask.working_after_reply(Some(ago(6))),
+            "typing before the reply is not"
+        );
+        assert!(!ask.working_after_reply(None));
+        assert!(!ask.settled(Some(ago(1))), "still typing: not settled");
+
+        // Quiet for longer than the staleness window: whatever it said stood.
+        ask.replied_at = Some(ago(30));
+        assert!(ask.settled(Some(ago(20))));
+        assert!(
+            ask.settled(None),
+            "never typed after the reply, long ago: settled"
+        );
+        assert!(!ask.settled(Some(ago(3))), "typed just now: not settled");
+    }
+
+    #[test]
+    fn the_ask_names_the_caller_quotes_the_request_and_carries_the_call_so_far() {
+        let eph = Uuid::new_v4();
+        let content = ask_content(
+            &names(),
+            eph,
+            "what's the build status\nfor main",
+            "Lloyd: hi\nrock (voice): hey",
+        );
+        assert!(content.starts_with("Lloyd is on a voice call with you"));
+        assert!(content.contains(&eph.to_string()[..8]));
+        assert!(content.contains("> what's the build status\n> for main"));
+        assert!(content.contains("> Lloyd: hi\n> rock (voice): hey"));
+        assert!(content.contains("Reply in this thread"));
+        assert!(content.contains("first person"));
+        assert!(
+            !content.contains("rock answered"),
+            "no third-person framing survives"
+        );
+        let bare = ask_content(&names(), eph, "hi", "");
+        assert!(
+            !bare.contains("last few things said"),
+            "no empty context section"
+        );
     }
 }

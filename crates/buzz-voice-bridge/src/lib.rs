@@ -11,8 +11,11 @@
 pub mod bed;
 pub mod call;
 pub mod config;
+pub mod context;
 pub mod gemini;
 pub mod jsonl;
+pub mod outcome;
+pub mod recovery;
 pub mod relay_io;
 pub mod room;
 pub mod transcript;

@@ -1,0 +1,69 @@
+# scripts/aitaco/fleet-watchdog is a Python script on a systemd timer. No job
+# in ci.yml looks at it: ci.yml builds Rust, Desktop, mobile and web, and this
+# is none of those. So until this workflow existed, watchdog.py and its 40-odd
+# assertions ran only when somebody on hip remembered to run them by hand, and
+# a green tick on a PR that changed it meant nothing at all.
+#
+# It is the thing that notices when a seat has gone quiet, so it gets a gate.
+#
+# Its own workflow rather than a job in ci.yml because ci.yml is upstream's
+# file and this script is not; keeping the two apart keeps the upstream merge
+# clean. Same reasoning, and same shape, as voice-bridge.yml.
+#
+# The two `paths:` lists below must stay identical. GitHub Actions does not
+# expand YAML anchors, so they are written out twice and the first step in the
+# job fails if they ever drift.
+name: Fleet Watchdog
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/aitaco/fleet-watchdog/**'
+      # The contract this script reads. `turn_log.rs` defines the routing
+      # decisions (`queued`, `author_gate`, `no_rule_matched`,
+      # `dropped_scope_busy`) and the index and decision record shapes that
+      # every class here parses. Rename one and the watchdog goes quiet rather
+      # than red, which is the worst way for a detector to break.
+      - 'crates/buzz-acp/src/turn_log.rs'
+      - '.github/workflows/fleet-watchdog.yml'
+  pull_request:
+    paths:
+      - 'scripts/aitaco/fleet-watchdog/**'
+      - 'crates/buzz-acp/src/turn_log.rs'
+      - '.github/workflows/fleet-watchdog.yml'
+
+concurrency:
+  group: fleet-watchdog-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  fleet-watchdog:
+    name: Fleet Watchdog
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      # A push filter that has drifted from the pull_request filter stops
+      # gating main silently, which is the failure this whole workflow exists
+      # to prevent. Catch it on the PR that writes it.
+      - name: Path filters agree
+        run: |
+          python3 scripts/aitaco/voice-bridge/check_workflow_paths.py \
+            .github/workflows/fleet-watchdog.yml
+      # No hermit, no pip: watchdog.py and its tests are stdlib only, and the
+      # roster they need is frozen in fixtures/roster/ rather than read from a
+      # developer's home directory. The one test that reads live turn logs
+      # announces itself as SKIPPED here; the suite prints skips loudly for
+      # exactly this reason.
+      - name: Watchdog tests
+        working-directory: scripts/aitaco/fleet-watchdog
+        run: python3 test_watchdog.py
+      # A suite that has never been seen to fail is a clean sheet, not
+      # evidence. This breaks one behaviour at a time and requires the suite to
+      # go red for each, then restores the tree and requires it to go green.
+      - name: Watchdog mutants
+        working-directory: scripts/aitaco/fleet-watchdog
+        run: python3 mutants.py

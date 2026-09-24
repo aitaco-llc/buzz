@@ -7,9 +7,11 @@
 #
 # A phone-shaped call: the caller creates the huddle's backing channel, posts
 # kind:48100 in its DM with the seat, joins the audio room and talks. The
-# bridge must join, hand Gemini the audio, post an ask that wakes the seat,
-# carry the seat's answer back, resume the Gemini session after goAway, speak
-# into the room, and post the transcript. lab_check.py scores it.
+# bridge must join, fetch the DM's history, hand Gemini the audio, post an ask
+# that wakes the seat with the call so far, carry the seat's answer back,
+# resume the Gemini session after goAway, speak into the room, post the
+# transcript, and wake the seat once more to record the call. lab_check.py
+# scores it.
 #
 # LAB_FAULT forces a failure instead, to prove that a call which dies still
 # writes an ending naming the cause:
@@ -137,6 +139,10 @@ PIDS+=("${RELAY_PID}")
 for _ in $(seq 1 60); do curl -sf "http://127.0.0.1:${RELAY_PORT}/_liveness" >/dev/null && break; sleep 1; done
 curl -sf "http://127.0.0.1:${RELAY_PORT}/_liveness" >/dev/null || { log "relay did not come up"; exit 70; }
 as caller --format compact relay members add --pubkey "${SEAT_PUB}" --role member >>"${RUN_DIR}/lab.log"
+# The bridge reads its names from kind:0 profiles, so the throwaway keys get
+# the names the scorer looks for; no VOICE_BRIDGE_*_LABEL is set below.
+as caller --format compact users set-profile --name Lloyd >>"${RUN_DIR}/lab.log"
+as seat --format compact users set-profile --name rock >>"${RUN_DIR}/lab.log"
 as caller --format compact dms open --pubkey "${SEAT_PUB}" > "${RUN_DIR}/dm-open.json"
 DM="$(grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' "${RUN_DIR}/dm-open.json" | head -1)"
 [[ -n "${DM}" ]] || { log "no DM id in $(cat "${RUN_DIR}/dm-open.json")"; exit 70; }
@@ -219,7 +225,7 @@ env -i HOME="${HOME}" USER="${USER}" PATH="$(dirname "${BUZZ_BIN}"):/usr/bin:/bi
   BUZZ_ACP_AGENT_COMMAND="${HERE}/stub_seat_agent.py" BUZZ_ACP_MCP_COMMAND="" \
   BUZZ_ACP_NO_MEMORY=true BUZZ_ACP_SUBSCRIBE=config BUZZ_ACP_CONFIG="${RUN_DIR}/seat-rules.toml" \
   BUZZ_ACP_RESPOND_TO=owner-only BUZZ_ACP_AGENT_OWNER="${CALLER_PUB}" \
-  BUZZ_ACP_SESSION_POLICY=thread "${SEAT_WAKE[@]}" \
+  BUZZ_ACP_SESSION_POLICY=thread ${SEAT_WAKE[@]+"${SEAT_WAKE[@]}"} \
   BUZZ_ACP_TURN_LOG_DIR="${RUN_DIR}/turnlog" \
   STUB_SEAT_LOG="${RUN_DIR}/seat-prompts.jsonl" STUB_SEAT_NONCE="${NONCE}" \
   STUB_SEAT_DELAY_SECS="${LAB_ANSWER_DELAY_S}" \
@@ -241,7 +247,7 @@ start_bridge() {  # waits for this start's own "watching for huddles"
   env -i HOME="${HOME}" PATH=/usr/bin:/bin \
     BUZZ_RELAY_URL="${RELAY_URL}" VOICE_BRIDGE_KEY_FILE="${STATE}/keys/seat.env" \
     VOICE_BRIDGE_PARENT_CHANNELS="${DM}" VOICE_BRIDGE_STARTERS="${CALLER_PUB}" \
-    "${GEMINI_ENV[@]}" \
+    ${GEMINI_ENV[@]+"${GEMINI_ENV[@]}"} \
     VOICE_BRIDGE_LOG_DIR="${RUN_DIR}/bridge-calls" VOICE_BRIDGE_ASK_TIMEOUT_SECS=60 \
     VOICE_BRIDGE_HEARTBEAT_SECS="${LAB_HEARTBEAT_S:-5}" \
     VOICE_BRIDGE_TRACE_FRAMES="${LAB_TRACE_FRAMES:-0}" \

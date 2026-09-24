@@ -12,7 +12,7 @@ import type { ProjectsFilter } from "@/features/projects/lib/projectsViewHelpers
 export function projectsSectionTitle(filter: ProjectsFilter) {
   if (filter === "all") return "Activity";
   if (filter === "prs") return "Reviews";
-  if (filter === "issues") return "Tasks";
+  if (filter === "issues") return "Issues";
   if (filter === "repositories") return "Repositories";
   if (filter === "channels") return "Channels";
   return "Projects";

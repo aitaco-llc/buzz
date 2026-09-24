@@ -740,6 +740,7 @@ async fn ensure_default_create_repo(
         &[],
         None,
         &[],
+        &[],
         Some(channel),
     )?;
     let event = client.sign_event(builder)?;
@@ -895,6 +896,7 @@ mod tests {
             None,
             &[],
             None,
+            &[],
             &[],
             Some(winning_channel),
         )

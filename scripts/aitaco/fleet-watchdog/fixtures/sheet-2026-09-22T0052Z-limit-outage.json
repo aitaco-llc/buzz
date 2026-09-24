@@ -1,0 +1,3309 @@
+{
+ "body": "hip",
+ "collectErrors": [],
+ "historical": true,
+ "limitReport": {
+  "report": {
+   "isUsingOverage": false,
+   "overageDisabledReason": "org_level_disabled",
+   "overageStatus": "rejected",
+   "rateLimitType": "five_hour",
+   "resetsAt": 1790038200,
+   "status": "rejected",
+   "unifiedWindows": {
+    "five_hour": {
+     "resetsAt": 1790038200,
+     "utilization": 1
+    },
+    "seven_day": {
+     "resetsAt": 1790607600,
+     "utilization": 0.28
+    }
+   }
+  },
+  "seat": "aldrin",
+  "ts": 1790035262.559589
+ },
+ "now": 1790038320.0,
+ "nowIso": "2026-09-22T00:52:00Z",
+ "schemaVersion": 1,
+ "seats": {
+  "aldrin": {
+   "decisions": [
+    {
+     "author": "6e920684a788bdb487748fa7421e3519793d9186339819d5029cb0967993ea59",
+     "channelId": "72fa2e7b-7e86-437c-a9ca-872838e64dbb",
+     "decision": "no_rule_matched",
+     "eventId": "cbe8d104d4460c8ded5a26bce9189e54f03a22f1f1046778b162712df60a351a",
+     "kind": 9,
+     "threadRoot": "419c4e903790a27c62ba4a6aa2630bcf289346919b6221abff6ebb407da76fc0",
+     "ts": 1790032198.094089
+    }
+   ],
+   "lastCompletedAt": 1790035262.58257,
+   "limitTurns": [
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790035262.58257,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-22/e68c598c-dfd3-4578-ad68-78aac79fd03e.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790035261.836719,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "e68c598c-dfd3-4578-ad68-78aac79fd03e"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033294.207144,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 1837,
+     "outcome": "error",
+     "path": "turns/2026-09-21/44933ca2-9913-47ee-a161-4d67b551e7fa.jsonl",
+     "scope": "thread:108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "startedAt": 1790028558.204209,
+     "triggeringEventIds": [
+      "04afd48993866eb6f138df92a9a964696536a1850558795b538d949f1c56c4fd"
+     ],
+     "turnId": "44933ca2-9913-47ee-a161-4d67b551e7fa"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033294.850769,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/6a8e794c-2669-43d5-9d7e-f3068772e687.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033294.20729,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "6a8e794c-2669-43d5-9d7e-f3068772e687"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033315.340579,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 8,
+     "outcome": "error",
+     "path": "turns/2026-09-21/190c69de-750a-422c-8528-508518451cb6.jsonl",
+     "scope": "thread:108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "startedAt": 1790033314.836897,
+     "triggeringEventIds": [
+      "04afd48993866eb6f138df92a9a964696536a1850558795b538d949f1c56c4fd"
+     ],
+     "turnId": "190c69de-750a-422c-8528-508518451cb6"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033315.855849,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 8,
+     "outcome": "error",
+     "path": "turns/2026-09-21/6321bd4c-b97b-4ecf-a401-8c3c6f2d6038.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033315.340734,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "6321bd4c-b97b-4ecf-a401-8c3c6f2d6038"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033348.318973,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/0126918e-3aac-4f4f-a2d0-d51def73da99.jsonl",
+     "scope": "thread:108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "startedAt": 1790033347.83627,
+     "triggeringEventIds": [
+      "04afd48993866eb6f138df92a9a964696536a1850558795b538d949f1c56c4fd"
+     ],
+     "turnId": "0126918e-3aac-4f4f-a2d0-d51def73da99"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033348.77837,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/323a635e-008a-44f0-99b4-51dd566f2872.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033348.319096,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "323a635e-008a-44f0-99b4-51dd566f2872"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033381.369524,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/b9eda4fe-6cfb-4450-9aca-7be6eee942d5.jsonl",
+     "scope": "thread:108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "startedAt": 1790033380.836713,
+     "triggeringEventIds": [
+      "04afd48993866eb6f138df92a9a964696536a1850558795b538d949f1c56c4fd"
+     ],
+     "turnId": "b9eda4fe-6cfb-4450-9aca-7be6eee942d5"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033382.061079,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/95b6bb04-bf3b-4126-811a-64a3f332e041.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033381.369672,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "95b6bb04-bf3b-4126-811a-64a3f332e041"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033414.401077,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/6d3ee445-dcc6-42ca-ae36-bfb5414485ab.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033413.836768,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "6d3ee445-dcc6-42ca-ae36-bfb5414485ab"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033447.374812,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/6e1b8027-cab3-409f-ab09-4f785fe97b00.jsonl",
+     "scope": "thread:108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "startedAt": 1790033446.835749,
+     "triggeringEventIds": [
+      "04afd48993866eb6f138df92a9a964696536a1850558795b538d949f1c56c4fd"
+     ],
+     "turnId": "6e1b8027-cab3-409f-ab09-4f785fe97b00"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033447.874819,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/363d643e-ccc6-4792-9a80-9cc0499ed2da.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033447.37497,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "363d643e-ccc6-4792-9a80-9cc0499ed2da"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033477.409446,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 8,
+     "outcome": "error",
+     "path": "turns/2026-09-21/62987854-b4eb-41fd-b2e2-c5267eeba2ad.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033476.836473,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "62987854-b4eb-41fd-b2e2-c5267eeba2ad"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033510.365572,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/0fd5a56c-73e3-4f77-823b-4927956ccea6.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033509.83675,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "0fd5a56c-73e3-4f77-823b-4927956ccea6"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033543.415212,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/5e0ea20d-0998-4459-a117-c02c0453e5f0.jsonl",
+     "scope": "thread:108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "startedAt": 1790033542.836762,
+     "triggeringEventIds": [
+      "04afd48993866eb6f138df92a9a964696536a1850558795b538d949f1c56c4fd"
+     ],
+     "turnId": "5e0ea20d-0998-4459-a117-c02c0453e5f0"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033543.934877,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/d8348f6b-a60b-4094-bfec-8b99d1685b9d.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033543.415317,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "d8348f6b-a60b-4094-bfec-8b99d1685b9d"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033573.43165,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 8,
+     "outcome": "error",
+     "path": "turns/2026-09-21/23b498fa-b776-44ff-bef8-cdc41ec00da6.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033572.836882,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "23b498fa-b776-44ff-bef8-cdc41ec00da6"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033606.392848,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/ea9f7146-f4cc-4ab5-9006-ed48fab08443.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033605.836243,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "ea9f7146-f4cc-4ab5-9006-ed48fab08443"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033636.348214,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 8,
+     "outcome": "error",
+     "path": "turns/2026-09-21/6726d0fa-e31c-48b4-a86f-1571a3205e23.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033635.836701,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "6726d0fa-e31c-48b4-a86f-1571a3205e23"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033702.42538,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/d9d5f32f-aac2-404f-9368-d6085822b5d8.jsonl",
+     "scope": "thread:108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "startedAt": 1790033701.836178,
+     "triggeringEventIds": [
+      "04afd48993866eb6f138df92a9a964696536a1850558795b538d949f1c56c4fd"
+     ],
+     "turnId": "d9d5f32f-aac2-404f-9368-d6085822b5d8"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033702.936981,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/cc7ae327-6c39-46e2-b25b-42b9d7a223ae.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033702.425496,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "cc7ae327-6c39-46e2-b25b-42b9d7a223ae"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033732.317223,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 8,
+     "outcome": "error",
+     "path": "turns/2026-09-21/48d4784d-86e8-418b-814d-c15899a7d606.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033731.836585,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "48d4784d-86e8-418b-814d-c15899a7d606"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033762.612829,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/e6c6ba1d-b954-4677-9a76-6ea2e7cbf853.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033761.836857,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "e6c6ba1d-b954-4677-9a76-6ea2e7cbf853"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033792.303792,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 8,
+     "outcome": "error",
+     "path": "turns/2026-09-21/5d1f7e01-f5ca-43c2-ad93-34182f9e10d5.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033791.836927,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "5d1f7e01-f5ca-43c2-ad93-34182f9e10d5"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033858.396233,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/f9bd8357-9a2b-41f4-b195-adc4245aede3.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033857.835726,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "f9bd8357-9a2b-41f4-b195-adc4245aede3"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033951.513872,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/3128d72a-7465-4c65-90a8-07d7c6a8d509.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033950.836456,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "3128d72a-7465-4c65-90a8-07d7c6a8d509"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033984.439717,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/389523aa-7388-44df-a8cf-f489c6145ff5.jsonl",
+     "scope": "thread:108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "startedAt": 1790033983.836427,
+     "triggeringEventIds": [
+      "04afd48993866eb6f138df92a9a964696536a1850558795b538d949f1c56c4fd"
+     ],
+     "turnId": "389523aa-7388-44df-a8cf-f489c6145ff5"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790034113.603555,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/83440772-d0bc-4712-85b0-dcb36882bb81.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790034112.837275,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "83440772-d0bc-4712-85b0-dcb36882bb81"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790034242.427384,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/e79130c0-0d55-42f1-b835-91b8ad8c28f6.jsonl",
+     "scope": "thread:108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "startedAt": 1790034241.835847,
+     "triggeringEventIds": [
+      "04afd48993866eb6f138df92a9a964696536a1850558795b538d949f1c56c4fd"
+     ],
+     "turnId": "e79130c0-0d55-42f1-b835-91b8ad8c28f6"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790034398.894392,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/8f04dfcc-ef23-4126-98a0-ac094192d785.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790034397.836683,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "8f04dfcc-ef23-4126-98a0-ac094192d785"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790034524.434539,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/503da0e2-3da1-424e-93b8-a257b9759314.jsonl",
+     "scope": "thread:108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "startedAt": 1790034523.836425,
+     "triggeringEventIds": [
+      "04afd48993866eb6f138df92a9a964696536a1850558795b538d949f1c56c4fd"
+     ],
+     "turnId": "503da0e2-3da1-424e-93b8-a257b9759314"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790034689.592762,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/62d59557-a273-44dd-a889-0c7abc65ca29.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790034688.836558,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "62d59557-a273-44dd-a889-0c7abc65ca29"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790034785.531569,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/5aac0fb7-d9ea-4004-bb0d-42099fa3cf9d.jsonl",
+     "scope": "thread:108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "startedAt": 1790034784.83633,
+     "triggeringEventIds": [
+      "04afd48993866eb6f138df92a9a964696536a1850558795b538d949f1c56c4fd"
+     ],
+     "turnId": "5aac0fb7-d9ea-4004-bb0d-42099fa3cf9d"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790034974.630203,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/03490985-4b13-4c1f-8f4a-3bdf50651a72.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790034973.836913,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "03490985-4b13-4c1f-8f4a-3bdf50651a72"
+    }
+   ],
+   "openTurns": [
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "lastAcpRead": 1789958789.069928,
+     "lastLiveness": 1789958783.030054,
+     "path": "/home/lth/.local/state/buzz-turns/aldrin/turns/2026-09-21/242b629d-150f-438c-ac43-e6c6ef9adb66.jsonl",
+     "scope": null,
+     "startedAt": 1789957603.028951,
+     "triggeringEventIds": [],
+     "turnId": "242b629d-150f-438c-ac43-e6c6ef9adb66"
+    }
+   ],
+   "pubkey": "2c4a588af493bfe42eb50df429aed6f0945eaeb70034fc655df22e2e4bf138dc",
+   "recentTurns": [
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790035262.58257,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-22/e68c598c-dfd3-4578-ad68-78aac79fd03e.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790035261.836719,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "e68c598c-dfd3-4578-ad68-78aac79fd03e"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033294.207144,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 1837,
+     "outcome": "error",
+     "path": "turns/2026-09-21/44933ca2-9913-47ee-a161-4d67b551e7fa.jsonl",
+     "scope": "thread:108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "startedAt": 1790028558.204209,
+     "triggeringEventIds": [
+      "04afd48993866eb6f138df92a9a964696536a1850558795b538d949f1c56c4fd"
+     ],
+     "turnId": "44933ca2-9913-47ee-a161-4d67b551e7fa"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033294.850769,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/6a8e794c-2669-43d5-9d7e-f3068772e687.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033294.20729,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "6a8e794c-2669-43d5-9d7e-f3068772e687"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033315.340579,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 8,
+     "outcome": "error",
+     "path": "turns/2026-09-21/190c69de-750a-422c-8528-508518451cb6.jsonl",
+     "scope": "thread:108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "startedAt": 1790033314.836897,
+     "triggeringEventIds": [
+      "04afd48993866eb6f138df92a9a964696536a1850558795b538d949f1c56c4fd"
+     ],
+     "turnId": "190c69de-750a-422c-8528-508518451cb6"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033315.855849,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 8,
+     "outcome": "error",
+     "path": "turns/2026-09-21/6321bd4c-b97b-4ecf-a401-8c3c6f2d6038.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033315.340734,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "6321bd4c-b97b-4ecf-a401-8c3c6f2d6038"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033348.318973,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/0126918e-3aac-4f4f-a2d0-d51def73da99.jsonl",
+     "scope": "thread:108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "startedAt": 1790033347.83627,
+     "triggeringEventIds": [
+      "04afd48993866eb6f138df92a9a964696536a1850558795b538d949f1c56c4fd"
+     ],
+     "turnId": "0126918e-3aac-4f4f-a2d0-d51def73da99"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033348.77837,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/323a635e-008a-44f0-99b4-51dd566f2872.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033348.319096,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "323a635e-008a-44f0-99b4-51dd566f2872"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033381.369524,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/b9eda4fe-6cfb-4450-9aca-7be6eee942d5.jsonl",
+     "scope": "thread:108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "startedAt": 1790033380.836713,
+     "triggeringEventIds": [
+      "04afd48993866eb6f138df92a9a964696536a1850558795b538d949f1c56c4fd"
+     ],
+     "turnId": "b9eda4fe-6cfb-4450-9aca-7be6eee942d5"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033382.061079,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/95b6bb04-bf3b-4126-811a-64a3f332e041.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033381.369672,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "95b6bb04-bf3b-4126-811a-64a3f332e041"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033414.401077,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/6d3ee445-dcc6-42ca-ae36-bfb5414485ab.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033413.836768,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "6d3ee445-dcc6-42ca-ae36-bfb5414485ab"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033447.374812,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/6e1b8027-cab3-409f-ab09-4f785fe97b00.jsonl",
+     "scope": "thread:108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "startedAt": 1790033446.835749,
+     "triggeringEventIds": [
+      "04afd48993866eb6f138df92a9a964696536a1850558795b538d949f1c56c4fd"
+     ],
+     "turnId": "6e1b8027-cab3-409f-ab09-4f785fe97b00"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033447.874819,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/363d643e-ccc6-4792-9a80-9cc0499ed2da.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033447.37497,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "363d643e-ccc6-4792-9a80-9cc0499ed2da"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033477.409446,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 8,
+     "outcome": "error",
+     "path": "turns/2026-09-21/62987854-b4eb-41fd-b2e2-c5267eeba2ad.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033476.836473,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "62987854-b4eb-41fd-b2e2-c5267eeba2ad"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033510.365572,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/0fd5a56c-73e3-4f77-823b-4927956ccea6.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033509.83675,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "0fd5a56c-73e3-4f77-823b-4927956ccea6"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033543.415212,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/5e0ea20d-0998-4459-a117-c02c0453e5f0.jsonl",
+     "scope": "thread:108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "startedAt": 1790033542.836762,
+     "triggeringEventIds": [
+      "04afd48993866eb6f138df92a9a964696536a1850558795b538d949f1c56c4fd"
+     ],
+     "turnId": "5e0ea20d-0998-4459-a117-c02c0453e5f0"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033543.934877,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/d8348f6b-a60b-4094-bfec-8b99d1685b9d.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033543.415317,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "d8348f6b-a60b-4094-bfec-8b99d1685b9d"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033573.43165,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 8,
+     "outcome": "error",
+     "path": "turns/2026-09-21/23b498fa-b776-44ff-bef8-cdc41ec00da6.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033572.836882,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "23b498fa-b776-44ff-bef8-cdc41ec00da6"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033606.392848,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/ea9f7146-f4cc-4ab5-9006-ed48fab08443.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033605.836243,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "ea9f7146-f4cc-4ab5-9006-ed48fab08443"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033636.348214,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 8,
+     "outcome": "error",
+     "path": "turns/2026-09-21/6726d0fa-e31c-48b4-a86f-1571a3205e23.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033635.836701,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "6726d0fa-e31c-48b4-a86f-1571a3205e23"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033702.42538,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/d9d5f32f-aac2-404f-9368-d6085822b5d8.jsonl",
+     "scope": "thread:108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "startedAt": 1790033701.836178,
+     "triggeringEventIds": [
+      "04afd48993866eb6f138df92a9a964696536a1850558795b538d949f1c56c4fd"
+     ],
+     "turnId": "d9d5f32f-aac2-404f-9368-d6085822b5d8"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033702.936981,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/cc7ae327-6c39-46e2-b25b-42b9d7a223ae.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033702.425496,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "cc7ae327-6c39-46e2-b25b-42b9d7a223ae"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033732.317223,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 8,
+     "outcome": "error",
+     "path": "turns/2026-09-21/48d4784d-86e8-418b-814d-c15899a7d606.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033731.836585,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "48d4784d-86e8-418b-814d-c15899a7d606"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033762.612829,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/e6c6ba1d-b954-4677-9a76-6ea2e7cbf853.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033761.836857,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "e6c6ba1d-b954-4677-9a76-6ea2e7cbf853"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033792.303792,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 8,
+     "outcome": "error",
+     "path": "turns/2026-09-21/5d1f7e01-f5ca-43c2-ad93-34182f9e10d5.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033791.836927,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "5d1f7e01-f5ca-43c2-ad93-34182f9e10d5"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033858.396233,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/f9bd8357-9a2b-41f4-b195-adc4245aede3.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033857.835726,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "f9bd8357-9a2b-41f4-b195-adc4245aede3"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033951.513872,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/3128d72a-7465-4c65-90a8-07d7c6a8d509.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790033950.836456,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "3128d72a-7465-4c65-90a8-07d7c6a8d509"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033984.439717,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/389523aa-7388-44df-a8cf-f489c6145ff5.jsonl",
+     "scope": "thread:108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "startedAt": 1790033983.836427,
+     "triggeringEventIds": [
+      "04afd48993866eb6f138df92a9a964696536a1850558795b538d949f1c56c4fd"
+     ],
+     "turnId": "389523aa-7388-44df-a8cf-f489c6145ff5"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790034113.603555,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/83440772-d0bc-4712-85b0-dcb36882bb81.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790034112.837275,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "83440772-d0bc-4712-85b0-dcb36882bb81"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790034242.427384,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/e79130c0-0d55-42f1-b835-91b8ad8c28f6.jsonl",
+     "scope": "thread:108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "startedAt": 1790034241.835847,
+     "triggeringEventIds": [
+      "04afd48993866eb6f138df92a9a964696536a1850558795b538d949f1c56c4fd"
+     ],
+     "turnId": "e79130c0-0d55-42f1-b835-91b8ad8c28f6"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790034398.894392,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/8f04dfcc-ef23-4126-98a0-ac094192d785.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790034397.836683,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "8f04dfcc-ef23-4126-98a0-ac094192d785"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790034524.434539,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/503da0e2-3da1-424e-93b8-a257b9759314.jsonl",
+     "scope": "thread:108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "startedAt": 1790034523.836425,
+     "triggeringEventIds": [
+      "04afd48993866eb6f138df92a9a964696536a1850558795b538d949f1c56c4fd"
+     ],
+     "turnId": "503da0e2-3da1-424e-93b8-a257b9759314"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790034689.592762,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/62d59557-a273-44dd-a889-0c7abc65ca29.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790034688.836558,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "62d59557-a273-44dd-a889-0c7abc65ca29"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790034785.531569,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/5aac0fb7-d9ea-4004-bb0d-42099fa3cf9d.jsonl",
+     "scope": "thread:108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "startedAt": 1790034784.83633,
+     "triggeringEventIds": [
+      "04afd48993866eb6f138df92a9a964696536a1850558795b538d949f1c56c4fd"
+     ],
+     "turnId": "5aac0fb7-d9ea-4004-bb0d-42099fa3cf9d"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790034974.630203,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/03490985-4b13-4c1f-8f4a-3bdf50651a72.jsonl",
+     "scope": "thread:7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "startedAt": 1790034973.836913,
+     "triggeringEventIds": [
+      "dc92799b10949fd7ab6f8b50ab83f5b7abbf659aab29b3edffbd3f643d410565"
+     ],
+     "turnId": "03490985-4b13-4c1f-8f4a-3bdf50651a72"
+    }
+   ],
+   "unit": {
+    "available": false,
+    "reason": "historical"
+   }
+  },
+  "bill": {
+   "decisions": [
+    {
+     "author": "270d21e2e34f8026f05c7fb68492ad5e1777db1658a53cdc9f4e7df79d1d3b25",
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "decision": "no_rule_matched",
+     "eventId": "d10f3b7c08bc0b460d2ab16d8164231b225024c8f0d20b6c7ac5c30ebf90c188",
+     "kind": 9,
+     "threadRoot": "0801ca2eeeb952fb219bdd3f2ff7f3507d345fb1d59d668f3bf02d9a226425cb",
+     "ts": 1790031272.223173
+    },
+    {
+     "author": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "decision": "no_rule_matched",
+     "eventId": "fca374f2a5dac4e0ae5932f261f4b23a03c46efaefa30d84cc0115db6326c9e6",
+     "kind": 9,
+     "threadRoot": "38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "ts": 1790031883.092964
+    },
+    {
+     "author": "41243293dd98372825e2c57bb2b44a100c36809a4339cf9bd564c9c33f8d5d0c",
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "decision": "no_rule_matched",
+     "eventId": "2e517750af4150c85a353933d916c1b7f23aea66e36fafa3d6e4348acbe80e13",
+     "kind": 9,
+     "threadRoot": "38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "ts": 1790032034.553563
+    },
+    {
+     "author": "6e920684a788bdb487748fa7421e3519793d9186339819d5029cb0967993ea59",
+     "channelId": "72fa2e7b-7e86-437c-a9ca-872838e64dbb",
+     "decision": "no_rule_matched",
+     "eventId": "cbe8d104d4460c8ded5a26bce9189e54f03a22f1f1046778b162712df60a351a",
+     "kind": 9,
+     "threadRoot": "419c4e903790a27c62ba4a6aa2630bcf289346919b6221abff6ebb407da76fc0",
+     "ts": 1790032198.093828
+    },
+    {
+     "author": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "decision": "no_rule_matched",
+     "eventId": "101b8f520f5cb65fb8f06f047c9fda14530b5dc952f96b8b5c919c92f4afe4ae",
+     "kind": 9,
+     "threadRoot": "20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "ts": 1790032656.473565
+    },
+    {
+     "author": "2c4a588af493bfe42eb50df429aed6f0945eaeb70034fc655df22e2e4bf138dc",
+     "channelId": "72fa2e7b-7e86-437c-a9ca-872838e64dbb",
+     "decision": "no_rule_matched",
+     "eventId": "bb64d1d0702c2086eb8ac5b2eb0e5fe022ba404a2bab8067634889e56bf108fe",
+     "kind": 9,
+     "threadRoot": null,
+     "ts": 1790032941.679673
+    },
+    {
+     "author": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "decision": "no_rule_matched",
+     "eventId": "600f7648b328cc3b6de77a6c3bf8ed198e8e1b8650d56b9fc796c984546baefd",
+     "kind": 9,
+     "threadRoot": null,
+     "ts": 1790032988.114149
+    },
+    {
+     "author": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "decision": "no_rule_matched",
+     "eventId": "3721fc52760344afb404c929d53beae2bb4bc0eb548ea82a3adf4d22a71f7702",
+     "kind": 9,
+     "threadRoot": "38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "ts": 1790033006.753201
+    },
+    {
+     "author": "41243293dd98372825e2c57bb2b44a100c36809a4339cf9bd564c9c33f8d5d0c",
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "decision": "no_rule_matched",
+     "eventId": "2cae09c3c884a48ec603b902d33de3c1c73781d12d4bb3dd92033fed84ad6349",
+     "kind": 9,
+     "threadRoot": "38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "ts": 1790033077.827757
+    },
+    {
+     "author": "77c9bf89e2a9d815234aac71822d4908e471a1c22a7f4bcbfcc18ca572526e58",
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "decision": "no_rule_matched",
+     "eventId": "6f1dcf2ae168465f5b5ca9e06999ba5a1712d075044c772d9b9587304e79f769",
+     "kind": 9,
+     "threadRoot": "20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "ts": 1790034806.370279
+    },
+    {
+     "author": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "decision": "no_rule_matched",
+     "eventId": "a22c4a6ae25da3164973a808d27eef69029c191b3850d621ed14fde4efcc17ad",
+     "kind": 9,
+     "threadRoot": "38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "ts": 1790034833.661168
+    }
+   ],
+   "lastCompletedAt": null,
+   "limitTurns": [],
+   "openTurns": [],
+   "pubkey": "cf26f01780146172957f52c930bd731f174656758769e5c38d8a182de1af70ba",
+   "recentTurns": [],
+   "unit": {
+    "available": false,
+    "reason": "historical"
+   }
+  },
+  "matt": {
+   "decisions": [
+    {
+     "author": "270d21e2e34f8026f05c7fb68492ad5e1777db1658a53cdc9f4e7df79d1d3b25",
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "decision": "no_rule_matched",
+     "eventId": "d10f3b7c08bc0b460d2ab16d8164231b225024c8f0d20b6c7ac5c30ebf90c188",
+     "kind": 9,
+     "threadRoot": "0801ca2eeeb952fb219bdd3f2ff7f3507d345fb1d59d668f3bf02d9a226425cb",
+     "ts": 1790031272.222769
+    },
+    {
+     "author": "41243293dd98372825e2c57bb2b44a100c36809a4339cf9bd564c9c33f8d5d0c",
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "decision": "queued",
+     "eventId": "2e517750af4150c85a353933d916c1b7f23aea66e36fafa3d6e4348acbe80e13",
+     "kind": 9,
+     "threadRoot": "38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "ts": 1790032034.553874
+    },
+    {
+     "author": "6e920684a788bdb487748fa7421e3519793d9186339819d5029cb0967993ea59",
+     "channelId": "72fa2e7b-7e86-437c-a9ca-872838e64dbb",
+     "decision": "no_rule_matched",
+     "eventId": "cbe8d104d4460c8ded5a26bce9189e54f03a22f1f1046778b162712df60a351a",
+     "kind": 9,
+     "threadRoot": "419c4e903790a27c62ba4a6aa2630bcf289346919b6221abff6ebb407da76fc0",
+     "ts": 1790032198.094299
+    },
+    {
+     "author": "2c4a588af493bfe42eb50df429aed6f0945eaeb70034fc655df22e2e4bf138dc",
+     "channelId": "72fa2e7b-7e86-437c-a9ca-872838e64dbb",
+     "decision": "no_rule_matched",
+     "eventId": "bb64d1d0702c2086eb8ac5b2eb0e5fe022ba404a2bab8067634889e56bf108fe",
+     "kind": 9,
+     "threadRoot": null,
+     "ts": 1790032941.679682
+    },
+    {
+     "author": "41243293dd98372825e2c57bb2b44a100c36809a4339cf9bd564c9c33f8d5d0c",
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "decision": "queued",
+     "eventId": "2cae09c3c884a48ec603b902d33de3c1c73781d12d4bb3dd92033fed84ad6349",
+     "kind": 9,
+     "threadRoot": "38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "ts": 1790033077.823331
+    },
+    {
+     "author": "285e178b956a3c5060e8066c25a2e899d2b11e2d104fb5c6f8b7b1fd6ca4b6fa",
+     "channelId": "3d7b6127-7c9c-41e4-a1b8-e8fbfeecde4f",
+     "decision": "author_gate",
+     "eventId": "b314e72a72fcae4caebbf10ea8018006583a0adc6cadd8423bf8da8811522efe",
+     "kind": 9,
+     "threadRoot": null,
+     "ts": 1790034697.631525
+    },
+    {
+     "author": "77c9bf89e2a9d815234aac71822d4908e471a1c22a7f4bcbfcc18ca572526e58",
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "decision": "no_rule_matched",
+     "eventId": "6f1dcf2ae168465f5b5ca9e06999ba5a1712d075044c772d9b9587304e79f769",
+     "kind": 9,
+     "threadRoot": "20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "ts": 1790034806.370336
+    },
+    {
+     "author": "285e178b956a3c5060e8066c25a2e899d2b11e2d104fb5c6f8b7b1fd6ca4b6fa",
+     "channelId": "3d7b6127-7c9c-41e4-a1b8-e8fbfeecde4f",
+     "decision": "author_gate",
+     "eventId": "8e85deaa996e7c059a9c62a27d32d1e65ee2b8b029fe52131a82394c79c376e7",
+     "kind": 9,
+     "threadRoot": null,
+     "ts": 1790035111.651551
+    }
+   ],
+   "lastCompletedAt": 1790034833.598981,
+   "limitTurns": [
+    {
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "completedAt": 1790033306.139815,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 156,
+     "outcome": "error",
+     "path": "turns/2026-09-21/3042c71f-765f-4819-acdf-2e015e2d68eb.jsonl",
+     "scope": "thread:38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "startedAt": 1790033077.823374,
+     "triggeringEventIds": [
+      "2cae09c3c884a48ec603b902d33de3c1c73781d12d4bb3dd92033fed84ad6349"
+     ],
+     "turnId": "3042c71f-765f-4819-acdf-2e015e2d68eb"
+    },
+    {
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "completedAt": 1790033315.475174,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 8,
+     "outcome": "error",
+     "path": "turns/2026-09-21/fc35f951-c7b2-4850-a067-9389e04e63d1.jsonl",
+     "scope": "thread:38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "startedAt": 1790033314.842676,
+     "triggeringEventIds": [
+      "2cae09c3c884a48ec603b902d33de3c1c73781d12d4bb3dd92033fed84ad6349"
+     ],
+     "turnId": "fc35f951-c7b2-4850-a067-9389e04e63d1"
+    },
+    {
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "completedAt": 1790033345.471461,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/41493aba-212b-488f-a011-ded2da7485f6.jsonl",
+     "scope": "thread:38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "startedAt": 1790033344.842745,
+     "triggeringEventIds": [
+      "2cae09c3c884a48ec603b902d33de3c1c73781d12d4bb3dd92033fed84ad6349"
+     ],
+     "turnId": "41493aba-212b-488f-a011-ded2da7485f6"
+    },
+    {
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "completedAt": 1790033378.581162,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/71210792-b7c3-4c65-92ba-e8e3eb9cf029.jsonl",
+     "scope": "thread:38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "startedAt": 1790033377.842463,
+     "triggeringEventIds": [
+      "2cae09c3c884a48ec603b902d33de3c1c73781d12d4bb3dd92033fed84ad6349"
+     ],
+     "turnId": "71210792-b7c3-4c65-92ba-e8e3eb9cf029"
+    },
+    {
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "completedAt": 1790033441.553002,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/c8228577-d2ff-48c5-a37c-7d3347e771b9.jsonl",
+     "scope": "thread:38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "startedAt": 1790033440.841793,
+     "triggeringEventIds": [
+      "2cae09c3c884a48ec603b902d33de3c1c73781d12d4bb3dd92033fed84ad6349"
+     ],
+     "turnId": "c8228577-d2ff-48c5-a37c-7d3347e771b9"
+    },
+    {
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "completedAt": 1790033534.537094,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/d9129bfc-ce31-49f0-ae31-88ea510c15f3.jsonl",
+     "scope": "thread:38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "startedAt": 1790033533.842064,
+     "triggeringEventIds": [
+      "2cae09c3c884a48ec603b902d33de3c1c73781d12d4bb3dd92033fed84ad6349"
+     ],
+     "turnId": "d9129bfc-ce31-49f0-ae31-88ea510c15f3"
+    },
+    {
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "completedAt": 1790033693.748003,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/444cefab-9d53-4352-be82-fbb2b311bb3b.jsonl",
+     "scope": "thread:38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "startedAt": 1790033692.84209,
+     "triggeringEventIds": [
+      "2cae09c3c884a48ec603b902d33de3c1c73781d12d4bb3dd92033fed84ad6349"
+     ],
+     "turnId": "444cefab-9d53-4352-be82-fbb2b311bb3b"
+    },
+    {
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "completedAt": 1790033981.599072,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/528423aa-1974-4cc6-a2b6-6acfb8582c11.jsonl",
+     "scope": "thread:38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "startedAt": 1790033980.842079,
+     "triggeringEventIds": [
+      "2cae09c3c884a48ec603b902d33de3c1c73781d12d4bb3dd92033fed84ad6349"
+     ],
+     "turnId": "528423aa-1974-4cc6-a2b6-6acfb8582c11"
+    },
+    {
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "completedAt": 1790034266.436469,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/360dcd8f-4bbc-46ea-a9dd-73fdd67816a6.jsonl",
+     "scope": "thread:38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "startedAt": 1790034265.842497,
+     "triggeringEventIds": [
+      "2cae09c3c884a48ec603b902d33de3c1c73781d12d4bb3dd92033fed84ad6349"
+     ],
+     "turnId": "360dcd8f-4bbc-46ea-a9dd-73fdd67816a6"
+    },
+    {
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "completedAt": 1790034548.550166,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/40afde95-d38e-4974-a1a2-3049eae55156.jsonl",
+     "scope": "thread:38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "startedAt": 1790034547.842916,
+     "triggeringEventIds": [
+      "2cae09c3c884a48ec603b902d33de3c1c73781d12d4bb3dd92033fed84ad6349"
+     ],
+     "turnId": "40afde95-d38e-4974-a1a2-3049eae55156"
+    },
+    {
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "completedAt": 1790034833.598981,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/eba78aec-8c7a-457e-b50f-2c1ab9b9c414.jsonl",
+     "scope": "thread:38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "startedAt": 1790034832.842802,
+     "triggeringEventIds": [
+      "2cae09c3c884a48ec603b902d33de3c1c73781d12d4bb3dd92033fed84ad6349"
+     ],
+     "turnId": "eba78aec-8c7a-457e-b50f-2c1ab9b9c414"
+    }
+   ],
+   "openTurns": [
+    {
+     "channelId": "3d7b6127-7c9c-41e4-a1b8-e8fbfeecde4f",
+     "lastAcpRead": 1789958771.680382,
+     "lastLiveness": 1789958769.327067,
+     "path": "/home/lth/.local/state/buzz-turns/matt/turns/2026-09-21/cf1208a5-41e1-4b70-9104-3647a396b8a3.jsonl",
+     "scope": null,
+     "startedAt": 1789958249.325338,
+     "triggeringEventIds": [],
+     "turnId": "cf1208a5-41e1-4b70-9104-3647a396b8a3"
+    }
+   ],
+   "pubkey": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+   "recentTurns": [
+    {
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "completedAt": 1790031951.59813,
+     "events": 1846,
+     "outcome": "ok",
+     "path": "turns/2026-09-21/484a3d05-ae5c-46d2-a833-996ddcf1450a.jsonl",
+     "scope": "thread:38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "startedAt": 1790029461.401761,
+     "triggeringEventIds": [
+      "3685e2eb3be743ed4960c6e6754f6e531cb75780845105d54eaf18431ca56d14"
+     ],
+     "turnId": "484a3d05-ae5c-46d2-a833-996ddcf1450a"
+    },
+    {
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "completedAt": 1790032689.282746,
+     "events": 723,
+     "outcome": "ok",
+     "path": "turns/2026-09-21/86876f5a-d27e-4ef9-8fea-e1f4519efb34.jsonl",
+     "scope": "thread:20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "startedAt": 1790031951.598259,
+     "triggeringEventIds": [
+      "84a86b6a93ad4a31dfcf27c1ff7530c938ddda7fbc284acf0f30e625ab9ec953"
+     ],
+     "turnId": "86876f5a-d27e-4ef9-8fea-e1f4519efb34"
+    },
+    {
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "completedAt": 1790033036.043196,
+     "events": 422,
+     "outcome": "ok",
+     "path": "turns/2026-09-21/521de4e1-2861-4e90-8d4e-cf394122ccad.jsonl",
+     "scope": "thread:38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "startedAt": 1790032689.282828,
+     "triggeringEventIds": [
+      "2e517750af4150c85a353933d916c1b7f23aea66e36fafa3d6e4348acbe80e13"
+     ],
+     "turnId": "521de4e1-2861-4e90-8d4e-cf394122ccad"
+    },
+    {
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "completedAt": 1790033306.139815,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 156,
+     "outcome": "error",
+     "path": "turns/2026-09-21/3042c71f-765f-4819-acdf-2e015e2d68eb.jsonl",
+     "scope": "thread:38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "startedAt": 1790033077.823374,
+     "triggeringEventIds": [
+      "2cae09c3c884a48ec603b902d33de3c1c73781d12d4bb3dd92033fed84ad6349"
+     ],
+     "turnId": "3042c71f-765f-4819-acdf-2e015e2d68eb"
+    },
+    {
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "completedAt": 1790033315.475174,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 8,
+     "outcome": "error",
+     "path": "turns/2026-09-21/fc35f951-c7b2-4850-a067-9389e04e63d1.jsonl",
+     "scope": "thread:38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "startedAt": 1790033314.842676,
+     "triggeringEventIds": [
+      "2cae09c3c884a48ec603b902d33de3c1c73781d12d4bb3dd92033fed84ad6349"
+     ],
+     "turnId": "fc35f951-c7b2-4850-a067-9389e04e63d1"
+    },
+    {
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "completedAt": 1790033345.471461,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/41493aba-212b-488f-a011-ded2da7485f6.jsonl",
+     "scope": "thread:38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "startedAt": 1790033344.842745,
+     "triggeringEventIds": [
+      "2cae09c3c884a48ec603b902d33de3c1c73781d12d4bb3dd92033fed84ad6349"
+     ],
+     "turnId": "41493aba-212b-488f-a011-ded2da7485f6"
+    },
+    {
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "completedAt": 1790033378.581162,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/71210792-b7c3-4c65-92ba-e8e3eb9cf029.jsonl",
+     "scope": "thread:38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "startedAt": 1790033377.842463,
+     "triggeringEventIds": [
+      "2cae09c3c884a48ec603b902d33de3c1c73781d12d4bb3dd92033fed84ad6349"
+     ],
+     "turnId": "71210792-b7c3-4c65-92ba-e8e3eb9cf029"
+    },
+    {
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "completedAt": 1790033441.553002,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/c8228577-d2ff-48c5-a37c-7d3347e771b9.jsonl",
+     "scope": "thread:38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "startedAt": 1790033440.841793,
+     "triggeringEventIds": [
+      "2cae09c3c884a48ec603b902d33de3c1c73781d12d4bb3dd92033fed84ad6349"
+     ],
+     "turnId": "c8228577-d2ff-48c5-a37c-7d3347e771b9"
+    },
+    {
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "completedAt": 1790033534.537094,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/d9129bfc-ce31-49f0-ae31-88ea510c15f3.jsonl",
+     "scope": "thread:38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "startedAt": 1790033533.842064,
+     "triggeringEventIds": [
+      "2cae09c3c884a48ec603b902d33de3c1c73781d12d4bb3dd92033fed84ad6349"
+     ],
+     "turnId": "d9129bfc-ce31-49f0-ae31-88ea510c15f3"
+    },
+    {
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "completedAt": 1790033693.748003,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/444cefab-9d53-4352-be82-fbb2b311bb3b.jsonl",
+     "scope": "thread:38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "startedAt": 1790033692.84209,
+     "triggeringEventIds": [
+      "2cae09c3c884a48ec603b902d33de3c1c73781d12d4bb3dd92033fed84ad6349"
+     ],
+     "turnId": "444cefab-9d53-4352-be82-fbb2b311bb3b"
+    },
+    {
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "completedAt": 1790033981.599072,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/528423aa-1974-4cc6-a2b6-6acfb8582c11.jsonl",
+     "scope": "thread:38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "startedAt": 1790033980.842079,
+     "triggeringEventIds": [
+      "2cae09c3c884a48ec603b902d33de3c1c73781d12d4bb3dd92033fed84ad6349"
+     ],
+     "turnId": "528423aa-1974-4cc6-a2b6-6acfb8582c11"
+    },
+    {
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "completedAt": 1790034266.436469,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/360dcd8f-4bbc-46ea-a9dd-73fdd67816a6.jsonl",
+     "scope": "thread:38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "startedAt": 1790034265.842497,
+     "triggeringEventIds": [
+      "2cae09c3c884a48ec603b902d33de3c1c73781d12d4bb3dd92033fed84ad6349"
+     ],
+     "turnId": "360dcd8f-4bbc-46ea-a9dd-73fdd67816a6"
+    },
+    {
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "completedAt": 1790034548.550166,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/40afde95-d38e-4974-a1a2-3049eae55156.jsonl",
+     "scope": "thread:38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "startedAt": 1790034547.842916,
+     "triggeringEventIds": [
+      "2cae09c3c884a48ec603b902d33de3c1c73781d12d4bb3dd92033fed84ad6349"
+     ],
+     "turnId": "40afde95-d38e-4974-a1a2-3049eae55156"
+    },
+    {
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "completedAt": 1790034833.598981,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/eba78aec-8c7a-457e-b50f-2c1ab9b9c414.jsonl",
+     "scope": "thread:38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "startedAt": 1790034832.842802,
+     "triggeringEventIds": [
+      "2cae09c3c884a48ec603b902d33de3c1c73781d12d4bb3dd92033fed84ad6349"
+     ],
+     "turnId": "eba78aec-8c7a-457e-b50f-2c1ab9b9c414"
+    }
+   ],
+   "unit": {
+    "available": false,
+    "reason": "historical"
+   }
+  },
+  "nathaniel": {
+   "decisions": [
+    {
+     "author": "270d21e2e34f8026f05c7fb68492ad5e1777db1658a53cdc9f4e7df79d1d3b25",
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "decision": "no_rule_matched",
+     "eventId": "d10f3b7c08bc0b460d2ab16d8164231b225024c8f0d20b6c7ac5c30ebf90c188",
+     "kind": 9,
+     "threadRoot": "0801ca2eeeb952fb219bdd3f2ff7f3507d345fb1d59d668f3bf02d9a226425cb",
+     "ts": 1790031272.222299
+    },
+    {
+     "author": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "decision": "no_rule_matched",
+     "eventId": "fca374f2a5dac4e0ae5932f261f4b23a03c46efaefa30d84cc0115db6326c9e6",
+     "kind": 9,
+     "threadRoot": "38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "ts": 1790031883.093453
+    },
+    {
+     "author": "41243293dd98372825e2c57bb2b44a100c36809a4339cf9bd564c9c33f8d5d0c",
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "decision": "no_rule_matched",
+     "eventId": "2e517750af4150c85a353933d916c1b7f23aea66e36fafa3d6e4348acbe80e13",
+     "kind": 9,
+     "threadRoot": "38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "ts": 1790032034.554079
+    },
+    {
+     "author": "6e920684a788bdb487748fa7421e3519793d9186339819d5029cb0967993ea59",
+     "channelId": "72fa2e7b-7e86-437c-a9ca-872838e64dbb",
+     "decision": "no_rule_matched",
+     "eventId": "cbe8d104d4460c8ded5a26bce9189e54f03a22f1f1046778b162712df60a351a",
+     "kind": 9,
+     "threadRoot": "419c4e903790a27c62ba4a6aa2630bcf289346919b6221abff6ebb407da76fc0",
+     "ts": 1790032198.094926
+    },
+    {
+     "author": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "decision": "no_rule_matched",
+     "eventId": "101b8f520f5cb65fb8f06f047c9fda14530b5dc952f96b8b5c919c92f4afe4ae",
+     "kind": 9,
+     "threadRoot": "20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "ts": 1790032656.471397
+    },
+    {
+     "author": "2c4a588af493bfe42eb50df429aed6f0945eaeb70034fc655df22e2e4bf138dc",
+     "channelId": "72fa2e7b-7e86-437c-a9ca-872838e64dbb",
+     "decision": "no_rule_matched",
+     "eventId": "bb64d1d0702c2086eb8ac5b2eb0e5fe022ba404a2bab8067634889e56bf108fe",
+     "kind": 9,
+     "threadRoot": null,
+     "ts": 1790032941.679674
+    },
+    {
+     "author": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "decision": "no_rule_matched",
+     "eventId": "600f7648b328cc3b6de77a6c3bf8ed198e8e1b8650d56b9fc796c984546baefd",
+     "kind": 9,
+     "threadRoot": null,
+     "ts": 1790032988.11398
+    },
+    {
+     "author": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "decision": "no_rule_matched",
+     "eventId": "3721fc52760344afb404c929d53beae2bb4bc0eb548ea82a3adf4d22a71f7702",
+     "kind": 9,
+     "threadRoot": "38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "ts": 1790033006.752967
+    },
+    {
+     "author": "41243293dd98372825e2c57bb2b44a100c36809a4339cf9bd564c9c33f8d5d0c",
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "decision": "no_rule_matched",
+     "eventId": "2cae09c3c884a48ec603b902d33de3c1c73781d12d4bb3dd92033fed84ad6349",
+     "kind": 9,
+     "threadRoot": "38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "ts": 1790033077.828023
+    },
+    {
+     "author": "77c9bf89e2a9d815234aac71822d4908e471a1c22a7f4bcbfcc18ca572526e58",
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "decision": "no_rule_matched",
+     "eventId": "6f1dcf2ae168465f5b5ca9e06999ba5a1712d075044c772d9b9587304e79f769",
+     "kind": 9,
+     "threadRoot": "20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "ts": 1790034806.369994
+    },
+    {
+     "author": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "decision": "no_rule_matched",
+     "eventId": "a22c4a6ae25da3164973a808d27eef69029c191b3850d621ed14fde4efcc17ad",
+     "kind": 9,
+     "threadRoot": "38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "ts": 1790034833.660752
+    }
+   ],
+   "lastCompletedAt": null,
+   "limitTurns": [],
+   "openTurns": [],
+   "pubkey": null,
+   "recentTurns": [],
+   "unit": {
+    "available": false,
+    "reason": "historical"
+   }
+  },
+  "neil": {
+   "decisions": [
+    {
+     "author": "2c4a588af493bfe42eb50df429aed6f0945eaeb70034fc655df22e2e4bf138dc",
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "decision": "no_rule_matched",
+     "eventId": "9a498e96b78e91693b2176a0c74bb8fca6df9e69ca2d144174200cb638e5e70a",
+     "kind": 9,
+     "threadRoot": "7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "ts": 1790035262.642541
+    },
+    {
+     "author": "270d21e2e34f8026f05c7fb68492ad5e1777db1658a53cdc9f4e7df79d1d3b25",
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "decision": "no_rule_matched",
+     "eventId": "d10f3b7c08bc0b460d2ab16d8164231b225024c8f0d20b6c7ac5c30ebf90c188",
+     "kind": 9,
+     "threadRoot": "0801ca2eeeb952fb219bdd3f2ff7f3507d345fb1d59d668f3bf02d9a226425cb",
+     "ts": 1790031272.222184
+    },
+    {
+     "author": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "decision": "no_rule_matched",
+     "eventId": "fca374f2a5dac4e0ae5932f261f4b23a03c46efaefa30d84cc0115db6326c9e6",
+     "kind": 9,
+     "threadRoot": "38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "ts": 1790031883.091664
+    },
+    {
+     "author": "41243293dd98372825e2c57bb2b44a100c36809a4339cf9bd564c9c33f8d5d0c",
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "decision": "no_rule_matched",
+     "eventId": "2e517750af4150c85a353933d916c1b7f23aea66e36fafa3d6e4348acbe80e13",
+     "kind": 9,
+     "threadRoot": "38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "ts": 1790032034.55335
+    },
+    {
+     "author": "6e920684a788bdb487748fa7421e3519793d9186339819d5029cb0967993ea59",
+     "channelId": "72fa2e7b-7e86-437c-a9ca-872838e64dbb",
+     "decision": "no_rule_matched",
+     "eventId": "cbe8d104d4460c8ded5a26bce9189e54f03a22f1f1046778b162712df60a351a",
+     "kind": 9,
+     "threadRoot": "419c4e903790a27c62ba4a6aa2630bcf289346919b6221abff6ebb407da76fc0",
+     "ts": 1790032198.094468
+    },
+    {
+     "author": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "decision": "no_rule_matched",
+     "eventId": "101b8f520f5cb65fb8f06f047c9fda14530b5dc952f96b8b5c919c92f4afe4ae",
+     "kind": 9,
+     "threadRoot": "20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "ts": 1790032656.471367
+    },
+    {
+     "author": "2c4a588af493bfe42eb50df429aed6f0945eaeb70034fc655df22e2e4bf138dc",
+     "channelId": "72fa2e7b-7e86-437c-a9ca-872838e64dbb",
+     "decision": "no_rule_matched",
+     "eventId": "bb64d1d0702c2086eb8ac5b2eb0e5fe022ba404a2bab8067634889e56bf108fe",
+     "kind": 9,
+     "threadRoot": null,
+     "ts": 1790032941.679669
+    },
+    {
+     "author": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "decision": "no_rule_matched",
+     "eventId": "600f7648b328cc3b6de77a6c3bf8ed198e8e1b8650d56b9fc796c984546baefd",
+     "kind": 9,
+     "threadRoot": null,
+     "ts": 1790032988.113682
+    },
+    {
+     "author": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "decision": "no_rule_matched",
+     "eventId": "3721fc52760344afb404c929d53beae2bb4bc0eb548ea82a3adf4d22a71f7702",
+     "kind": 9,
+     "threadRoot": "38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "ts": 1790033006.753745
+    },
+    {
+     "author": "2c4a588af493bfe42eb50df429aed6f0945eaeb70034fc655df22e2e4bf138dc",
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "decision": "no_rule_matched",
+     "eventId": "b0d25a2794856dd0a7d2d0f9c85827e0ae51295d69b392c3539663ab2e2038f8",
+     "kind": 9,
+     "threadRoot": null,
+     "ts": 1790033050.389771
+    },
+    {
+     "author": "41243293dd98372825e2c57bb2b44a100c36809a4339cf9bd564c9c33f8d5d0c",
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "decision": "no_rule_matched",
+     "eventId": "2cae09c3c884a48ec603b902d33de3c1c73781d12d4bb3dd92033fed84ad6349",
+     "kind": 9,
+     "threadRoot": "38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "ts": 1790033077.776824
+    },
+    {
+     "author": "2c4a588af493bfe42eb50df429aed6f0945eaeb70034fc655df22e2e4bf138dc",
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "decision": "no_rule_matched",
+     "eventId": "9b11d2d61392db288f96e51fbad31665b52596c743dc71def278d1aed12bee9a",
+     "kind": 9,
+     "threadRoot": "108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "ts": 1790033139.319465
+    },
+    {
+     "author": "2c4a588af493bfe42eb50df429aed6f0945eaeb70034fc655df22e2e4bf138dc",
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "decision": "no_rule_matched",
+     "eventId": "9d23658bf580fa19dcced61850bfbe53606d3938b549456b09d05f5c5f71545c",
+     "kind": 9,
+     "threadRoot": "108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "ts": 1790034785.596531
+    },
+    {
+     "author": "77c9bf89e2a9d815234aac71822d4908e471a1c22a7f4bcbfcc18ca572526e58",
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "decision": "no_rule_matched",
+     "eventId": "6f1dcf2ae168465f5b5ca9e06999ba5a1712d075044c772d9b9587304e79f769",
+     "kind": 9,
+     "threadRoot": "20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "ts": 1790034806.370139
+    },
+    {
+     "author": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "decision": "no_rule_matched",
+     "eventId": "a22c4a6ae25da3164973a808d27eef69029c191b3850d621ed14fde4efcc17ad",
+     "kind": 9,
+     "threadRoot": "38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "ts": 1790034833.661113
+    }
+   ],
+   "lastCompletedAt": null,
+   "limitTurns": [],
+   "openTurns": [],
+   "pubkey": "10d7900951f46719d28d249b51937394dc1e81ecc10d2551ababc41ca2a1cb75",
+   "recentTurns": [],
+   "unit": {
+    "available": false,
+    "reason": "historical"
+   }
+  },
+  "rock": {
+   "decisions": [
+    {
+     "author": "2c4a588af493bfe42eb50df429aed6f0945eaeb70034fc655df22e2e4bf138dc",
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "decision": "no_rule_matched",
+     "eventId": "9a498e96b78e91693b2176a0c74bb8fca6df9e69ca2d144174200cb638e5e70a",
+     "kind": 9,
+     "threadRoot": "7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "ts": 1790035262.642669
+    },
+    {
+     "author": "270d21e2e34f8026f05c7fb68492ad5e1777db1658a53cdc9f4e7df79d1d3b25",
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "decision": "queued",
+     "eventId": "d10f3b7c08bc0b460d2ab16d8164231b225024c8f0d20b6c7ac5c30ebf90c188",
+     "kind": 9,
+     "threadRoot": "0801ca2eeeb952fb219bdd3f2ff7f3507d345fb1d59d668f3bf02d9a226425cb",
+     "ts": 1790031272.222878
+    },
+    {
+     "author": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "decision": "queued",
+     "eventId": "fca374f2a5dac4e0ae5932f261f4b23a03c46efaefa30d84cc0115db6326c9e6",
+     "kind": 9,
+     "threadRoot": "38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "ts": 1790031883.083736
+    },
+    {
+     "author": "6e920684a788bdb487748fa7421e3519793d9186339819d5029cb0967993ea59",
+     "channelId": "72fa2e7b-7e86-437c-a9ca-872838e64dbb",
+     "decision": "queued",
+     "eventId": "cbe8d104d4460c8ded5a26bce9189e54f03a22f1f1046778b162712df60a351a",
+     "kind": 9,
+     "threadRoot": "419c4e903790a27c62ba4a6aa2630bcf289346919b6221abff6ebb407da76fc0",
+     "ts": 1790032198.094709
+    },
+    {
+     "author": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "decision": "queued",
+     "eventId": "101b8f520f5cb65fb8f06f047c9fda14530b5dc952f96b8b5c919c92f4afe4ae",
+     "kind": 9,
+     "threadRoot": "20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "ts": 1790032656.475927
+    },
+    {
+     "author": "41243293dd98372825e2c57bb2b44a100c36809a4339cf9bd564c9c33f8d5d0c",
+     "channelId": "daa0371a-17fc-41a8-bb70-272b7c7e8be0",
+     "decision": "queued",
+     "eventId": "a8f8643961c249421363235d630760ea51eabbd9d2daae05b98f620eb55472f2",
+     "kind": 9,
+     "threadRoot": null,
+     "ts": 1790032852.583334
+    },
+    {
+     "author": "2c4a588af493bfe42eb50df429aed6f0945eaeb70034fc655df22e2e4bf138dc",
+     "channelId": "72fa2e7b-7e86-437c-a9ca-872838e64dbb",
+     "decision": "queued",
+     "eventId": "bb64d1d0702c2086eb8ac5b2eb0e5fe022ba404a2bab8067634889e56bf108fe",
+     "kind": 9,
+     "threadRoot": null,
+     "ts": 1790032941.679646
+    },
+    {
+     "author": "41243293dd98372825e2c57bb2b44a100c36809a4339cf9bd564c9c33f8d5d0c",
+     "channelId": "daa0371a-17fc-41a8-bb70-272b7c7e8be0",
+     "decision": "queued",
+     "eventId": "cc87cf378a5b1d4f5a63d01c43db16d7a4b18ba85b7981147102f1d81b2f8c90",
+     "kind": 9,
+     "threadRoot": null,
+     "ts": 1790032986.535229
+    },
+    {
+     "author": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "decision": "queued",
+     "eventId": "600f7648b328cc3b6de77a6c3bf8ed198e8e1b8650d56b9fc796c984546baefd",
+     "kind": 9,
+     "threadRoot": null,
+     "ts": 1790032988.112845
+    },
+    {
+     "author": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "decision": "queued",
+     "eventId": "3721fc52760344afb404c929d53beae2bb4bc0eb548ea82a3adf4d22a71f7702",
+     "kind": 9,
+     "threadRoot": "38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "ts": 1790033006.753524
+    },
+    {
+     "author": "2c4a588af493bfe42eb50df429aed6f0945eaeb70034fc655df22e2e4bf138dc",
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "decision": "no_rule_matched",
+     "eventId": "b0d25a2794856dd0a7d2d0f9c85827e0ae51295d69b392c3539663ab2e2038f8",
+     "kind": 9,
+     "threadRoot": null,
+     "ts": 1790033050.387753
+    },
+    {
+     "author": "41243293dd98372825e2c57bb2b44a100c36809a4339cf9bd564c9c33f8d5d0c",
+     "channelId": "daa0371a-17fc-41a8-bb70-272b7c7e8be0",
+     "decision": "queued",
+     "eventId": "470e10abcfd3baba0efaa1e3f9c38d522dc45eaa959dd2770562af5f86dfcd45",
+     "kind": 9,
+     "threadRoot": null,
+     "ts": 1790033079.245904
+    },
+    {
+     "author": "41243293dd98372825e2c57bb2b44a100c36809a4339cf9bd564c9c33f8d5d0c",
+     "channelId": "daa0371a-17fc-41a8-bb70-272b7c7e8be0",
+     "decision": "queued",
+     "eventId": "7be509276fd63a2391283375ce3393d8002df689647787b5c7943e778b72532b",
+     "kind": 9,
+     "threadRoot": "470e10abcfd3baba0efaa1e3f9c38d522dc45eaa959dd2770562af5f86dfcd45",
+     "ts": 1790033082.106686
+    },
+    {
+     "author": "41243293dd98372825e2c57bb2b44a100c36809a4339cf9bd564c9c33f8d5d0c",
+     "channelId": "daa0371a-17fc-41a8-bb70-272b7c7e8be0",
+     "decision": "queued",
+     "eventId": "a8b7af8fe623ab798720eb5af2c9127c4b8e9d9137bdb35106598c0b1c82f747",
+     "kind": 9,
+     "threadRoot": "470e10abcfd3baba0efaa1e3f9c38d522dc45eaa959dd2770562af5f86dfcd45",
+     "ts": 1790033104.050218
+    },
+    {
+     "author": "41243293dd98372825e2c57bb2b44a100c36809a4339cf9bd564c9c33f8d5d0c",
+     "channelId": "daa0371a-17fc-41a8-bb70-272b7c7e8be0",
+     "decision": "queued",
+     "eventId": "444825bd11ca813ec7ed02a3c0ecc696183caa887cda8c4b3ca48ead515037eb",
+     "kind": 9,
+     "threadRoot": "470e10abcfd3baba0efaa1e3f9c38d522dc45eaa959dd2770562af5f86dfcd45",
+     "ts": 1790033104.844946
+    },
+    {
+     "author": "2c4a588af493bfe42eb50df429aed6f0945eaeb70034fc655df22e2e4bf138dc",
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "decision": "queued",
+     "eventId": "9b11d2d61392db288f96e51fbad31665b52596c743dc71def278d1aed12bee9a",
+     "kind": 9,
+     "threadRoot": "108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "ts": 1790033139.319099
+    },
+    {
+     "author": "41243293dd98372825e2c57bb2b44a100c36809a4339cf9bd564c9c33f8d5d0c",
+     "channelId": "daa0371a-17fc-41a8-bb70-272b7c7e8be0",
+     "decision": "queued",
+     "eventId": "35ae535db88c773d21f5c4174371c7fcbdad84562c86a021350a389f65af86ca",
+     "kind": 9,
+     "threadRoot": "470e10abcfd3baba0efaa1e3f9c38d522dc45eaa959dd2770562af5f86dfcd45",
+     "ts": 1790033141.113649
+    },
+    {
+     "author": "41243293dd98372825e2c57bb2b44a100c36809a4339cf9bd564c9c33f8d5d0c",
+     "channelId": "daa0371a-17fc-41a8-bb70-272b7c7e8be0",
+     "decision": "queued",
+     "eventId": "76a5d9d307a074abf6630cfbed354972899943d525630a66f6a83bc07b30bce8",
+     "kind": 9,
+     "threadRoot": "470e10abcfd3baba0efaa1e3f9c38d522dc45eaa959dd2770562af5f86dfcd45",
+     "ts": 1790033193.894352
+    },
+    {
+     "author": "0f8471300f7806058507999b06f16805168c640aad3ffa5474cf8ec9e7c6a0ca",
+     "channelId": "daa0371a-17fc-41a8-bb70-272b7c7e8be0",
+     "decision": "queued",
+     "eventId": "9198d4517fb531215991efdd6424bac7dfbb072b180fc1d87604e250ea5fda09",
+     "kind": 9,
+     "threadRoot": null,
+     "ts": 1790034457.420857
+    },
+    {
+     "author": "285e178b956a3c5060e8066c25a2e899d2b11e2d104fb5c6f8b7b1fd6ca4b6fa",
+     "channelId": "3d7b6127-7c9c-41e4-a1b8-e8fbfeecde4f",
+     "decision": "queued",
+     "eventId": "b314e72a72fcae4caebbf10ea8018006583a0adc6cadd8423bf8da8811522efe",
+     "kind": 9,
+     "threadRoot": null,
+     "ts": 1790034697.631523
+    },
+    {
+     "author": "2c4a588af493bfe42eb50df429aed6f0945eaeb70034fc655df22e2e4bf138dc",
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "decision": "no_rule_matched",
+     "eventId": "9d23658bf580fa19dcced61850bfbe53606d3938b549456b09d05f5c5f71545c",
+     "kind": 9,
+     "threadRoot": "108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "ts": 1790034785.596184
+    },
+    {
+     "author": "77c9bf89e2a9d815234aac71822d4908e471a1c22a7f4bcbfcc18ca572526e58",
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "decision": "queued",
+     "eventId": "6f1dcf2ae168465f5b5ca9e06999ba5a1712d075044c772d9b9587304e79f769",
+     "kind": 9,
+     "threadRoot": "20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "ts": 1790034806.369933
+    },
+    {
+     "author": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "decision": "queued",
+     "eventId": "a22c4a6ae25da3164973a808d27eef69029c191b3850d621ed14fde4efcc17ad",
+     "kind": 9,
+     "threadRoot": "38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "ts": 1790034833.662644
+    },
+    {
+     "author": "285e178b956a3c5060e8066c25a2e899d2b11e2d104fb5c6f8b7b1fd6ca4b6fa",
+     "channelId": "3d7b6127-7c9c-41e4-a1b8-e8fbfeecde4f",
+     "decision": "queued",
+     "eventId": "8e85deaa996e7c059a9c62a27d32d1e65ee2b8b029fe52131a82394c79c376e7",
+     "kind": 9,
+     "threadRoot": null,
+     "ts": 1790035111.651395
+    }
+   ],
+   "lastCompletedAt": 1790035195.388281,
+   "limitTurns": [
+    {
+     "channelId": "daa0371a-17fc-41a8-bb70-272b7c7e8be0",
+     "completedAt": 1790017498.244341,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 1:50pm (America/Denver)",
+     "events": 22,
+     "outcome": "error",
+     "path": "turns/2026-09-21/73c72d5c-3fba-4b48-851d-1281cd1fb450.jsonl",
+     "scope": "conversation",
+     "startedAt": 1790017496.63324,
+     "triggeringEventIds": [
+      "89d446411d9801bb8f5a997ca48068c1a88984616d6f88637a108228278ffd69"
+     ],
+     "turnId": "73c72d5c-3fba-4b48-851d-1281cd1fb450"
+    },
+    {
+     "channelId": "daa0371a-17fc-41a8-bb70-272b7c7e8be0",
+     "completedAt": 1790017529.280768,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 1:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/e76b319a-73bb-48c4-981b-86d6cfc14320.jsonl",
+     "scope": "conversation",
+     "startedAt": 1790017528.859198,
+     "triggeringEventIds": [
+      "89d446411d9801bb8f5a997ca48068c1a88984616d6f88637a108228278ffd69"
+     ],
+     "turnId": "e76b319a-73bb-48c4-981b-86d6cfc14320"
+    },
+    {
+     "channelId": "daa0371a-17fc-41a8-bb70-272b7c7e8be0",
+     "completedAt": 1790017562.350373,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 1:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/e1d4583c-0bdb-4b60-9214-4c8814ad8a70.jsonl",
+     "scope": "conversation",
+     "startedAt": 1790017561.858895,
+     "triggeringEventIds": [
+      "89d446411d9801bb8f5a997ca48068c1a88984616d6f88637a108228278ffd69"
+     ],
+     "turnId": "e1d4583c-0bdb-4b60-9214-4c8814ad8a70"
+    },
+    {
+     "channelId": "daa0371a-17fc-41a8-bb70-272b7c7e8be0",
+     "completedAt": 1790017595.354563,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 1:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/6f365ccd-76de-44ea-a4a5-560c67bee2c7.jsonl",
+     "scope": "conversation",
+     "startedAt": 1790017594.85924,
+     "triggeringEventIds": [
+      "89d446411d9801bb8f5a997ca48068c1a88984616d6f88637a108228278ffd69"
+     ],
+     "turnId": "6f365ccd-76de-44ea-a4a5-560c67bee2c7"
+    },
+    {
+     "channelId": "daa0371a-17fc-41a8-bb70-272b7c7e8be0",
+     "completedAt": 1790017658.313996,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 1:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/82fa3950-213a-4eff-a80a-8dd1a9295866.jsonl",
+     "scope": "conversation",
+     "startedAt": 1790017657.85912,
+     "triggeringEventIds": [
+      "89d446411d9801bb8f5a997ca48068c1a88984616d6f88637a108228278ffd69"
+     ],
+     "turnId": "82fa3950-213a-4eff-a80a-8dd1a9295866"
+    },
+    {
+     "channelId": "daa0371a-17fc-41a8-bb70-272b7c7e8be0",
+     "completedAt": 1790017751.398252,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 1:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/1501f698-dd99-4105-b463-0d5fc8d23ceb.jsonl",
+     "scope": "conversation",
+     "startedAt": 1790017750.859573,
+     "triggeringEventIds": [
+      "89d446411d9801bb8f5a997ca48068c1a88984616d6f88637a108228278ffd69"
+     ],
+     "turnId": "1501f698-dd99-4105-b463-0d5fc8d23ceb"
+    },
+    {
+     "channelId": "daa0371a-17fc-41a8-bb70-272b7c7e8be0",
+     "completedAt": 1790017910.535691,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 1:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/72064105-1a93-4b2b-be45-9195da7ea14e.jsonl",
+     "scope": "conversation",
+     "startedAt": 1790017909.858904,
+     "triggeringEventIds": [
+      "89d446411d9801bb8f5a997ca48068c1a88984616d6f88637a108228278ffd69"
+     ],
+     "turnId": "72064105-1a93-4b2b-be45-9195da7ea14e"
+    },
+    {
+     "channelId": "daa0371a-17fc-41a8-bb70-272b7c7e8be0",
+     "completedAt": 1790018195.684363,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 1:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/d194b5cc-51ac-4640-940e-f59829ac0618.jsonl",
+     "scope": "conversation",
+     "startedAt": 1790018194.858977,
+     "triggeringEventIds": [
+      "89d446411d9801bb8f5a997ca48068c1a88984616d6f88637a108228278ffd69"
+     ],
+     "turnId": "d194b5cc-51ac-4640-940e-f59829ac0618"
+    },
+    {
+     "channelId": "daa0371a-17fc-41a8-bb70-272b7c7e8be0",
+     "completedAt": 1790018480.700821,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 1:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/976a9aa3-f560-4881-aef6-9a311eef5ded.jsonl",
+     "scope": "conversation",
+     "startedAt": 1790018479.859678,
+     "triggeringEventIds": [
+      "89d446411d9801bb8f5a997ca48068c1a88984616d6f88637a108228278ffd69"
+     ],
+     "turnId": "976a9aa3-f560-4881-aef6-9a311eef5ded"
+    },
+    {
+     "channelId": "daa0371a-17fc-41a8-bb70-272b7c7e8be0",
+     "completedAt": 1790018768.743844,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 1:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/b1e90a5b-40a0-4b8d-8a3c-3552b708b921.jsonl",
+     "scope": "conversation",
+     "startedAt": 1790018767.858873,
+     "triggeringEventIds": [
+      "89d446411d9801bb8f5a997ca48068c1a88984616d6f88637a108228278ffd69"
+     ],
+     "turnId": "b1e90a5b-40a0-4b8d-8a3c-3552b708b921"
+    },
+    {
+     "channelId": "daa0371a-17fc-41a8-bb70-272b7c7e8be0",
+     "completedAt": 1790019047.630443,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 1:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/2bf85197-5e06-4f86-8a29-fad675982062.jsonl",
+     "scope": "conversation",
+     "startedAt": 1790019046.859718,
+     "triggeringEventIds": [
+      "89d446411d9801bb8f5a997ca48068c1a88984616d6f88637a108228278ffd69"
+     ],
+     "turnId": "2bf85197-5e06-4f86-8a29-fad675982062"
+    }
+   ],
+   "openTurns": [
+    {
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "lastAcpRead": 1789958790.055483,
+     "lastLiveness": 1789958790.433915,
+     "path": "/home/lth/.local/state/buzz-turns/rock/turns/2026-09-21/4b9cd4d7-4f73-469d-868d-b4463691246c.jsonl",
+     "scope": null,
+     "startedAt": 1789958640.433072,
+     "triggeringEventIds": [],
+     "turnId": "4b9cd4d7-4f73-469d-868d-b4463691246c"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "lastAcpRead": 1789958790.831032,
+     "lastLiveness": 1789958790.433942,
+     "path": "/home/lth/.local/state/buzz-turns/rock/turns/2026-09-21/d7254078-a77c-45b3-afa2-91a8bc0770af.jsonl",
+     "scope": null,
+     "startedAt": 1789958640.433098,
+     "triggeringEventIds": [],
+     "turnId": "d7254078-a77c-45b3-afa2-91a8bc0770af"
+    }
+   ],
+   "pubkey": "41243293dd98372825e2c57bb2b44a100c36809a4339cf9bd564c9c33f8d5d0c",
+   "recentTurns": [
+    {
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "completedAt": 1790031283.711967,
+     "events": 83,
+     "outcome": "ok",
+     "path": "turns/2026-09-21/ddc9b713-6864-462e-8834-02ff8b255578.jsonl",
+     "scope": "thread:0801ca2eeeb952fb219bdd3f2ff7f3507d345fb1d59d668f3bf02d9a226425cb",
+     "startedAt": 1790031272.222926,
+     "triggeringEventIds": [
+      "d10f3b7c08bc0b460d2ab16d8164231b225024c8f0d20b6c7ac5c30ebf90c188"
+     ],
+     "turnId": "ddc9b713-6864-462e-8834-02ff8b255578"
+    },
+    {
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "completedAt": 1790032036.911197,
+     "events": 87,
+     "outcome": "ok",
+     "path": "turns/2026-09-21/1d111b21-61a8-400f-8427-e3cb9bca3a66.jsonl",
+     "scope": "thread:38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "startedAt": 1790031883.745916,
+     "triggeringEventIds": [
+      "fca374f2a5dac4e0ae5932f261f4b23a03c46efaefa30d84cc0115db6326c9e6"
+     ],
+     "turnId": "1d111b21-61a8-400f-8427-e3cb9bca3a66"
+    },
+    {
+     "channelId": "72fa2e7b-7e86-437c-a9ca-872838e64dbb",
+     "completedAt": 1790032223.076302,
+     "events": 16,
+     "outcome": "ok",
+     "path": "turns/2026-09-21/5d1ce392-9b7e-4954-a0cb-0457ebc9e12e.jsonl",
+     "scope": "thread:419c4e903790a27c62ba4a6aa2630bcf289346919b6221abff6ebb407da76fc0",
+     "startedAt": 1790032198.094764,
+     "triggeringEventIds": [
+      "cbe8d104d4460c8ded5a26bce9189e54f03a22f1f1046778b162712df60a351a"
+     ],
+     "turnId": "5d1ce392-9b7e-4954-a0cb-0457ebc9e12e"
+    },
+    {
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "completedAt": 1790032661.490798,
+     "events": 10,
+     "outcome": "ok",
+     "path": "turns/2026-09-21/0c9d4ec7-5be8-4423-a97c-44c4876d08af.jsonl",
+     "scope": "thread:20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "startedAt": 1790032656.475983,
+     "triggeringEventIds": [
+      "101b8f520f5cb65fb8f06f047c9fda14530b5dc952f96b8b5c919c92f4afe4ae"
+     ],
+     "turnId": "0c9d4ec7-5be8-4423-a97c-44c4876d08af"
+    },
+    {
+     "channelId": "daa0371a-17fc-41a8-bb70-272b7c7e8be0",
+     "completedAt": 1790032874.518014,
+     "events": 22,
+     "outcome": "ok",
+     "path": "turns/2026-09-21/384c85fa-5424-4c41-a678-dda8b2c0c338.jsonl",
+     "scope": "conversation",
+     "startedAt": 1790032852.583382,
+     "triggeringEventIds": [
+      "a8f8643961c249421363235d630760ea51eabbd9d2daae05b98f620eb55472f2"
+     ],
+     "turnId": "384c85fa-5424-4c41-a678-dda8b2c0c338"
+    },
+    {
+     "channelId": "72fa2e7b-7e86-437c-a9ca-872838e64dbb",
+     "completedAt": 1790032946.706361,
+     "events": 10,
+     "outcome": "ok",
+     "path": "turns/2026-09-21/ec50c5af-588c-40b5-ab28-3dc5815019d6.jsonl",
+     "scope": "thread:bb64d1d0702c2086eb8ac5b2eb0e5fe022ba404a2bab8067634889e56bf108fe",
+     "startedAt": 1790032941.679707,
+     "triggeringEventIds": [
+      "bb64d1d0702c2086eb8ac5b2eb0e5fe022ba404a2bab8067634889e56bf108fe"
+     ],
+     "turnId": "ec50c5af-588c-40b5-ab28-3dc5815019d6"
+    },
+    {
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "completedAt": 1790033014.466756,
+     "events": 30,
+     "outcome": "ok",
+     "path": "turns/2026-09-21/4aa961ec-8f87-45ba-968d-5117933816fa.jsonl",
+     "scope": "thread:600f7648b328cc3b6de77a6c3bf8ed198e8e1b8650d56b9fc796c984546baefd",
+     "startedAt": 1790032988.112915,
+     "triggeringEventIds": [
+      "600f7648b328cc3b6de77a6c3bf8ed198e8e1b8650d56b9fc796c984546baefd"
+     ],
+     "turnId": "4aa961ec-8f87-45ba-968d-5117933816fa"
+    },
+    {
+     "channelId": "daa0371a-17fc-41a8-bb70-272b7c7e8be0",
+     "completedAt": 1790033079.246369,
+     "errorKind": null,
+     "errorText": null,
+     "events": 78,
+     "outcome": "cancelled",
+     "path": "turns/2026-09-21/c9479d0e-0a59-48d9-97d7-5c829ad71774.jsonl",
+     "scope": "conversation",
+     "startedAt": 1790032986.535277,
+     "triggeringEventIds": [
+      "cc87cf378a5b1d4f5a63d01c43db16d7a4b18ba85b7981147102f1d81b2f8c90"
+     ],
+     "turnId": "c9479d0e-0a59-48d9-97d7-5c829ad71774"
+    },
+    {
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "completedAt": 1790033080.256654,
+     "events": 54,
+     "outcome": "ok",
+     "path": "turns/2026-09-21/55aaf3f1-10ce-4c5a-8c87-075eb34d7883.jsonl",
+     "scope": "thread:38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "startedAt": 1790033016.754657,
+     "triggeringEventIds": [
+      "3721fc52760344afb404c929d53beae2bb4bc0eb548ea82a3adf4d22a71f7702"
+     ],
+     "turnId": "55aaf3f1-10ce-4c5a-8c87-075eb34d7883"
+    },
+    {
+     "channelId": "daa0371a-17fc-41a8-bb70-272b7c7e8be0",
+     "completedAt": 1790033082.107136,
+     "errorKind": null,
+     "errorText": null,
+     "events": 10,
+     "outcome": "cancelled",
+     "path": "turns/2026-09-21/680aa569-72d6-43c4-aa94-7cdcbbeca15a.jsonl",
+     "scope": "conversation",
+     "startedAt": 1790033079.246436,
+     "triggeringEventIds": [
+      "470e10abcfd3baba0efaa1e3f9c38d522dc45eaa959dd2770562af5f86dfcd45"
+     ],
+     "turnId": "680aa569-72d6-43c4-aa94-7cdcbbeca15a"
+    },
+    {
+     "channelId": "daa0371a-17fc-41a8-bb70-272b7c7e8be0",
+     "completedAt": 1790033104.050633,
+     "errorKind": null,
+     "errorText": null,
+     "events": 28,
+     "outcome": "cancelled",
+     "path": "turns/2026-09-21/520bc5e3-f225-4383-b7fb-c5de1317417b.jsonl",
+     "scope": "conversation",
+     "startedAt": 1790033082.10721,
+     "triggeringEventIds": [
+      "7be509276fd63a2391283375ce3393d8002df689647787b5c7943e778b72532b"
+     ],
+     "turnId": "520bc5e3-f225-4383-b7fb-c5de1317417b"
+    },
+    {
+     "channelId": "daa0371a-17fc-41a8-bb70-272b7c7e8be0",
+     "completedAt": 1790033104.845558,
+     "errorKind": null,
+     "errorText": null,
+     "events": 10,
+     "outcome": "cancelled",
+     "path": "turns/2026-09-21/0f991118-b7eb-4fb6-bd3b-09646ccdb980.jsonl",
+     "scope": "conversation",
+     "startedAt": 1790033104.050704,
+     "triggeringEventIds": [
+      "a8b7af8fe623ab798720eb5af2c9127c4b8e9d9137bdb35106598c0b1c82f747"
+     ],
+     "turnId": "0f991118-b7eb-4fb6-bd3b-09646ccdb980"
+    },
+    {
+     "channelId": "daa0371a-17fc-41a8-bb70-272b7c7e8be0",
+     "completedAt": 1790033141.114049,
+     "errorKind": null,
+     "errorText": null,
+     "events": 29,
+     "outcome": "cancelled",
+     "path": "turns/2026-09-21/4c300042-4ac5-49b0-9782-77730829a1b8.jsonl",
+     "scope": "conversation",
+     "startedAt": 1790033104.845635,
+     "triggeringEventIds": [
+      "444825bd11ca813ec7ed02a3c0ecc696183caa887cda8c4b3ca48ead515037eb"
+     ],
+     "turnId": "4c300042-4ac5-49b0-9782-77730829a1b8"
+    },
+    {
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "completedAt": 1790033155.203127,
+     "events": 13,
+     "outcome": "ok",
+     "path": "turns/2026-09-21/77682519-652e-47a7-a324-ebcb5e26c91e.jsonl",
+     "scope": "thread:108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "startedAt": 1790033139.319142,
+     "triggeringEventIds": [
+      "9b11d2d61392db288f96e51fbad31665b52596c743dc71def278d1aed12bee9a"
+     ],
+     "turnId": "77682519-652e-47a7-a324-ebcb5e26c91e"
+    },
+    {
+     "channelId": "daa0371a-17fc-41a8-bb70-272b7c7e8be0",
+     "completedAt": 1790033193.895015,
+     "errorKind": null,
+     "errorText": null,
+     "events": 59,
+     "outcome": "cancelled",
+     "path": "turns/2026-09-21/09f6a705-462e-4f8f-9d5b-56637ca4e429.jsonl",
+     "scope": "conversation",
+     "startedAt": 1790033141.114119,
+     "triggeringEventIds": [
+      "35ae535db88c773d21f5c4174371c7fcbdad84562c86a021350a389f65af86ca"
+     ],
+     "turnId": "09f6a705-462e-4f8f-9d5b-56637ca4e429"
+    },
+    {
+     "channelId": "daa0371a-17fc-41a8-bb70-272b7c7e8be0",
+     "completedAt": 1790033292.411778,
+     "events": 98,
+     "outcome": "ok",
+     "path": "turns/2026-09-21/80241d9c-2644-40e9-a95d-add51b21d21e.jsonl",
+     "scope": "conversation",
+     "startedAt": 1790033193.895092,
+     "triggeringEventIds": [
+      "76a5d9d307a074abf6630cfbed354972899943d525630a66f6a83bc07b30bce8"
+     ],
+     "turnId": "80241d9c-2644-40e9-a95d-add51b21d21e"
+    },
+    {
+     "channelId": "daa0371a-17fc-41a8-bb70-272b7c7e8be0",
+     "completedAt": 1790034496.948861,
+     "events": 37,
+     "outcome": "ok",
+     "path": "turns/2026-09-21/aa7c4dda-c2aa-4551-9bdc-16bb1c3d706c.jsonl",
+     "scope": "conversation",
+     "startedAt": 1790034457.886145,
+     "triggeringEventIds": [
+      "9198d4517fb531215991efdd6424bac7dfbb072b180fc1d87604e250ea5fda09"
+     ],
+     "turnId": "aa7c4dda-c2aa-4551-9bdc-16bb1c3d706c"
+    },
+    {
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "completedAt": 1790034866.458802,
+     "events": 56,
+     "outcome": "ok",
+     "path": "turns/2026-09-21/d82f6965-3291-4256-889a-85582c62bc1e.jsonl",
+     "scope": "thread:20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "startedAt": 1790034806.370096,
+     "triggeringEventIds": [
+      "6f1dcf2ae168465f5b5ca9e06999ba5a1712d075044c772d9b9587304e79f769"
+     ],
+     "turnId": "d82f6965-3291-4256-889a-85582c62bc1e"
+    },
+    {
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "completedAt": 1790034940.129227,
+     "events": 80,
+     "outcome": "ok",
+     "path": "turns/2026-09-21/4369f97b-3535-4c05-97fd-689b211f7cde.jsonl",
+     "scope": "thread:38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "startedAt": 1790034833.662698,
+     "triggeringEventIds": [
+      "a22c4a6ae25da3164973a808d27eef69029c191b3850d621ed14fde4efcc17ad"
+     ],
+     "turnId": "4369f97b-3535-4c05-97fd-689b211f7cde"
+    },
+    {
+     "channelId": "3d7b6127-7c9c-41e4-a1b8-e8fbfeecde4f",
+     "completedAt": 1790035040.904645,
+     "events": 123,
+     "outcome": "ok",
+     "path": "turns/2026-09-21/2afe5316-87e5-4092-a3da-0700f15b56df.jsonl",
+     "scope": "thread:b314e72a72fcae4caebbf10ea8018006583a0adc6cadd8423bf8da8811522efe",
+     "startedAt": 1790034697.631587,
+     "triggeringEventIds": [
+      "b314e72a72fcae4caebbf10ea8018006583a0adc6cadd8423bf8da8811522efe"
+     ],
+     "turnId": "2afe5316-87e5-4092-a3da-0700f15b56df"
+    },
+    {
+     "channelId": "3d7b6127-7c9c-41e4-a1b8-e8fbfeecde4f",
+     "completedAt": 1790035195.388281,
+     "events": 97,
+     "outcome": "ok",
+     "path": "turns/2026-09-21/b27220b8-50cd-4051-82e6-0e2e3eca8742.jsonl",
+     "scope": "thread:8e85deaa996e7c059a9c62a27d32d1e65ee2b8b029fe52131a82394c79c376e7",
+     "startedAt": 1790035111.651451,
+     "triggeringEventIds": [
+      "8e85deaa996e7c059a9c62a27d32d1e65ee2b8b029fe52131a82394c79c376e7"
+     ],
+     "turnId": "b27220b8-50cd-4051-82e6-0e2e3eca8742"
+    }
+   ],
+   "unit": {
+    "available": false,
+    "reason": "historical"
+   }
+  },
+  "rock2": {
+   "decisions": [
+    {
+     "author": "2c4a588af493bfe42eb50df429aed6f0945eaeb70034fc655df22e2e4bf138dc",
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "decision": "no_rule_matched",
+     "eventId": "9a498e96b78e91693b2176a0c74bb8fca6df9e69ca2d144174200cb638e5e70a",
+     "kind": 9,
+     "threadRoot": "7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "ts": 1790035262.642597
+    },
+    {
+     "author": "6e920684a788bdb487748fa7421e3519793d9186339819d5029cb0967993ea59",
+     "channelId": "72fa2e7b-7e86-437c-a9ca-872838e64dbb",
+     "decision": "no_rule_matched",
+     "eventId": "cbe8d104d4460c8ded5a26bce9189e54f03a22f1f1046778b162712df60a351a",
+     "kind": 9,
+     "threadRoot": "419c4e903790a27c62ba4a6aa2630bcf289346919b6221abff6ebb407da76fc0",
+     "ts": 1790032198.095356
+    },
+    {
+     "author": "2c4a588af493bfe42eb50df429aed6f0945eaeb70034fc655df22e2e4bf138dc",
+     "channelId": "72fa2e7b-7e86-437c-a9ca-872838e64dbb",
+     "decision": "no_rule_matched",
+     "eventId": "bb64d1d0702c2086eb8ac5b2eb0e5fe022ba404a2bab8067634889e56bf108fe",
+     "kind": 9,
+     "threadRoot": null,
+     "ts": 1790032941.680039
+    },
+    {
+     "author": "2c4a588af493bfe42eb50df429aed6f0945eaeb70034fc655df22e2e4bf138dc",
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "decision": "no_rule_matched",
+     "eventId": "b0d25a2794856dd0a7d2d0f9c85827e0ae51295d69b392c3539663ab2e2038f8",
+     "kind": 9,
+     "threadRoot": null,
+     "ts": 1790033050.377735
+    },
+    {
+     "author": "2c4a588af493bfe42eb50df429aed6f0945eaeb70034fc655df22e2e4bf138dc",
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "decision": "no_rule_matched",
+     "eventId": "9b11d2d61392db288f96e51fbad31665b52596c743dc71def278d1aed12bee9a",
+     "kind": 9,
+     "threadRoot": "108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "ts": 1790033139.32006
+    },
+    {
+     "author": "2c4a588af493bfe42eb50df429aed6f0945eaeb70034fc655df22e2e4bf138dc",
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "decision": "no_rule_matched",
+     "eventId": "9d23658bf580fa19dcced61850bfbe53606d3938b549456b09d05f5c5f71545c",
+     "kind": 9,
+     "threadRoot": "108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "ts": 1790034785.59619
+    }
+   ],
+   "lastCompletedAt": null,
+   "limitTurns": [],
+   "openTurns": [],
+   "pubkey": "e14d1e890554347b2405f738e6d7b02fbcc2812db7797cffdc8a568d60c535e7",
+   "recentTurns": [],
+   "unit": {
+    "available": false,
+    "reason": "historical"
+   }
+  },
+  "vinge": {
+   "decisions": [
+    {
+     "author": "270d21e2e34f8026f05c7fb68492ad5e1777db1658a53cdc9f4e7df79d1d3b25",
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "decision": "queued",
+     "eventId": "d10f3b7c08bc0b460d2ab16d8164231b225024c8f0d20b6c7ac5c30ebf90c188",
+     "kind": 9,
+     "threadRoot": "0801ca2eeeb952fb219bdd3f2ff7f3507d345fb1d59d668f3bf02d9a226425cb",
+     "ts": 1790031272.222594
+    },
+    {
+     "author": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "decision": "no_rule_matched",
+     "eventId": "fca374f2a5dac4e0ae5932f261f4b23a03c46efaefa30d84cc0115db6326c9e6",
+     "kind": 9,
+     "threadRoot": "38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "ts": 1790031883.091335
+    },
+    {
+     "author": "41243293dd98372825e2c57bb2b44a100c36809a4339cf9bd564c9c33f8d5d0c",
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "decision": "no_rule_matched",
+     "eventId": "2e517750af4150c85a353933d916c1b7f23aea66e36fafa3d6e4348acbe80e13",
+     "kind": 9,
+     "threadRoot": "38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "ts": 1790032034.553305
+    },
+    {
+     "author": "6e920684a788bdb487748fa7421e3519793d9186339819d5029cb0967993ea59",
+     "channelId": "72fa2e7b-7e86-437c-a9ca-872838e64dbb",
+     "decision": "no_rule_matched",
+     "eventId": "cbe8d104d4460c8ded5a26bce9189e54f03a22f1f1046778b162712df60a351a",
+     "kind": 9,
+     "threadRoot": "419c4e903790a27c62ba4a6aa2630bcf289346919b6221abff6ebb407da76fc0",
+     "ts": 1790032198.093467
+    },
+    {
+     "author": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "decision": "queued",
+     "eventId": "101b8f520f5cb65fb8f06f047c9fda14530b5dc952f96b8b5c919c92f4afe4ae",
+     "kind": 9,
+     "threadRoot": "20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "ts": 1790032656.471822
+    },
+    {
+     "author": "2c4a588af493bfe42eb50df429aed6f0945eaeb70034fc655df22e2e4bf138dc",
+     "channelId": "72fa2e7b-7e86-437c-a9ca-872838e64dbb",
+     "decision": "no_rule_matched",
+     "eventId": "bb64d1d0702c2086eb8ac5b2eb0e5fe022ba404a2bab8067634889e56bf108fe",
+     "kind": 9,
+     "threadRoot": null,
+     "ts": 1790032941.679691
+    },
+    {
+     "author": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "decision": "no_rule_matched",
+     "eventId": "600f7648b328cc3b6de77a6c3bf8ed198e8e1b8650d56b9fc796c984546baefd",
+     "kind": 9,
+     "threadRoot": null,
+     "ts": 1790032988.114378
+    },
+    {
+     "author": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "decision": "no_rule_matched",
+     "eventId": "3721fc52760344afb404c929d53beae2bb4bc0eb548ea82a3adf4d22a71f7702",
+     "kind": 9,
+     "threadRoot": "38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "ts": 1790033006.753357
+    },
+    {
+     "author": "41243293dd98372825e2c57bb2b44a100c36809a4339cf9bd564c9c33f8d5d0c",
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "decision": "no_rule_matched",
+     "eventId": "2cae09c3c884a48ec603b902d33de3c1c73781d12d4bb3dd92033fed84ad6349",
+     "kind": 9,
+     "threadRoot": "38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "ts": 1790033077.82411
+    },
+    {
+     "author": "285e178b956a3c5060e8066c25a2e899d2b11e2d104fb5c6f8b7b1fd6ca4b6fa",
+     "channelId": "3d7b6127-7c9c-41e4-a1b8-e8fbfeecde4f",
+     "decision": "author_gate",
+     "eventId": "b314e72a72fcae4caebbf10ea8018006583a0adc6cadd8423bf8da8811522efe",
+     "kind": 9,
+     "threadRoot": null,
+     "ts": 1790034697.631578
+    },
+    {
+     "author": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "decision": "no_rule_matched",
+     "eventId": "a22c4a6ae25da3164973a808d27eef69029c191b3850d621ed14fde4efcc17ad",
+     "kind": 9,
+     "threadRoot": "38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "ts": 1790034833.661138
+    },
+    {
+     "author": "285e178b956a3c5060e8066c25a2e899d2b11e2d104fb5c6f8b7b1fd6ca4b6fa",
+     "channelId": "3d7b6127-7c9c-41e4-a1b8-e8fbfeecde4f",
+     "decision": "author_gate",
+     "eventId": "8e85deaa996e7c059a9c62a27d32d1e65ee2b8b029fe52131a82394c79c376e7",
+     "kind": 9,
+     "threadRoot": null,
+     "ts": 1790035111.651388
+    }
+   ],
+   "lastCompletedAt": 1790034806.309879,
+   "limitTurns": [
+    {
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "completedAt": 1790033310.179365,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 581,
+     "outcome": "error",
+     "path": "turns/2026-09-21/e72fb352-f523-4275-a693-2036a42a5641.jsonl",
+     "scope": "thread:20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "startedAt": 1790032656.675885,
+     "triggeringEventIds": [
+      "101b8f520f5cb65fb8f06f047c9fda14530b5dc952f96b8b5c919c92f4afe4ae"
+     ],
+     "turnId": "e72fb352-f523-4275-a693-2036a42a5641"
+    },
+    {
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "completedAt": 1790033321.350917,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/f8613704-b3ba-48d2-83f8-cbc4ffca354f.jsonl",
+     "scope": "thread:20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "startedAt": 1790033320.846237,
+     "triggeringEventIds": [
+      "101b8f520f5cb65fb8f06f047c9fda14530b5dc952f96b8b5c919c92f4afe4ae"
+     ],
+     "turnId": "f8613704-b3ba-48d2-83f8-cbc4ffca354f"
+    },
+    {
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "completedAt": 1790033351.239921,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/f3013362-63c1-4ed4-9279-3023bae50562.jsonl",
+     "scope": "thread:20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "startedAt": 1790033350.846368,
+     "triggeringEventIds": [
+      "101b8f520f5cb65fb8f06f047c9fda14530b5dc952f96b8b5c919c92f4afe4ae"
+     ],
+     "turnId": "f3013362-63c1-4ed4-9279-3023bae50562"
+    },
+    {
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "completedAt": 1790033384.278494,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/872ca3ee-1d86-4d82-ac26-ab66843e934a.jsonl",
+     "scope": "thread:20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "startedAt": 1790033383.846296,
+     "triggeringEventIds": [
+      "101b8f520f5cb65fb8f06f047c9fda14530b5dc952f96b8b5c919c92f4afe4ae"
+     ],
+     "turnId": "872ca3ee-1d86-4d82-ac26-ab66843e934a"
+    },
+    {
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "completedAt": 1790033444.197635,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/f40ea5e5-545d-469c-b18f-b15d10245bc4.jsonl",
+     "scope": "thread:20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "startedAt": 1790033443.846656,
+     "triggeringEventIds": [
+      "101b8f520f5cb65fb8f06f047c9fda14530b5dc952f96b8b5c919c92f4afe4ae"
+     ],
+     "turnId": "f40ea5e5-545d-469c-b18f-b15d10245bc4"
+    },
+    {
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "completedAt": 1790033540.463169,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/6e5440ce-8323-4c51-8db0-4fe782d74271.jsonl",
+     "scope": "thread:20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "startedAt": 1790033539.846062,
+     "triggeringEventIds": [
+      "101b8f520f5cb65fb8f06f047c9fda14530b5dc952f96b8b5c919c92f4afe4ae"
+     ],
+     "turnId": "6e5440ce-8323-4c51-8db0-4fe782d74271"
+    },
+    {
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "completedAt": 1790033699.306018,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/9b5be7fa-7b25-4b7d-befd-f91f60eaffd3.jsonl",
+     "scope": "thread:20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "startedAt": 1790033698.846267,
+     "triggeringEventIds": [
+      "101b8f520f5cb65fb8f06f047c9fda14530b5dc952f96b8b5c919c92f4afe4ae"
+     ],
+     "turnId": "9b5be7fa-7b25-4b7d-befd-f91f60eaffd3"
+    },
+    {
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "completedAt": 1790033954.321253,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/0e54c17d-4145-425b-9e22-4a64402212e5.jsonl",
+     "scope": "thread:20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "startedAt": 1790033953.84613,
+     "triggeringEventIds": [
+      "101b8f520f5cb65fb8f06f047c9fda14530b5dc952f96b8b5c919c92f4afe4ae"
+     ],
+     "turnId": "0e54c17d-4145-425b-9e22-4a64402212e5"
+    },
+    {
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "completedAt": 1790034236.585117,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/c7dfeb71-d812-4250-8f32-9731722e0b3e.jsonl",
+     "scope": "thread:20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "startedAt": 1790034235.846393,
+     "triggeringEventIds": [
+      "101b8f520f5cb65fb8f06f047c9fda14530b5dc952f96b8b5c919c92f4afe4ae"
+     ],
+     "turnId": "c7dfeb71-d812-4250-8f32-9731722e0b3e"
+    },
+    {
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "completedAt": 1790034521.478041,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/55b26b4d-87ad-43ce-8bb6-62552c8b05cc.jsonl",
+     "scope": "thread:20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "startedAt": 1790034520.846102,
+     "triggeringEventIds": [
+      "101b8f520f5cb65fb8f06f047c9fda14530b5dc952f96b8b5c919c92f4afe4ae"
+     ],
+     "turnId": "55b26b4d-87ad-43ce-8bb6-62552c8b05cc"
+    },
+    {
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "completedAt": 1790034806.309879,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/c503dbaf-3e81-4bda-814b-5b956c26aa83.jsonl",
+     "scope": "thread:20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "startedAt": 1790034805.846494,
+     "triggeringEventIds": [
+      "101b8f520f5cb65fb8f06f047c9fda14530b5dc952f96b8b5c919c92f4afe4ae"
+     ],
+     "turnId": "c503dbaf-3e81-4bda-814b-5b956c26aa83"
+    }
+   ],
+   "openTurns": [],
+   "pubkey": "77c9bf89e2a9d815234aac71822d4908e471a1c22a7f4bcbfcc18ca572526e58",
+   "recentTurns": [
+    {
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "completedAt": 1790031603.206249,
+     "events": 424,
+     "outcome": "ok",
+     "path": "turns/2026-09-21/968b5345-fb29-4c18-bb0d-5efc55c9e892.jsonl",
+     "scope": "thread:0801ca2eeeb952fb219bdd3f2ff7f3507d345fb1d59d668f3bf02d9a226425cb",
+     "startedAt": 1790030899.722408,
+     "triggeringEventIds": [
+      "5cabfd92518334aa78ae6c2629802e49b2b2df38b98d97accc8b9d23f4471bd9"
+     ],
+     "turnId": "968b5345-fb29-4c18-bb0d-5efc55c9e892"
+    },
+    {
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "completedAt": 1790033310.179365,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 581,
+     "outcome": "error",
+     "path": "turns/2026-09-21/e72fb352-f523-4275-a693-2036a42a5641.jsonl",
+     "scope": "thread:20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "startedAt": 1790032656.675885,
+     "triggeringEventIds": [
+      "101b8f520f5cb65fb8f06f047c9fda14530b5dc952f96b8b5c919c92f4afe4ae"
+     ],
+     "turnId": "e72fb352-f523-4275-a693-2036a42a5641"
+    },
+    {
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "completedAt": 1790033321.350917,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/f8613704-b3ba-48d2-83f8-cbc4ffca354f.jsonl",
+     "scope": "thread:20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "startedAt": 1790033320.846237,
+     "triggeringEventIds": [
+      "101b8f520f5cb65fb8f06f047c9fda14530b5dc952f96b8b5c919c92f4afe4ae"
+     ],
+     "turnId": "f8613704-b3ba-48d2-83f8-cbc4ffca354f"
+    },
+    {
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "completedAt": 1790033351.239921,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/f3013362-63c1-4ed4-9279-3023bae50562.jsonl",
+     "scope": "thread:20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "startedAt": 1790033350.846368,
+     "triggeringEventIds": [
+      "101b8f520f5cb65fb8f06f047c9fda14530b5dc952f96b8b5c919c92f4afe4ae"
+     ],
+     "turnId": "f3013362-63c1-4ed4-9279-3023bae50562"
+    },
+    {
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "completedAt": 1790033384.278494,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/872ca3ee-1d86-4d82-ac26-ab66843e934a.jsonl",
+     "scope": "thread:20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "startedAt": 1790033383.846296,
+     "triggeringEventIds": [
+      "101b8f520f5cb65fb8f06f047c9fda14530b5dc952f96b8b5c919c92f4afe4ae"
+     ],
+     "turnId": "872ca3ee-1d86-4d82-ac26-ab66843e934a"
+    },
+    {
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "completedAt": 1790033444.197635,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/f40ea5e5-545d-469c-b18f-b15d10245bc4.jsonl",
+     "scope": "thread:20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "startedAt": 1790033443.846656,
+     "triggeringEventIds": [
+      "101b8f520f5cb65fb8f06f047c9fda14530b5dc952f96b8b5c919c92f4afe4ae"
+     ],
+     "turnId": "f40ea5e5-545d-469c-b18f-b15d10245bc4"
+    },
+    {
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "completedAt": 1790033540.463169,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/6e5440ce-8323-4c51-8db0-4fe782d74271.jsonl",
+     "scope": "thread:20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "startedAt": 1790033539.846062,
+     "triggeringEventIds": [
+      "101b8f520f5cb65fb8f06f047c9fda14530b5dc952f96b8b5c919c92f4afe4ae"
+     ],
+     "turnId": "6e5440ce-8323-4c51-8db0-4fe782d74271"
+    },
+    {
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "completedAt": 1790033699.306018,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/9b5be7fa-7b25-4b7d-befd-f91f60eaffd3.jsonl",
+     "scope": "thread:20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "startedAt": 1790033698.846267,
+     "triggeringEventIds": [
+      "101b8f520f5cb65fb8f06f047c9fda14530b5dc952f96b8b5c919c92f4afe4ae"
+     ],
+     "turnId": "9b5be7fa-7b25-4b7d-befd-f91f60eaffd3"
+    },
+    {
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "completedAt": 1790033954.321253,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/0e54c17d-4145-425b-9e22-4a64402212e5.jsonl",
+     "scope": "thread:20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "startedAt": 1790033953.84613,
+     "triggeringEventIds": [
+      "101b8f520f5cb65fb8f06f047c9fda14530b5dc952f96b8b5c919c92f4afe4ae"
+     ],
+     "turnId": "0e54c17d-4145-425b-9e22-4a64402212e5"
+    },
+    {
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "completedAt": 1790034236.585117,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/c7dfeb71-d812-4250-8f32-9731722e0b3e.jsonl",
+     "scope": "thread:20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "startedAt": 1790034235.846393,
+     "triggeringEventIds": [
+      "101b8f520f5cb65fb8f06f047c9fda14530b5dc952f96b8b5c919c92f4afe4ae"
+     ],
+     "turnId": "c7dfeb71-d812-4250-8f32-9731722e0b3e"
+    },
+    {
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "completedAt": 1790034521.478041,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/55b26b4d-87ad-43ce-8bb6-62552c8b05cc.jsonl",
+     "scope": "thread:20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "startedAt": 1790034520.846102,
+     "triggeringEventIds": [
+      "101b8f520f5cb65fb8f06f047c9fda14530b5dc952f96b8b5c919c92f4afe4ae"
+     ],
+     "turnId": "55b26b4d-87ad-43ce-8bb6-62552c8b05cc"
+    },
+    {
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "completedAt": 1790034806.309879,
+     "errorKind": "rate_limit",
+     "errorText": "Agent reported error (code -32603): Internal error: You've hit your session limit \u00b7 resets 6:50pm (America/Denver)",
+     "events": 9,
+     "outcome": "error",
+     "path": "turns/2026-09-21/c503dbaf-3e81-4bda-814b-5b956c26aa83.jsonl",
+     "scope": "thread:20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "startedAt": 1790034805.846494,
+     "triggeringEventIds": [
+      "101b8f520f5cb65fb8f06f047c9fda14530b5dc952f96b8b5c919c92f4afe4ae"
+     ],
+     "turnId": "c503dbaf-3e81-4bda-814b-5b956c26aa83"
+    }
+   ],
+   "unit": {
+    "available": false,
+    "reason": "historical"
+   }
+  },
+  "wren": {
+   "decisions": [
+    {
+     "author": "2c4a588af493bfe42eb50df429aed6f0945eaeb70034fc655df22e2e4bf138dc",
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "decision": "no_rule_matched",
+     "eventId": "9a498e96b78e91693b2176a0c74bb8fca6df9e69ca2d144174200cb638e5e70a",
+     "kind": 9,
+     "threadRoot": "7ecc1e487a63bafac9ff8e453b0546f99c4b82b9b7085cb1abbc4e45c39b9016",
+     "ts": 1790035262.642439
+    },
+    {
+     "author": "270d21e2e34f8026f05c7fb68492ad5e1777db1658a53cdc9f4e7df79d1d3b25",
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "decision": "no_rule_matched",
+     "eventId": "d10f3b7c08bc0b460d2ab16d8164231b225024c8f0d20b6c7ac5c30ebf90c188",
+     "kind": 9,
+     "threadRoot": "0801ca2eeeb952fb219bdd3f2ff7f3507d345fb1d59d668f3bf02d9a226425cb",
+     "ts": 1790031272.222003
+    },
+    {
+     "author": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "decision": "no_rule_matched",
+     "eventId": "fca374f2a5dac4e0ae5932f261f4b23a03c46efaefa30d84cc0115db6326c9e6",
+     "kind": 9,
+     "threadRoot": "38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "ts": 1790031883.094703
+    },
+    {
+     "author": "41243293dd98372825e2c57bb2b44a100c36809a4339cf9bd564c9c33f8d5d0c",
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "decision": "no_rule_matched",
+     "eventId": "2e517750af4150c85a353933d916c1b7f23aea66e36fafa3d6e4348acbe80e13",
+     "kind": 9,
+     "threadRoot": "38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "ts": 1790032034.553754
+    },
+    {
+     "author": "6e920684a788bdb487748fa7421e3519793d9186339819d5029cb0967993ea59",
+     "channelId": "72fa2e7b-7e86-437c-a9ca-872838e64dbb",
+     "decision": "no_rule_matched",
+     "eventId": "cbe8d104d4460c8ded5a26bce9189e54f03a22f1f1046778b162712df60a351a",
+     "kind": 9,
+     "threadRoot": "419c4e903790a27c62ba4a6aa2630bcf289346919b6221abff6ebb407da76fc0",
+     "ts": 1790032198.093771
+    },
+    {
+     "author": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "decision": "no_rule_matched",
+     "eventId": "101b8f520f5cb65fb8f06f047c9fda14530b5dc952f96b8b5c919c92f4afe4ae",
+     "kind": 9,
+     "threadRoot": "20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "ts": 1790032656.472176
+    },
+    {
+     "author": "2c4a588af493bfe42eb50df429aed6f0945eaeb70034fc655df22e2e4bf138dc",
+     "channelId": "72fa2e7b-7e86-437c-a9ca-872838e64dbb",
+     "decision": "no_rule_matched",
+     "eventId": "bb64d1d0702c2086eb8ac5b2eb0e5fe022ba404a2bab8067634889e56bf108fe",
+     "kind": 9,
+     "threadRoot": null,
+     "ts": 1790032941.679643
+    },
+    {
+     "author": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "decision": "no_rule_matched",
+     "eventId": "600f7648b328cc3b6de77a6c3bf8ed198e8e1b8650d56b9fc796c984546baefd",
+     "kind": 9,
+     "threadRoot": null,
+     "ts": 1790032988.113118
+    },
+    {
+     "author": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "decision": "no_rule_matched",
+     "eventId": "3721fc52760344afb404c929d53beae2bb4bc0eb548ea82a3adf4d22a71f7702",
+     "kind": 9,
+     "threadRoot": "38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "ts": 1790033006.753085
+    },
+    {
+     "author": "2c4a588af493bfe42eb50df429aed6f0945eaeb70034fc655df22e2e4bf138dc",
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "decision": "no_rule_matched",
+     "eventId": "b0d25a2794856dd0a7d2d0f9c85827e0ae51295d69b392c3539663ab2e2038f8",
+     "kind": 9,
+     "threadRoot": null,
+     "ts": 1790033050.38833
+    },
+    {
+     "author": "41243293dd98372825e2c57bb2b44a100c36809a4339cf9bd564c9c33f8d5d0c",
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "decision": "no_rule_matched",
+     "eventId": "2cae09c3c884a48ec603b902d33de3c1c73781d12d4bb3dd92033fed84ad6349",
+     "kind": 9,
+     "threadRoot": "38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "ts": 1790033077.7761
+    },
+    {
+     "author": "2c4a588af493bfe42eb50df429aed6f0945eaeb70034fc655df22e2e4bf138dc",
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "decision": "no_rule_matched",
+     "eventId": "9b11d2d61392db288f96e51fbad31665b52596c743dc71def278d1aed12bee9a",
+     "kind": 9,
+     "threadRoot": "108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "ts": 1790033139.318809
+    },
+    {
+     "author": "2c4a588af493bfe42eb50df429aed6f0945eaeb70034fc655df22e2e4bf138dc",
+     "channelId": "8dd69e3d-8b3c-49fd-ad42-a3e32f495379",
+     "decision": "no_rule_matched",
+     "eventId": "9d23658bf580fa19dcced61850bfbe53606d3938b549456b09d05f5c5f71545c",
+     "kind": 9,
+     "threadRoot": "108cc8ebd47398ab27d3dc793663b1fbfe866c6e35b77acd47c8bb03210d23da",
+     "ts": 1790034785.596453
+    },
+    {
+     "author": "77c9bf89e2a9d815234aac71822d4908e471a1c22a7f4bcbfcc18ca572526e58",
+     "channelId": "977cc4fa-d527-4b42-99bd-1f1fe47ea1e9",
+     "decision": "no_rule_matched",
+     "eventId": "6f1dcf2ae168465f5b5ca9e06999ba5a1712d075044c772d9b9587304e79f769",
+     "kind": 9,
+     "threadRoot": "20864a237e0783e4e27276f69f5daeffaa0fedcc16f363198a963178a828b200",
+     "ts": 1790034806.369921
+    },
+    {
+     "author": "9e02a8ecf063c2916c210472476e88bdaff0c401d37f32897fd1e5d6c3d804f8",
+     "channelId": "86626078-e765-496b-8d38-aabffbb27974",
+     "decision": "no_rule_matched",
+     "eventId": "a22c4a6ae25da3164973a808d27eef69029c191b3850d621ed14fde4efcc17ad",
+     "kind": 9,
+     "threadRoot": "38a73a43df5967dec91623211f9dda9ec7d42dbbae56fd8fff5c005c27cb386a",
+     "ts": 1790034833.660767
+    }
+   ],
+   "lastCompletedAt": null,
+   "limitTurns": [],
+   "openTurns": [],
+   "pubkey": "8e804a8e3acdc7b8e71601ff0dfaa243bdcd6562917d825395bc421cf8634215",
+   "recentTurns": [],
+   "unit": {
+    "available": false,
+    "reason": "historical"
+   }
+  }
+ }
+}

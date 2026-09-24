@@ -116,6 +116,17 @@ export function useAppNavigation() {
     [commitNavigation],
   );
 
+  const goTasks = React.useCallback(
+    (behavior?: NavigationBehavior) =>
+      commitNavigation(
+        {
+          to: "/tasks",
+        },
+        behavior,
+      ),
+    [commitNavigation],
+  );
+
   const goProjects = React.useCallback(
     (behavior?: NavigationBehavior) =>
       commitNavigation(
@@ -469,6 +480,7 @@ export function useAppNavigation() {
     goNewWorkflowForChannel,
     goProject,
     goProjects,
+    goTasks,
     goPulse,
     goProfile,
     goSettings,

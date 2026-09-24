@@ -22,8 +22,11 @@ Environment=VOICE_BRIDGE_KEY_FILE=%h/.config/buzz-agents/rock.env
 Environment=VOICE_BRIDGE_PARENT_CHANNELS=daa0371a-17fc-41a8-bb70-272b7c7e8be0
 Environment=VOICE_BRIDGE_STARTERS=0f8471300f7806058507999b06f16805168c640aad3ffa5474cf8ec9e7c6a0ca
 # Context pack (rock's call, #buzz-platform 54da67d0): the roster only. No
-# status snapshot: every fact about the work goes through ask_rock.
+# status snapshot: every fact about the work goes through the `work` tool. The
+# parent channel's recent messages are fetched per call on top of this.
 Environment=VOICE_BRIDGE_CONTEXT_FILES=%h/.buzz/GUIDES/AGENT_ROSTER.md
+# Names come from the seat's and Lloyd's kind:0 profiles; set
+# VOICE_BRIDGE_AGENT_NAME / VOICE_BRIDGE_HUMAN_LABEL only to override them.
 # The Gemini key comes from the binary's default key command:
 #   gcloud secrets versions access latest --secret gemini-live-api-key --project aitaco-ml-dev
 # Do not restate it here unquoted: systemd splits Environment= on spaces.

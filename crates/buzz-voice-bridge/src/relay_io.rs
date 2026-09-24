@@ -84,18 +84,65 @@ pub struct Publisher {
     http: reqwest::Client,
     keys: Keys,
     events_url: String,
+    query_url: String,
 }
 
 impl Publisher {
     pub fn new(relay_url: &str, keys: Keys) -> Result<Self> {
+        let base = http_base(relay_url);
         Ok(Self {
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(15))
                 .redirect(reqwest::redirect::Policy::none())
                 .build()?,
             keys,
-            events_url: format!("{}/events", http_base(relay_url)),
+            events_url: format!("{base}/events"),
+            query_url: format!("{base}/query"),
         })
+    }
+
+    /// One-shot Nostr filters over `POST /query`, authenticated as this key.
+    /// Channel reads need `#h` and every filter needs `kinds`; the relay
+    /// refuses the rest.
+    pub async fn query(&self, filters: &[serde_json::Value]) -> Result<Vec<Event>> {
+        let body = serde_json::to_vec(filters).context("serialize filters")?;
+        let auth = self.nip98_for(&self.query_url, &body)?;
+        let response = self
+            .http
+            .post(&self.query_url)
+            .header("Authorization", auth)
+            .header("Content-Type", "application/json")
+            .body(body)
+            .send()
+            .await
+            .context("POST /query")?;
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            bail!("relay refused the query: {status} {text}");
+        }
+        let values: Vec<serde_json::Value> =
+            serde_json::from_str(&text).context("query response is not a JSON array")?;
+        Ok(values
+            .into_iter()
+            .filter_map(|value| serde_json::from_value::<Event>(value).ok())
+            .collect())
+    }
+
+    /// The display names behind `pubkeys`, from their kind:0 profiles: the
+    /// profile's `display_name`, else its `name`. A key with no profile, or
+    /// one whose profile names nothing, is absent from the map.
+    pub async fn profile_names(
+        &self,
+        pubkeys: &[String],
+    ) -> Result<std::collections::HashMap<String, String>> {
+        if pubkeys.is_empty() {
+            return Ok(Default::default());
+        }
+        let events = self
+            .query(&[serde_json::json!({ "kinds": [0], "authors": pubkeys })])
+            .await?;
+        Ok(profile_names_from_events(&events))
     }
 
     pub fn keys(&self) -> &Keys {
@@ -112,7 +159,7 @@ impl Publisher {
     /// publisher's key.
     pub async fn publish_event(&self, event: Event) -> Result<Event> {
         let body = event.as_json().into_bytes();
-        let auth = self.nip98(&body)?;
+        let auth = self.nip98_for(&self.events_url, &body)?;
         let response = self
             .http
             .post(&self.events_url)
@@ -131,10 +178,10 @@ impl Publisher {
         Ok(event)
     }
 
-    fn nip98(&self, body: &[u8]) -> Result<String> {
+    fn nip98_for(&self, url: &str, body: &[u8]) -> Result<String> {
         let event = EventBuilder::new(Kind::HttpAuth, "")
             .tags([
-                Tag::parse(["u", self.events_url.as_str()])?,
+                Tag::parse(["u", url])?,
                 Tag::parse(["method", "POST"])?,
                 Tag::parse(["nonce", uuid::Uuid::new_v4().to_string().as_str()])?,
                 Tag::parse(["payload", hex::encode(Sha256::digest(body)).as_str()])?,
@@ -144,9 +191,57 @@ impl Publisher {
     }
 }
 
+/// Newest profile per author wins; `display_name` beats `name`.
+pub fn profile_names_from_events(events: &[Event]) -> std::collections::HashMap<String, String> {
+    let mut newest: std::collections::HashMap<String, &Event> = Default::default();
+    for event in events.iter().filter(|e| e.kind.as_u16() == 0) {
+        let key = event.pubkey.to_hex();
+        let replace = newest
+            .get(&key)
+            .is_none_or(|current| event.created_at > current.created_at);
+        if replace {
+            newest.insert(key, event);
+        }
+    }
+    newest
+        .into_iter()
+        .filter_map(|(pubkey, event)| {
+            let profile: serde_json::Value = serde_json::from_str(&event.content).ok()?;
+            let name = ["display_name", "name"]
+                .iter()
+                .filter_map(|field| profile[field].as_str())
+                .map(str::trim)
+                .find(|s| !s.is_empty())?;
+            Some((pubkey, name.to_owned()))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_names_take_the_newest_profile_and_prefer_display_name() {
+        let keys = Keys::generate();
+        let older = EventBuilder::new(Kind::Metadata, r#"{"name":"old"}"#)
+            .custom_created_at(nostr::Timestamp::from(100))
+            .sign_with_keys(&keys)
+            .expect("sign");
+        let newer = EventBuilder::new(Kind::Metadata, r#"{"name":"rock","display_name":" Rock "}"#)
+            .custom_created_at(nostr::Timestamp::from(200))
+            .sign_with_keys(&keys)
+            .expect("sign");
+        let nameless = EventBuilder::new(Kind::Metadata, r#"{"about":"x"}"#)
+            .sign_with_keys(&Keys::generate())
+            .expect("sign");
+        let names = profile_names_from_events(&[newer.clone(), older, nameless]);
+        assert_eq!(
+            names.get(&keys.public_key().to_hex()).map(String::as_str),
+            Some("Rock")
+        );
+        assert_eq!(names.len(), 1, "a profile that names nothing is absent");
+    }
 
     #[test]
     fn key_env_takes_the_last_uncommented_assignment() {

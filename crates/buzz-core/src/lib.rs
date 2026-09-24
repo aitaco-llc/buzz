@@ -41,6 +41,10 @@ pub mod private_managed_agent;
 /// Canonical relay runtime identities.
 pub mod relay;
 /// Tenant identity — the server-resolved community key carried on scoped paths.
+/// Task board state and stall derivation, shared with the Desktop read
+/// model through `test-fixtures/task-board-state.json`.
+pub mod task_board;
+
 pub mod tenant;
 /// Schnorr signature and event ID verification.
 pub mod verification;

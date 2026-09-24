@@ -61,6 +61,8 @@ struct ConversationView: View {
   }
 
   private var messages: [Event] { history.messages }
+  /// The newest row, or the trailing sentinel when there are no rows to land on.
+  private var newestRowID: String { messages.last?.id ?? "bottom" }
   private var replyCounts: [String: Int] { Projection.replyCounts(events: workspace.visibleEvents) }
 
   var body: some View {
@@ -85,10 +87,16 @@ struct ConversationView: View {
         .padding(.horizontal)
       }
       .defaultScrollAnchor(.bottom)
+      // A completed head reload swaps the row set out from under the scroll
+      // view, and the offset it was anchored at belongs to the rows that left.
+      // Scrolling to the newest row re-anchors against rows that are actually
+      // there; the trailing sentinel is not enough, because the scroll view
+      // counts it as already visible and does nothing.
+      .onChange(of: history.reloads) { _, _ in proxy.scrollTo(newestRowID, anchor: .bottom) }
       .accessibilityIdentifier(root == nil ? "channel-history" : "thread-history")
       .overlay(alignment: .bottomTrailing) {
         Button {
-          proxy.scrollTo("bottom", anchor: .bottom)
+          proxy.scrollTo(newestRowID, anchor: .bottom)
         } label: {
           Label("Latest", systemImage: "arrow.down").font(.caption)
         }
