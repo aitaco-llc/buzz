@@ -66,6 +66,11 @@ export const KIND_TEAM_CATALOG = 30178;
 export const KIND_USER_STATUS = 30315;
 export const KIND_AGENT_OBSERVER_FRAME = 24200;
 export const KIND_AGENT_TURN_METRIC = 44200;
+// NIP-AR: the public, channel-scoped per-turn receipt — the model a turn ran
+// on and the tokens it consumed, `e`-tagging every message that turn
+// published. Plaintext sibling of the owner-encrypted 44200 metric. It is an
+// OVERLAY on the messages it names, never a timeline row of its own.
+export const KIND_AGENT_TURN_RECEIPT = 44201;
 export const KIND_EVENT_REMINDER = 30300;
 export const KIND_REPO_ANNOUNCEMENT = 30617;
 export const KIND_REPO_STATE = 30618;
@@ -107,6 +112,7 @@ export const CHANNEL_EVENT_KINDS = [
   KIND_STREAM_MESSAGE_EDIT, // 40003 — message edits
   KIND_STREAM_MESSAGE_DIFF, // 40008 — message diffs
   KIND_SYSTEM_MESSAGE, // 40099 — system messages (join, leave, etc.)
+  KIND_AGENT_TURN_RECEIPT, // 44201 — NIP-AR per-turn usage overlay
   KIND_HUDDLE_STARTED, // 48100 — visible huddle session card
   KIND_HUDDLE_PARTICIPANT_JOINED, // 48101 — huddle lifecycle overlay
   KIND_HUDDLE_PARTICIPANT_LEFT, // 48102 — huddle lifecycle overlay
@@ -127,6 +133,7 @@ export const CHANNEL_AUX_EVENT_KINDS = [
   KIND_REACTION, // 7 — NIP-25 reactions
   KIND_NIP29_DELETE_EVENT, // 9005 — NIP-29 / Buzz-native deletions
   KIND_STREAM_MESSAGE_EDIT, // 40003 — message edits
+  KIND_AGENT_TURN_RECEIPT, // 44201 — NIP-AR per-turn usage overlay
 ] as const;
 
 // Visible content kinds the main timeline renders as their own rows. Mirrors

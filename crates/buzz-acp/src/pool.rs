@@ -29,10 +29,13 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::timeout;
 use uuid::Uuid;
 
+use buzz_core::agent_turn_receipt::AgentTurnReceiptPayload;
+
 use crate::acp::{
     extract_model_config_options, extract_model_state, extract_thought_level_config_id,
-    model_in_catalog, resolve_model_switch_method, AcpClient, AcpError, EnvVar, McpServer,
-    McpServerConfig, ModelSwitchMethod, StopReason, SystemPromptTransport, BUZZ_PI_ACP_NAME,
+    model_in_catalog, resolve_model_switch_method, unadvertised_session_model, AcpClient, AcpError,
+    EnvVar, McpServer, McpServerConfig, ModelSwitchMethod, StopReason, SystemPromptTransport,
+    BUZZ_PI_ACP_NAME,
 };
 use crate::config::{compose_scoped_session_title, DedupMode, PermissionMode};
 use crate::observer;
@@ -355,6 +358,38 @@ impl OwnedAgent {
             &self.agent_name,
             self.goose_system_prompt_supported,
         )
+    }
+
+    /// The model this agent's sessions actually run on, as the adapter reports
+    /// it — never [`desired_model`](Self::desired_model), which is only what was
+    /// asked for.
+    ///
+    /// Read from the capability snapshot cached at session time, which
+    /// `create_session_and_apply_model` refreshes from the adapter's post-switch
+    /// response whenever a switch applies, so a rejected or unsupported switch
+    /// leaves the model the session is really running. The stable
+    /// `configOptions.currentValue` is preferred over the unstable
+    /// `models.currentModelId`; when the adapter advertises neither (Codex)
+    /// this is `None` and callers must not guess. `rebrand-acp` advertises a
+    /// one-entry `model` category whose `currentValue` is the model `--model`
+    /// fixed at launch (aitaco-llc/rebrand#304, `of-acp/src/server.rs`
+    /// `session_result`), so a seat on that harness names its model here.
+    pub fn session_model(&self) -> Option<String> {
+        let caps = self.model_capabilities.as_ref()?;
+        let from_config = caps.config_options_raw.iter().find_map(|opt| {
+            opt.get("currentValue")
+                .and_then(|v| v.as_str())
+                .filter(|v| !v.trim().is_empty())
+        });
+        if let Some(model) = from_config {
+            return Some(model.to_string());
+        }
+        caps.available_models_raw
+            .as_ref()?
+            .get("currentModelId")
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.trim().is_empty())
+            .map(str::to_string)
     }
 }
 
@@ -1610,6 +1645,27 @@ async fn create_session_and_apply_model(
         }
     }
 
+    // The model this session actually opened on. `ANTHROPIC_MODEL` is the only
+    // per-process pin for a Claude adapter — without it every seat on a body
+    // inherits the shared `~/.claude/settings.json`, which the operator's own
+    // `claude` CLI rewrites — but the adapter takes it unvalidated, so a typo
+    // reaches inference as a 404 minutes into a turn. Name it here instead.
+    if let Some((current, advertised)) = unadvertised_session_model(&resp.raw) {
+        tracing::error!(
+            target: "pool::model",
+            model = %current,
+            advertised = ?advertised,
+            "this session opened on a model {} does not advertise — check ANTHROPIC_MODEL; \
+             turns will fail at the provider until it names one of {:?}",
+            agent.agent_name,
+            advertised,
+        );
+        agent.acp.observe(
+            "model_unadvertised",
+            serde_json::json!({"model": current, "advertised": advertised}),
+        );
+    }
+
     // Populate model capabilities on first session creation.
     if agent.model_capabilities.is_none() {
         agent.model_capabilities = Some(AgentModelCapabilities {
@@ -1953,10 +2009,15 @@ async fn apply_startup_effort(
         return Ok(None);
     };
     let Some(config_id) = extract_thought_level_config_id(session_new_result) else {
-        tracing::info!(
+        tracing::warn!(
             target: "pool::effort",
-            "startup effort {value} configured but model advertises no thought_level option — leaving agent default"
+            effort = %value,
+            "BUZZ_ACP_EFFORT_LEVEL is set but this model advertises no thought_level option, \
+             so it has no effect — the session runs the model's default reasoning"
         );
+        agent
+            .acp
+            .observe("effort_unsupported", serde_json::json!({"effort": value}));
         return Ok(None);
     };
 
@@ -2318,6 +2379,11 @@ pub async fn run_prompt_task(
     };
     let observer_channel_id = source.channel_id();
     let turn_started_at = chrono::Utc::now().to_rfc3339();
+    // What this turn served, carried into every NIP-AM metric it publishes so a
+    // reader can join a turn to the work it was doing. Built once here because
+    // the batch is consumed further down and the twelve publish sites are
+    // spread across every stop path.
+    let turn_join = TurnJoin::for_batch(batch.as_ref());
     agent.acp.set_observer_context(observer::context_for_turn(
         observer_channel_id,
         None,
@@ -2764,6 +2830,7 @@ pub async fn run_prompt_task(
                         &session_id,
                         &format!("{turn_id}:initial"),
                         Some(acp_stop_to_core(&stop_reason)),
+                        &turn_join,
                     )
                     .await;
                 }
@@ -2799,6 +2866,7 @@ pub async fn run_prompt_task(
                                 &session_id,
                                 &format!("{turn_id}:initial"),
                                 Some(acp_stop_to_core(&stop_reason)),
+                                &turn_join,
                             )
                             .await;
                             agent.state.invalidate(&source);
@@ -3144,6 +3212,7 @@ pub async fn run_prompt_task(
                                     &session_id,
                                     &turn_id,
                                     Some(buzz_core::agent_turn_metric::StopReason::Cancelled),
+                                    &turn_join,
                                 )
                                 .await;
                                 send_prompt_result(
@@ -3180,6 +3249,7 @@ pub async fn run_prompt_task(
                                     &session_id,
                                     &turn_id,
                                     Some(buzz_core::agent_turn_metric::StopReason::Error),
+                                    &turn_join,
                                 )
                                 .await;
                                 send_prompt_result(
@@ -3246,6 +3316,7 @@ pub async fn run_prompt_task(
                             &session_id,
                             &turn_id,
                             Some(buzz_core::agent_turn_metric::StopReason::EndTurn),
+                            &turn_join,
                         )
                         .await;
                         send_prompt_result(
@@ -3321,6 +3392,7 @@ pub async fn run_prompt_task(
                 &session_id,
                 &turn_id,
                 Some(core_stop),
+                &turn_join,
             )
             .await;
 
@@ -3344,6 +3416,7 @@ pub async fn run_prompt_task(
                 &session_id,
                 &turn_id,
                 Some(buzz_core::agent_turn_metric::StopReason::Error),
+                &turn_join,
             )
             .await;
             send_prompt_result(
@@ -3376,6 +3449,7 @@ pub async fn run_prompt_task(
                         &session_id,
                         &turn_id,
                         Some(buzz_core::agent_turn_metric::StopReason::Cancelled),
+                        &turn_join,
                     )
                     .await;
                     // Timeout triggers respawn in handle_prompt_result —
@@ -3404,6 +3478,7 @@ pub async fn run_prompt_task(
                         &session_id,
                         &turn_id,
                         Some(buzz_core::agent_turn_metric::StopReason::Error),
+                        &turn_join,
                     )
                     .await;
                     send_prompt_result(
@@ -3429,6 +3504,7 @@ pub async fn run_prompt_task(
                         &session_id,
                         &turn_id,
                         Some(buzz_core::agent_turn_metric::StopReason::Error),
+                        &turn_join,
                     )
                     .await;
                     send_prompt_result(
@@ -3458,6 +3534,7 @@ pub async fn run_prompt_task(
                 &session_id,
                 &turn_id,
                 Some(buzz_core::agent_turn_metric::StopReason::Error),
+                &turn_join,
             )
             .await;
             send_prompt_result(
@@ -3485,6 +3562,7 @@ pub async fn run_prompt_task(
                 &session_id,
                 &turn_id,
                 Some(buzz_core::agent_turn_metric::StopReason::Error),
+                &turn_join,
             )
             .await;
             send_prompt_result(
@@ -5139,6 +5217,86 @@ impl Drop for TurnCompletionGuard {
     }
 }
 
+/// What a turn that returned [`PromptOutcome::Ok`] should be called in the
+/// journal and in the durable turn index.
+///
+/// `Ok` means the ACP conversation completed without the harness losing the
+/// agent — it does **not** mean the turn did its job. Four of the five stop
+/// reasons end a turn early, and one of them, `max_turn_requests`, is
+/// indistinguishable from success at every layer that used to read this:
+/// `outcome: ok` in the index, `Unknown` in the NIP-AM metric, a warn line in
+/// the journal, and nothing at all in the channel. rock's turn `a1208720`
+/// (2026-09-22 00:53Z) burned 40 tool calls, 91 s and $0.33 answering Lloyd
+/// about two bug reports, published no message, and was recorded as `ok`.
+///
+/// So each stop reason gets its own word, and `ok` is reserved for the turn
+/// that reached its own end. Callers that need to distinguish a *silent*
+/// exhausted turn from one that answered ask the relay, not this function.
+pub(crate) fn ok_outcome_label(stop_reason: &StopReason) -> &'static str {
+    match stop_reason {
+        StopReason::EndTurn => "ok",
+        StopReason::MaxTurnRequests => "exhausted",
+        StopReason::MaxTokens => "limited",
+        StopReason::Refusal => "refused",
+        StopReason::Cancelled => "cancelled",
+    }
+}
+
+/// What a turn served, carried into its NIP-AM `kind:44200` metric so a reader
+/// can join the turn to the work it was doing.
+///
+/// The join the task tracker needs is "which turns belong to this task": a task
+/// links a thread, and these two fields say which thread a turn ran in and
+/// which message started it. Without them a 44200 says what a turn cost and
+/// nothing about what it was for, and the owner's own metrics cannot be
+/// attributed to anything.
+///
+/// Both come off the batch the turn was dispatched with, so a heartbeat carries
+/// neither.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TurnJoin {
+    /// The thread a reply to this turn's trigger lands in: the trigger's own
+    /// NIP-10 root, or the trigger itself when it is top-level and the reply
+    /// would open the thread. Same key [`AnswerTarget`] judges ✅ by, and the
+    /// same one a task's `task-thread` link note points at — deliberately, so
+    /// the two join without a translation step.
+    ///
+    /// Read from the trigger rather than from the [`SessionScope`] because a
+    /// conversation-scoped session (a DM, or a channel under
+    /// `SessionPolicy::Channel`) has no thread root at all, and those turns
+    /// still serve a thread.
+    pub thread_root: Option<String>,
+    /// The newest event that triggered the turn. The turn index row carries
+    /// every trigger in `triggeringEventIds`; the metric carries the one a
+    /// reply is anchored to, which is the one a task is created from.
+    pub triggering_event_id: Option<String>,
+    /// When the turn started, for the `durationMs` a publish site computes at
+    /// the moment it publishes. A mid-turn metric (the initial-message arms)
+    /// therefore reports elapsed-so-far, which is what it means.
+    pub started_at: Option<std::time::Instant>,
+}
+
+impl TurnJoin {
+    fn for_batch(batch: Option<&FlushBatch>) -> Self {
+        let Some(trigger) = batch.and_then(|b| b.events.last()) else {
+            return Self::default();
+        };
+        let target = AnswerTarget::for_event(&trigger.event);
+        Self {
+            thread_root: Some(target.thread_key),
+            triggering_event_id: Some(target.event_id),
+            started_at: Some(std::time::Instant::now()),
+        }
+    }
+
+    /// Milliseconds since the turn started, saturating at `u64::MAX` rather
+    /// than wrapping. `None` when the turn carried no start (a heartbeat).
+    fn duration_ms(&self) -> Option<u64> {
+        self.started_at
+            .map(|at| u64::try_from(at.elapsed().as_millis()).unwrap_or(u64::MAX))
+    }
+}
+
 /// Map an ACP `StopReason` to the NIP-AM `StopReason` used in kind 44200 payloads.
 fn acp_stop_to_core(r: &StopReason) -> buzz_core::agent_turn_metric::StopReason {
     use buzz_core::agent_turn_metric::StopReason as CoreStop;
@@ -5146,8 +5304,93 @@ fn acp_stop_to_core(r: &StopReason) -> buzz_core::agent_turn_metric::StopReason 
         StopReason::EndTurn => CoreStop::EndTurn,
         StopReason::Cancelled => CoreStop::Cancelled,
         StopReason::MaxTokens => CoreStop::MaxTokens,
-        StopReason::MaxTurnRequests => CoreStop::Unknown,
-        StopReason::Refusal => CoreStop::Unknown,
+        // Both used to land on `Unknown`, which threw away the only two signals
+        // that distinguish a turn that stopped early from one that finished.
+        // An exhausted request budget in particular is the failure the owner's
+        // metrics could not see: `PromptOutcome::Ok`, `outcome: ok` in the
+        // index, and possibly not one published word.
+        StopReason::MaxTurnRequests => CoreStop::MaxTurnRequests,
+        StopReason::Refusal => CoreStop::Refusal,
+    }
+}
+
+#[cfg(test)]
+mod turn_outcome_tests {
+    use super::*;
+    use buzz_core::agent_turn_metric::StopReason as CoreStop;
+
+    /// The prompt result rock's harness really read at the end of turn
+    /// `a1208720` — Lloyd's "are you on top of these two bug reports??" in
+    /// #user-support, 2026-09-22 00:53Z. Copied verbatim out of
+    /// `~/.local/state/buzz-turns/rock/turns/2026-09-22/a1208720-….jsonl`, the
+    /// only place the signal survived: the index row for that turn says
+    /// `"outcome":"ok"`, the 44200 metric said `unknown`, and the channel got
+    /// nothing at all.
+    const EXHAUSTED_TURN: &str = include_str!("../tests/fixtures/turn-a1208720-prompt-result.json");
+
+    /// Replay the capture through the real wire parser and both mappers. This
+    /// is the check that fails on every build before this one: `ok` in the
+    /// index and `Unknown` in the metric.
+    #[test]
+    fn the_captured_exhausted_turn_is_not_called_ok_anywhere() {
+        let result: serde_json::Value = serde_json::from_str(EXHAUSTED_TURN).expect("fixture");
+        let raw = result["stopReason"].as_str().expect("stopReason");
+        let stop = StopReason::from_str(raw).expect("a stop reason buzz-acp knows");
+        assert_eq!(stop, StopReason::MaxTurnRequests);
+
+        assert_eq!(
+            ok_outcome_label(&stop),
+            "exhausted",
+            "the durable index row is what an audit and the watchdog read"
+        );
+        assert_eq!(
+            acp_stop_to_core(&stop),
+            CoreStop::MaxTurnRequests,
+            "the owner's NIP-AM metric must carry the same fact as the index"
+        );
+
+        // Named so the fixture cannot be quietly swapped for a friendlier one.
+        assert_eq!(
+            result["_meta"]["rebrand"]["termination"]["kind"],
+            "budget_exhausted"
+        );
+        assert_eq!(result["_meta"]["rebrand"]["toolCalls"], 40);
+    }
+
+    /// `ok` belongs to one stop reason and no other. Exhaustive by hand rather
+    /// than by wildcard: a sixth ACP stop reason must force this decision to be
+    /// made again, not inherit "ok" by default.
+    #[test]
+    fn only_a_turn_that_reached_its_own_end_is_called_ok() {
+        assert_eq!(ok_outcome_label(&StopReason::EndTurn), "ok");
+        for (stop, label) in [
+            (StopReason::MaxTurnRequests, "exhausted"),
+            (StopReason::MaxTokens, "limited"),
+            (StopReason::Refusal, "refused"),
+            (StopReason::Cancelled, "cancelled"),
+        ] {
+            assert_eq!(ok_outcome_label(&stop), label);
+            assert_ne!(
+                ok_outcome_label(&stop),
+                "ok",
+                "{stop:?} ends a turn early and must not read as success"
+            );
+        }
+    }
+
+    /// NIP-AM's own forward-compatibility rule is what makes the two added
+    /// values safe, so pin the wire spelling a consumer will see.
+    #[test]
+    fn the_two_added_stop_reasons_have_stable_wire_names() {
+        let name = |s: CoreStop| serde_json::to_value(s).expect("serialize");
+        assert_eq!(name(CoreStop::MaxTurnRequests), "max_turn_requests");
+        assert_eq!(name(CoreStop::Refusal), "refusal");
+        // Round-trip: an older publisher's values still read the same.
+        for wire in ["end_turn", "max_tokens", "cancelled", "error", "unknown"] {
+            let back: CoreStop =
+                serde_json::from_value(serde_json::Value::String(wire.into())).expect("parse");
+            assert_eq!(name(back), wire);
+        }
     }
 }
 
@@ -5227,6 +5470,7 @@ async fn publish_agent_turn_metric(
     session_id: &str,
     turn_id: &str,
     stop_reason: Option<buzz_core::agent_turn_metric::StopReason>,
+    join: &TurnJoin,
 ) {
     use buzz_core::agent_turn_metric::AgentTurnMetricPayload;
     use nostr::{EventBuilder, Kind, Tag};
@@ -5251,6 +5495,9 @@ async fn publish_agent_turn_metric(
         delta_reliable: usage.delta_reliable,
         stop_reason,
         pricing_identity: usage.pricing_identity.clone(),
+        thread_root: join.thread_root.clone(),
+        triggering_event_id: join.triggering_event_id.clone(),
+        duration_ms: join.duration_ms(),
     };
     let ciphertext = match buzz_core::agent_turn_metric::encrypt_agent_turn_metric(
         &ctx.agent_keys,
@@ -5367,6 +5614,12 @@ pub struct AnswerLedger {
     /// Inclusive lower bound (unix seconds) for the turn's replies. See
     /// [`AgentPool::answer_since`].
     since: u64,
+    /// Where a reply to this turn's triggers lands, for the harness's own
+    /// notice when the turn stopped early without leaving one. Same anchor
+    /// the usage-limit hold uses — a reply TO the newest trigger, so a
+    /// top-level ask gets a thread rather than a message at the channel root.
+    /// `None` for a heartbeat and for a batch with no events.
+    reply_to: Option<ThreadTags>,
 }
 
 impl AnswerLedger {
@@ -5379,7 +5632,48 @@ impl AnswerLedger {
                 .map(|be| AnswerTarget::for_event(&be.event))
                 .collect(),
             since,
+            reply_to: batch
+                .events
+                .last()
+                .map(|be| crate::queue::held_notice_target(&be.event)),
         }
+    }
+}
+
+/// A turn that ended before the model reached its own end of turn, and the
+/// line the harness owes the room if the turn left nothing behind.
+///
+/// Only the three stop reasons that *cut a turn off* qualify. `end_turn` never
+/// does, however silent: a model that finishes and chooses not to speak has
+/// answered, and our own team rules say silence is often the right answer.
+/// `cancelled` never does either — somebody asked for that.
+#[derive(Debug, Clone)]
+pub struct EarlyStop {
+    /// The word the turn index uses for this turn, for the log line.
+    pub label: &'static str,
+    /// The whole notice, opening with [`FAILURE_NOTICE_PREFIX`].
+    pub notice: String,
+}
+
+impl EarlyStop {
+    /// The notice a turn owes its room, or `None` when the turn was not cut off.
+    pub fn for_stop_reason(stop_reason: &StopReason) -> Option<Self> {
+        let (label, why) = match stop_reason {
+            StopReason::MaxTurnRequests => (
+                "exhausted",
+                "the turn ran out of tool calls before it replied",
+            ),
+            StopReason::MaxTokens => ("limited", "the turn ran out of context before it replied"),
+            StopReason::Refusal => ("refused", "the model refused this turn"),
+            StopReason::EndTurn | StopReason::Cancelled => return None,
+        };
+        Some(Self {
+            label,
+            notice: format!(
+                "{FAILURE_NOTICE_PREFIX} — {why}. Nothing was published, so nobody \
+                 is working on it. Please re-send if it is still needed."
+            ),
+        })
     }
 }
 
@@ -5423,27 +5717,55 @@ fn answered_event_ids(targets: &[AnswerTarget], replies: &serde_json::Value) -> 
     answered
 }
 
-/// The relay query for the seat's own replies in any target's thread since
-/// the turn started.
-fn answered_reply_filter(author: nostr::PublicKey, ledger: &AnswerLedger) -> nostr::Filter {
+/// The relay query for everything the seat published in the turn's channel
+/// since the turn started.
+///
+/// Scoped by channel (`#h`), not by thread: a turn answers its triggers with
+/// replies in their threads, but it also opens threads of its own — a fan-out
+/// root, a release post, a roll-up — and those carry no `e` tag at all. A
+/// query keyed on the targets' thread keys never returned them, so a NIP-AR
+/// receipt never named a top-level post, and a turn whose only message was one
+/// published no receipt. The channel query returns both kinds of message;
+/// `answered_event_ids` still judges ✅ by thread key on top of it.
+///
+/// The seat runs one turn at a time, so "ours, in this channel, since the turn
+/// started" is exactly this turn's output. A seat running concurrent turns in
+/// one channel would need per-turn tracking instead; nothing here supports
+/// that, and nothing here claims to.
+///
+/// A completion without a channel has no room to ask, and keeps the thread
+/// form so ✅ still settles from the targets' threads.
+fn turn_publications_filter(
+    author: nostr::PublicKey,
+    channel_id: Option<Uuid>,
+    ledger: &AnswerLedger,
+) -> nostr::Filter {
     use nostr::{Alphabet, SingleLetterTag};
 
-    let mut thread_keys: Vec<&str> = ledger
-        .targets
-        .iter()
-        .map(|t| t.thread_key.as_str())
-        .collect();
-    thread_keys.sort_unstable();
-    thread_keys.dedup();
-    nostr::Filter::new()
+    let filter = nostr::Filter::new()
         .kinds(
             ANSWER_REPLY_KINDS
                 .iter()
                 .map(|kind| nostr::Kind::Custom(*kind as u16)),
         )
         .author(author)
-        .custom_tags(SingleLetterTag::lowercase(Alphabet::E), thread_keys)
-        .since(nostr::Timestamp::from(ledger.since))
+        .since(nostr::Timestamp::from(ledger.since));
+    match channel_id {
+        Some(channel_id) => filter.custom_tags(
+            SingleLetterTag::lowercase(Alphabet::H),
+            [channel_id.to_string()],
+        ),
+        None => {
+            let mut thread_keys: Vec<&str> = ledger
+                .targets
+                .iter()
+                .map(|t| t.thread_key.as_str())
+                .collect();
+            thread_keys.sort_unstable();
+            thread_keys.dedup();
+            filter.custom_tags(SingleLetterTag::lowercase(Alphabet::E), thread_keys)
+        }
+    }
 }
 
 /// Whether a turn's outcome earns ✅ on the triggers it answered.
@@ -5463,39 +5785,308 @@ pub(crate) fn earns_answered_reaction(outcome: &PromptOutcome) -> bool {
     matches!(outcome, PromptOutcome::Ok(StopReason::EndTurn))
 }
 
-/// Fire-and-forget: add ✅ to every target a successful turn answered. ✅ is
-/// never removed. Called by the main loop only when
-/// [`earns_answered_reaction`] holds, so a turn that failed, refused, ran out
-/// of budget or was cancelled after an interim reply ("on it") leaves no ✅.
+/// Everything a finished turn owes the channel it ran in, collected by the main
+/// loop and settled by [`spawn_turn_completion`].
 ///
-/// Detection reads the relay, not the agent's tool calls: one query for our
-/// own reply-kind events created since the turn started that carry a target's
-/// thread key in an `e` tag. Agents publish with `buzz messages send`, which
-/// returns only once the relay has accepted the event, so every reply a turn
-/// sent is queryable by the time its result reaches the main loop. A turn
-/// that heard a post and stayed out published nothing there and adds no ✅.
-pub(crate) fn spawn_answered_reactions(rest: &RestClient, ledger: AnswerLedger) {
-    if ledger.targets.is_empty() {
+/// Both outputs — the ✅ reactions and the NIP-AR receipt — answer the same
+/// question ("what did this turn publish?"), which only the relay can answer,
+/// so they share one query rather than asking twice.
+pub struct TurnCompletion {
+    /// The triggers this turn was asked to handle, and the instant from which
+    /// its replies count.
+    pub ledger: AnswerLedger,
+    /// The channel the turn ran in; `None` for a heartbeat, which has no room
+    /// to be accountable to and therefore no receipt.
+    pub channel_id: Option<Uuid>,
+    /// Whether the turn's outcome earns ✅ — see [`earns_answered_reaction`].
+    /// The receipt deliberately ignores this: a turn that refused, hit a cap or
+    /// was cancelled still spent tokens, and those are the turns worth seeing.
+    pub earns_answered: bool,
+    /// The receipt to publish for this turn, or `None` when no model could be
+    /// named. A receipt that names the wrong model is worse than none.
+    pub receipt: Option<AgentTurnReceiptPayload>,
+    /// Set when the turn was cut off ([`EarlyStop`]). The notice is published
+    /// only if the same relay query shows the turn left nothing in its
+    /// trigger's thread — so a turn that answered and *then* hit the cap stays
+    /// silent, and a turn that vanished mid-thought does not.
+    pub early_stop: Option<EarlyStop>,
+}
+
+/// The NIP-AR receipt a finished turn earned, or `None` when the harness cannot
+/// say what the turn ran on.
+///
+/// The model is the one the session actually opened on: the harness-reported
+/// model from the turn's own usage notification when there is one (goose and
+/// buzz-agent report it per turn), otherwise the adapter's own
+/// [`session_model`](OwnedAgent::session_model) snapshot. Adapters that report
+/// neither get no receipt rather than a guessed one.
+///
+/// Counts come from the turn's per-turn deltas via [`build_turn_metric_counts`],
+/// so an absent count stays absent — a zero would be a claim the provider never
+/// made. A turn whose harness reported no usage at all still earns a receipt
+/// naming its model.
+pub(crate) fn turn_receipt_payload(
+    agent: &OwnedAgent,
+    harness: &str,
+) -> Option<AgentTurnReceiptPayload> {
+    let usage = agent.acp.last_turn_usage();
+    let model = usage
+        .and_then(|u| u.model.clone())
+        .filter(|m| !m.trim().is_empty())
+        .or_else(|| agent.session_model())?;
+    let turn = usage.and_then(|u| build_turn_metric_counts(u).0).unwrap_or(
+        buzz_core::agent_turn_metric::TokenCounts {
+            input_tokens: None,
+            output_tokens: None,
+            total_tokens: None,
+            cost_usd: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+        },
+    );
+    let payload = AgentTurnReceiptPayload {
+        model,
+        harness: harness.to_string(),
+        turn,
+    };
+    // A malformed receipt is worse than none: it would annotate real messages
+    // with a claim a reader cannot check.
+    if let Err(error) = payload.validate() {
+        tracing::warn!(target: "pool::receipt", "NIP-AR: refusing to publish an invalid receipt: {error}");
+        return None;
+    }
+    Some(payload)
+}
+
+/// The ids of our own messages in `replies`, oldest first.
+///
+/// These are the messages the turn published: the relay's answer, not the
+/// agent's account of itself. Dead-letter notices are excluded — the harness
+/// wrote those *about* the turn, the turn did not spend tokens saying them.
+/// `created_at` is whole seconds, so same-second ties fall back to event id;
+/// the order is stable, which is what a reader needs.
+fn published_message_ids(replies: &serde_json::Value) -> Vec<String> {
+    let mut published: Vec<(u64, String)> = Vec::new();
+    for reply in replies.as_array().into_iter().flatten() {
+        let content = reply.get("content").and_then(|c| c.as_str()).unwrap_or("");
+        if content.starts_with(FAILURE_NOTICE_PREFIX) {
+            continue;
+        }
+        let Some(id) = reply.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let created_at = reply
+            .get("created_at")
+            .and_then(|v| v.as_u64())
+            .unwrap_or_default();
+        if published.iter().any(|(_, seen)| seen == id) {
+            continue;
+        }
+        published.push((created_at, id.to_string()));
+    }
+    published.sort();
+    published.into_iter().map(|(_, id)| id).collect()
+}
+
+/// Build the signed kind 44201 receipt for a turn, or `None` when there is
+/// nothing to bind it to.
+///
+/// `None` when the turn published no message (no messages, no receipt), when no
+/// model could be named, or when the turn was not a channel turn. Tag order is
+/// the wire contract: one `h`, then one `e` per published message in
+/// publication order, then one `model`.
+fn build_turn_receipt_event(
+    keys: &nostr::Keys,
+    channel_id: Option<Uuid>,
+    receipt: Option<&AgentTurnReceiptPayload>,
+    replies: &serde_json::Value,
+) -> Option<nostr::Event> {
+    use nostr::{EventBuilder, Kind, Tag};
+
+    let (channel_id, receipt) = (channel_id?, receipt?);
+    let published = published_message_ids(replies);
+    if published.is_empty() {
+        return None;
+    }
+    let content = match serde_json::to_string(receipt) {
+        Ok(content) => content,
+        Err(error) => {
+            tracing::warn!(target: "pool::receipt", "NIP-AR: serialize failed: {error}");
+            return None;
+        }
+    };
+    let mut tags: Vec<Tag> = Vec::with_capacity(published.len() + 2);
+    let mut parts: Vec<[String; 2]> = vec![["h".to_string(), channel_id.to_string()]];
+    parts.extend(published.iter().map(|id| ["e".to_string(), id.clone()]));
+    parts.push(["model".to_string(), receipt.model.clone()]);
+    for part in &parts {
+        match Tag::parse(part) {
+            Ok(tag) => tags.push(tag),
+            Err(error) => {
+                tracing::warn!(target: "pool::receipt", "NIP-AR: bad {} tag: {error}", part[0]);
+                return None;
+            }
+        }
+    }
+    match EventBuilder::new(
+        Kind::Custom(buzz_core::kind::KIND_AGENT_TURN_RECEIPT as u16),
+        content,
+    )
+    .tags(tags)
+    .sign_with_keys(keys)
+    {
+        Ok(event) => Some(event),
+        Err(error) => {
+            tracing::warn!(target: "pool::receipt", "NIP-AR: sign failed: {error}");
+            None
+        }
+    }
+}
+
+/// Everything a finished turn owes its room, decided from one relay answer.
+#[derive(Debug, Default)]
+pub(crate) struct TurnCompletionActions {
+    /// Triggers to mark ✅.
+    pub answered: Vec<String>,
+    /// The NIP-AR receipt to publish, when one is owed.
+    pub receipt: Option<nostr::Event>,
+    /// The harness's own notice, and where to post it: `(channel, anchor, text)`.
+    pub notice: Option<(Uuid, ThreadTags, String)>,
+}
+
+/// What a finished turn publishes, given the relay's answer to what it said.
+///
+/// Pure, so all three gates stay falsifiable: ✅ is withheld unless the outcome
+/// earned it, the receipt is owed by every turn that published — the refusals,
+/// caps and cancels burned tokens too — and the notice is owed only by a turn
+/// that was cut off *and* left its trigger's thread empty.
+///
+/// The notice re-reads the thread itself rather than looking at `answered`:
+/// `answered` is empty by construction for a cut-off turn, because that outcome
+/// never earns ✅, so reusing it would post a notice under every early stop
+/// including the ones that had already replied.
+fn turn_completion_actions(
+    keys: &nostr::Keys,
+    completion: &TurnCompletion,
+    replies: &serde_json::Value,
+) -> TurnCompletionActions {
+    let replied_in_thread = !answered_event_ids(&completion.ledger.targets, replies).is_empty();
+    let answered = if completion.earns_answered && replied_in_thread {
+        answered_event_ids(&completion.ledger.targets, replies)
+    } else {
+        Vec::new()
+    };
+    let receipt = build_turn_receipt_event(
+        keys,
+        completion.channel_id,
+        completion.receipt.as_ref(),
+        replies,
+    );
+    let notice = match (
+        completion.early_stop.as_ref(),
+        completion.channel_id,
+        completion.ledger.reply_to.as_ref(),
+    ) {
+        (Some(early), Some(channel_id), Some(anchor)) if !replied_in_thread => {
+            Some((channel_id, anchor.clone(), early.notice.clone()))
+        }
+        _ => None,
+    };
+    TurnCompletionActions {
+        answered,
+        receipt,
+        notice,
+    }
+}
+
+/// Best-effort timeout for publishing one NIP-AR receipt.
+const RECEIPT_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Fire-and-forget: settle a finished turn's ✅ reactions and its NIP-AR
+/// receipt from one relay query.
+///
+/// Detection reads the relay, not the agent's tool calls: one query for our own
+/// message-kind events in the turn's channel created since the turn started —
+/// replies in the triggers' threads and top-level posts alike, see
+/// [`turn_publications_filter`]. Agents publish with `buzz messages send`, which
+/// returns only once the relay has accepted the event, so every message a turn
+/// sent is queryable by the time its result reaches the main loop. A turn that
+/// heard a post and stayed out published nothing there: no ✅, no receipt.
+///
+/// ✅ is added only when [`earns_answered_reaction`] held for the turn's
+/// outcome and is never removed. The receipt is published for every turn that
+/// published, whatever its outcome. Failures are logged and dropped — neither
+/// output may fail a turn.
+pub(crate) fn spawn_turn_completion(rest: &RestClient, completion: TurnCompletion) {
+    // Nothing to learn from the relay when neither output is owed — an adapter
+    // that names no model and a turn that earned no ✅ must not cost a query on
+    // every completion.
+    if !completion.earns_answered && completion.receipt.is_none() && completion.early_stop.is_none()
+    {
+        return;
+    }
+    if completion.ledger.targets.is_empty() {
         return;
     }
     let rest = rest.clone();
     tokio::spawn(async move {
-        let filter = answered_reply_filter(rest.keys.public_key(), &ledger);
+        let filter = turn_publications_filter(
+            rest.keys.public_key(),
+            completion.channel_id,
+            &completion.ledger,
+        );
         let replies = match timeout(Duration::from_millis(1_000), rest.query(&[filter])).await {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => {
-                tracing::debug!("answered reaction: reply query failed: {e}");
+                tracing::debug!("turn completion: reply query failed: {e}");
                 return;
             }
             Err(_) => {
-                tracing::debug!("answered reaction: reply query timed out");
+                tracing::debug!("turn completion: reply query timed out");
                 return;
             }
         };
-        let answered = answered_event_ids(&ledger.targets, &replies);
+        let actions = turn_completion_actions(&rest.keys, &completion, &replies);
+        let TurnCompletionActions {
+            answered,
+            receipt,
+            notice,
+        } = actions;
+
+        if let Some(event) = receipt {
+            match timeout(RECEIPT_TIMEOUT, rest.submit_event(&event)).await {
+                Ok(Ok(_)) => tracing::info!(
+                    target: "pool::receipt",
+                    event_id = %event.id.to_hex(),
+                    "NIP-AR: receipt published"
+                ),
+                Ok(Err(e)) => {
+                    tracing::warn!(target: "pool::receipt", "NIP-AR: publish failed: {e}")
+                }
+                Err(_) => tracing::warn!(target: "pool::receipt", "NIP-AR: publish timed out"),
+            }
+        }
+
+        // Only the relay can say whether the turn spoke: the in-process
+        // `pending_delivered_event_ids` counts events delivered *to* the agent,
+        // not the ones it published. This query already asked, so the notice
+        // costs nothing extra. A failed or timed-out query returns above, which
+        // means an unknown answer posts nothing — the fleet watchdog is the
+        // backstop for that case, and a duplicate notice is worse than a late
+        // one.
+        if let Some((channel_id, anchor, text)) = notice {
+            tracing::warn!(
+                target: "pool::prompt",
+                outcome = completion.early_stop.as_ref().map(|e| e.label).unwrap_or(""),
+                channel_id = %channel_id,
+                "turn was cut off and published nothing in its trigger's thread — posting the harness notice"
+            );
+            post_failure_notice(&rest, channel_id, &anchor, &text).await;
+        }
+
         if answered.is_empty() {
             tracing::debug!(
-                targets = ledger.targets.len(),
+                targets = completion.ledger.targets.len(),
                 "answered reaction: no reply in any target's thread"
             );
             return;
@@ -5579,6 +6170,27 @@ pub(crate) async fn post_failure_notice(
 ) {
     // `react_answered` tells a notice from a reply by this prefix.
     debug_assert!(content.starts_with(FAILURE_NOTICE_PREFIX));
+    post_notice(rest, channel_id, thread_tags, content).await
+}
+
+/// Post a harness-authored message to a channel, with no `⚠️` required.
+///
+/// The usage-limit hold's notice goes out this way. It carries no
+/// [`FAILURE_NOTICE_PREFIX`] on purpose: nothing was discarded, so the
+/// dead-letter marker would be a lie, and on a voice ask the bridge reads this
+/// line aloud, where a prefix is noise.
+///
+/// Losing the prefix means losing the two exclusions it buys, and both are
+/// fine here. `answered_event_ids` only runs for a turn that earned an `✅`,
+/// which requires `Ok(EndTurn)` — a refused turn never does. And
+/// `published_message_ids` asks what the turn published, which this genuinely
+/// was.
+pub(crate) async fn post_notice(
+    rest: &crate::relay::RestClient,
+    channel_id: Uuid,
+    thread_tags: &ThreadTags,
+    content: &str,
+) {
     let thread_ref = thread_tags.root_event_id.as_deref().and_then(|root| {
         let root_id = nostr::EventId::from_hex(root).ok()?;
         let parent_id = thread_tags
@@ -8514,7 +9126,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
     }
 
     #[test]
-    fn answered_reply_filter_asks_for_our_replies_in_target_threads_since_dispatch() {
+    fn turn_publications_filter_asks_for_everything_we_published_in_the_channel_since_dispatch() {
         let (top, root) = ("a".repeat(64), "b".repeat(64));
         let ledger = AnswerLedger {
             targets: vec![
@@ -8523,9 +9135,12 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
                 target(&"d".repeat(64), &root),
             ],
             since: 1_790_000_000,
+            reply_to: None,
         };
         let me = Keys::generate().public_key();
-        let filter = serde_json::to_value(answered_reply_filter(me, &ledger)).unwrap();
+        let channel = Uuid::new_v4();
+        let filter =
+            serde_json::to_value(turn_publications_filter(me, Some(channel), &ledger)).unwrap();
 
         let mut kinds: Vec<u64> = filter["kinds"]
             .as_array()
@@ -8536,6 +9151,39 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
         kinds.sort_unstable();
         assert_eq!(kinds, vec![9, 40002, 40008, 45003], "reply kinds, never 7");
         assert_eq!(filter["authors"], json!([me.to_hex()]));
+        assert_eq!(
+            filter["#h"],
+            json!([channel.to_string()]),
+            "scoped to the channel the turn ran in"
+        );
+        // The whole defect: keyed on the targets' threads, the query could not
+        // return a top-level post, so no receipt ever named one.
+        assert!(
+            filter.get("#e").is_none(),
+            "not keyed on the targets' threads: {filter}"
+        );
+        assert_eq!(filter["since"], json!(1_790_000_000u64));
+    }
+
+    #[test]
+    fn without_a_channel_the_filter_keeps_the_targets_threads() {
+        let (top, root) = ("a".repeat(64), "b".repeat(64));
+        let ledger = AnswerLedger {
+            targets: vec![
+                target(&top, &top),
+                target(&"c".repeat(64), &root),
+                target(&"d".repeat(64), &root),
+            ],
+            since: 1_790_000_000,
+            reply_to: None,
+        };
+        let me = Keys::generate().public_key();
+        let filter = serde_json::to_value(turn_publications_filter(me, None, &ledger)).unwrap();
+
+        assert!(
+            filter.get("#h").is_none(),
+            "no channel to scope to: {filter}"
+        );
         let mut keys: Vec<&str> = filter["#e"]
             .as_array()
             .unwrap()
@@ -8548,7 +9196,480 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             vec![top.as_str(), root.as_str()],
             "one key per thread"
         );
+        assert_eq!(filter["authors"], json!([me.to_hex()]));
         assert_eq!(filter["since"], json!(1_790_000_000u64));
+    }
+
+    // ── NIP-AR agent turn receipts ────────────────────────────────────────
+
+    /// One of our own published messages as the relay returns it.
+    fn published_reply(id: &str, created_at: u64, content: &str) -> serde_json::Value {
+        json!({
+            "id": id,
+            "kind": 9,
+            "content": content,
+            "created_at": created_at,
+            "tags": [["e", "a".repeat(64), "", "reply"]],
+        })
+    }
+
+    fn receipt_usage(model: Option<&str>) -> crate::usage::TurnUsage {
+        crate::usage::TurnUsage {
+            session_id: "s1".into(),
+            turn_seq: 1,
+            delta_reliable: true,
+            turn_input_tokens: Some(1_000),
+            turn_output_tokens: Some(200),
+            // Deliberately unreported by this harness — the receipt must say so.
+            turn_total_tokens: None,
+            turn_cost_usd: None,
+            turn_cache_read_tokens: Some(0),
+            turn_cache_write_tokens: None,
+            cumulative_input_tokens: Some(1_000),
+            cumulative_output_tokens: Some(200),
+            cumulative_total_tokens: None,
+            cumulative_cost_usd: None,
+            cumulative_cache_read_tokens: None,
+            cumulative_cache_write_tokens: None,
+            model: model.map(str::to_string),
+            pricing_identity: None,
+        }
+    }
+
+    fn model_caps(
+        config_current: Option<&str>,
+        unstable_current: Option<&str>,
+    ) -> AgentModelCapabilities {
+        AgentModelCapabilities {
+            config_options_raw: config_current
+                .map(|v| {
+                    vec![json!({
+                        "configId": "model",
+                        "category": "model",
+                        "currentValue": v,
+                        "options": [{"value": v}],
+                    })]
+                })
+                .unwrap_or_default(),
+            available_models_raw: unstable_current.map(|v| json!({"currentModelId": v})),
+            thought_level_config_id: None,
+        }
+    }
+
+    async fn receipt_agent(
+        capabilities: Option<AgentModelCapabilities>,
+        usage: Option<crate::usage::TurnUsage>,
+    ) -> OwnedAgent {
+        let mut acp = AcpClient::spawn("cat", &[], &[], false)
+            .await
+            .expect("spawn inert agent");
+        acp.set_last_turn_usage_for_test(usage);
+        OwnedAgent {
+            index: 0,
+            acp,
+            state: SessionState::default(),
+            model_capabilities: capabilities,
+            desired_model: None,
+            model_overridden: false,
+            desired_model_request_id: None,
+            desired_model_pending_ack: false,
+            startup_effort: None,
+            agent_name: "receipt-test-agent".into(),
+            goose_system_prompt_supported: None,
+            protocol_version: 2,
+        }
+    }
+
+    fn tag_rows(event: &nostr::Event) -> Vec<Vec<String>> {
+        event
+            .tags
+            .iter()
+            .map(|tag| tag.as_slice().to_vec())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_published_two_messages_earns_one_receipt_naming_both_in_order() {
+        let keys = Keys::generate();
+        let channel = Uuid::new_v4();
+        let agent = receipt_agent(None, Some(receipt_usage(Some("opus[1m]")))).await;
+        let receipt = turn_receipt_payload(&agent, "claude-agent-acp").expect("a named model");
+        let (first, second) = ("a".repeat(64), "b".repeat(64));
+        // The relay answers newest-first; the receipt must read in publication
+        // order, so a reader can follow what the turn said.
+        let replies = json!([
+            published_reply(&second, 1_790_000_100, "and the answer"),
+            published_reply(&first, 1_790_000_090, "on it"),
+        ]);
+
+        let event = build_turn_receipt_event(&keys, Some(channel), Some(&receipt), &replies)
+            .expect("a turn that published earns a receipt");
+
+        assert_eq!(
+            event.kind.as_u16() as u32,
+            buzz_core::kind::KIND_AGENT_TURN_RECEIPT
+        );
+        assert_eq!(
+            tag_rows(&event),
+            vec![
+                vec!["h".to_string(), channel.to_string()],
+                vec!["e".to_string(), first],
+                vec!["e".to_string(), second],
+                vec!["model".to_string(), "opus[1m]".to_string()],
+            ],
+            "one h, one e per published message in order, one model"
+        );
+        let payload: AgentTurnReceiptPayload =
+            serde_json::from_str(&event.content).expect("plaintext receipt content");
+        assert_eq!(payload.model, "opus[1m]");
+        assert_eq!(payload.harness, "claude-agent-acp");
+        assert_eq!(payload.turn.input_tokens, Some(1_000));
+        assert_eq!(payload.turn.output_tokens, Some(200));
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_published_nothing_earns_no_receipt() {
+        let keys = Keys::generate();
+        let agent = receipt_agent(None, Some(receipt_usage(Some("opus[1m]")))).await;
+        let receipt = turn_receipt_payload(&agent, "claude-agent-acp").expect("a named model");
+
+        for (name, replies) in [
+            ("no replies at all", json!([])),
+            ("a query error shape", json!({"error": "nope"})),
+            (
+                "only the harness's own dead-letter notice",
+                json!([published_reply(
+                    &"c".repeat(64),
+                    1_790_000_100,
+                    &format!("{FAILURE_NOTICE_PREFIX} — the agent exited")
+                )]),
+            ),
+        ] {
+            assert!(
+                build_turn_receipt_event(&keys, Some(Uuid::new_v4()), Some(&receipt), &replies)
+                    .is_none(),
+                "{name}: nothing published means nothing to bind a receipt to"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_heartbeat_turn_has_no_channel_and_so_no_receipt() {
+        let keys = Keys::generate();
+        let agent = receipt_agent(None, Some(receipt_usage(Some("opus[1m]")))).await;
+        let receipt = turn_receipt_payload(&agent, "claude-agent-acp").expect("a named model");
+        let replies = json!([published_reply(&"a".repeat(64), 1_790_000_100, "hi")]);
+
+        assert!(
+            build_turn_receipt_event(&keys, None, Some(&receipt), &replies).is_none(),
+            "a receipt without an h tag has no room to be accountable to"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_turn_that_published_still_earns_a_receipt_but_no_check() {
+        // The ✅ gate and the receipt gate are deliberately different: a turn
+        // that was cancelled mid-answer has not answered, but it burned the
+        // tokens, and that is exactly the turn a room wants to see.
+        let keys = Keys::generate();
+        let channel = Uuid::new_v4();
+        let agent = receipt_agent(None, Some(receipt_usage(Some("opus[1m]")))).await;
+        let root = "a".repeat(64);
+        let trigger = "d".repeat(64);
+        let completion = TurnCompletion {
+            ledger: AnswerLedger {
+                targets: vec![target(&trigger, &root)],
+                since: 1_790_000_000,
+                reply_to: None,
+            },
+            channel_id: Some(channel),
+            earns_answered: earns_answered_reaction(&PromptOutcome::Cancelled),
+            receipt: turn_receipt_payload(&agent, "claude-agent-acp"),
+            early_stop: None,
+        };
+        let replies = json!([published_reply(&"b".repeat(64), 1_790_000_100, "on it")]);
+
+        let TurnCompletionActions {
+            answered, receipt, ..
+        } = turn_completion_actions(&keys, &completion, &replies);
+
+        assert!(answered.is_empty(), "a cancelled turn answered nothing");
+        let receipt = receipt.expect("a cancelled turn that published still owes a receipt");
+        assert_eq!(
+            tag_rows(&receipt)
+                .iter()
+                .filter(|row| row.first().map(String::as_str) == Some("e"))
+                .count(),
+            1
+        );
+    }
+
+    /// The audited shape: rock's turn `a1208720` spent its whole tool-call
+    /// budget on Lloyd's question and published nothing. The harness owes that
+    /// thread a line, because the model that would have written one is the one
+    /// that ran out of turns.
+    #[tokio::test]
+    async fn a_cut_off_turn_that_said_nothing_owes_its_thread_a_line() {
+        let keys = Keys::generate();
+        let channel = Uuid::new_v4();
+        let agent = receipt_agent(None, Some(receipt_usage(Some("gemini-3.8-flash")))).await;
+        let root = "a".repeat(64);
+        let trigger = "d".repeat(64);
+        let anchor = ThreadTags {
+            root_event_id: Some(root.clone()),
+            parent_event_id: Some(trigger.clone()),
+            mentioned_pubkeys: Vec::new(),
+        };
+        let completion = TurnCompletion {
+            ledger: AnswerLedger {
+                targets: vec![target(&trigger, &root)],
+                since: 1_790_000_000,
+                reply_to: Some(anchor.clone()),
+            },
+            channel_id: Some(channel),
+            earns_answered: earns_answered_reaction(&PromptOutcome::Ok(
+                StopReason::MaxTurnRequests,
+            )),
+            receipt: turn_receipt_payload(&agent, "rebrand-acp"),
+            early_stop: EarlyStop::for_stop_reason(&StopReason::MaxTurnRequests),
+        };
+
+        let actions = turn_completion_actions(&keys, &completion, &json!([]));
+
+        let (notice_channel, notice_anchor, text) =
+            actions.notice.expect("a silent cut-off turn owes a notice");
+        assert_eq!(notice_channel, channel);
+        assert_eq!(
+            notice_anchor, anchor,
+            "the notice lands where an answer would have"
+        );
+        assert!(
+            text.starts_with(FAILURE_NOTICE_PREFIX),
+            "the notice must be excluded from reply detection: {text}"
+        );
+        assert!(text.contains("tool calls"), "say which limit: {text}");
+        assert!(actions.answered.is_empty(), "a cut-off turn never earns ✅");
+    }
+
+    /// The other half of the rule, and the one that keeps the notice from
+    /// being noise: a turn that replied and *then* ran out has already been
+    /// heard, so the harness says nothing.
+    #[tokio::test]
+    async fn a_cut_off_turn_that_already_replied_gets_no_notice() {
+        let keys = Keys::generate();
+        let agent = receipt_agent(None, Some(receipt_usage(Some("gemini-3.8-flash")))).await;
+        let root = "a".repeat(64);
+        let trigger = "d".repeat(64);
+        let completion = TurnCompletion {
+            ledger: AnswerLedger {
+                targets: vec![target(&trigger, &root)],
+                since: 1_790_000_000,
+                reply_to: Some(ThreadTags {
+                    root_event_id: Some(root.clone()),
+                    parent_event_id: Some(trigger.clone()),
+                    mentioned_pubkeys: Vec::new(),
+                }),
+            },
+            channel_id: Some(Uuid::new_v4()),
+            earns_answered: earns_answered_reaction(&PromptOutcome::Ok(
+                StopReason::MaxTurnRequests,
+            )),
+            receipt: turn_receipt_payload(&agent, "rebrand-acp"),
+            early_stop: EarlyStop::for_stop_reason(&StopReason::MaxTurnRequests),
+        };
+        // `published_reply` tags the thread root, so this lands in the thread.
+        let replies = json!([published_reply(
+            &"b".repeat(64),
+            1_790_000_100,
+            "here is what I found"
+        )]);
+
+        let actions = turn_completion_actions(&keys, &completion, &replies);
+
+        assert!(
+            actions.notice.is_none(),
+            "the thread was answered; a harness notice would contradict it"
+        );
+    }
+
+    /// A turn that reached its own end and chose not to speak has answered.
+    /// Our own rules say silence is often correct, so the harness must not
+    /// speak over it — only a turn that was *cut off* owes a line.
+    #[test]
+    fn a_silent_turn_that_finished_owes_nothing() {
+        assert!(EarlyStop::for_stop_reason(&StopReason::EndTurn).is_none());
+        assert!(EarlyStop::for_stop_reason(&StopReason::Cancelled).is_none());
+        for stop in [
+            StopReason::MaxTurnRequests,
+            StopReason::MaxTokens,
+            StopReason::Refusal,
+        ] {
+            let early = EarlyStop::for_stop_reason(&stop).expect("cut off");
+            assert!(early.notice.starts_with(FAILURE_NOTICE_PREFIX));
+            assert_eq!(early.label, ok_outcome_label(&stop));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_answered_earns_both_the_check_and_the_receipt_from_one_query() {
+        let keys = Keys::generate();
+        let agent = receipt_agent(None, Some(receipt_usage(Some("opus[1m]")))).await;
+        let root = "a".repeat(64);
+        let trigger = "d".repeat(64);
+        let completion = TurnCompletion {
+            ledger: AnswerLedger {
+                targets: vec![target(&trigger, &root)],
+                since: 1_790_000_000,
+                reply_to: None,
+            },
+            channel_id: Some(Uuid::new_v4()),
+            earns_answered: earns_answered_reaction(&PromptOutcome::Ok(StopReason::EndTurn)),
+            receipt: turn_receipt_payload(&agent, "claude-agent-acp"),
+            early_stop: None,
+        };
+        let replies = json!([published_reply(&"b".repeat(64), 1_790_000_100, "answered")]);
+
+        let TurnCompletionActions {
+            answered, receipt, ..
+        } = turn_completion_actions(&keys, &completion, &replies);
+
+        assert_eq!(answered, vec![trigger]);
+        assert!(receipt.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_receipt_reports_a_count_the_harness_never_gave_as_absent_not_zero() {
+        let keys = Keys::generate();
+        let mut usage = receipt_usage(Some("opus[1m]"));
+        // The harness reported input and output but never a provider total, a
+        // cost, or a cache-write count.
+        usage.turn_total_tokens = None;
+        usage.turn_cost_usd = None;
+        usage.turn_cache_write_tokens = None;
+        let agent = receipt_agent(None, Some(usage)).await;
+        let receipt = turn_receipt_payload(&agent, "claude-agent-acp").expect("a named model");
+        let replies = json!([published_reply(&"b".repeat(64), 1_790_000_100, "hi")]);
+
+        let event = build_turn_receipt_event(&keys, Some(Uuid::new_v4()), Some(&receipt), &replies)
+            .expect("receipt");
+        let payload: AgentTurnReceiptPayload = serde_json::from_str(&event.content).expect("json");
+
+        assert_eq!(payload.turn.total_tokens, None);
+        assert_eq!(payload.turn.cost_usd, None);
+        assert_eq!(payload.turn.cache_write_tokens, None);
+        assert_eq!(
+            payload.turn.cache_read_tokens,
+            Some(0),
+            "a confirmed zero is not an absence"
+        );
+        let content: serde_json::Value = serde_json::from_str(&event.content).expect("json");
+        assert!(
+            content["turn"]["totalTokens"].is_null(),
+            "{}",
+            event.content
+        );
+        assert!(
+            content["turn"].get("cacheWriteTokens").is_none(),
+            "an absent optional is omitted, never zeroed: {}",
+            event.content
+        );
+    }
+
+    #[tokio::test]
+    async fn a_turn_whose_harness_reported_no_usage_still_names_its_model() {
+        // The model is the half of the answer that never comes from the
+        // provider, so a countless turn is still worth a receipt.
+        let agent = receipt_agent(Some(model_caps(Some("sonnet-4-5"), None)), None).await;
+
+        let receipt = turn_receipt_payload(&agent, "claude-agent-acp").expect("a named model");
+
+        assert_eq!(receipt.model, "sonnet-4-5");
+        assert!(!receipt.reports_usage());
+        assert_eq!(receipt.turn.input_tokens, None);
+    }
+
+    #[tokio::test]
+    async fn a_turn_whose_model_cannot_be_named_earns_no_receipt() {
+        // Codex and rebrand-acp advertise no model catalog. A receipt naming
+        // the wrong model is worse than no receipt.
+        for (name, caps, usage) in [
+            ("no catalog and no harness-reported model", None, None),
+            (
+                "an empty catalog",
+                Some(model_caps(None, None)),
+                Some(receipt_usage(None)),
+            ),
+            (
+                "a blank currentValue",
+                Some(model_caps(Some("  "), None)),
+                Some(receipt_usage(None)),
+            ),
+        ] {
+            let agent = receipt_agent(caps, usage).await;
+            assert!(
+                turn_receipt_payload(&agent, "claude-agent-acp").is_none(),
+                "{name}: the harness must not guess a model"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_receipt_names_the_model_the_turn_ran_on_not_the_one_that_was_asked_for() {
+        // `desired_model` is a request; the adapter's snapshot is the answer,
+        // and a per-turn harness report beats both.
+        let requested = model_caps(Some("sonnet-4-5"), None);
+        let mut agent = receipt_agent(Some(requested), Some(receipt_usage(Some("opus[1m]")))).await;
+        agent.desired_model = Some("a-model-the-adapter-refused".into());
+
+        assert_eq!(
+            turn_receipt_payload(&agent, "claude-agent-acp")
+                .expect("a named model")
+                .model,
+            "opus[1m]",
+            "the harness's own per-turn report wins"
+        );
+
+        agent
+            .acp
+            .set_last_turn_usage_for_test(Some(receipt_usage(None)));
+        assert_eq!(
+            turn_receipt_payload(&agent, "claude-agent-acp")
+                .expect("a named model")
+                .model,
+            "sonnet-4-5",
+            "otherwise the session snapshot, never desired_model"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_unstable_current_model_id_names_the_session_when_config_options_do_not() {
+        let agent = receipt_agent(
+            Some(model_caps(None, Some("gpt-5"))),
+            Some(receipt_usage(None)),
+        )
+        .await;
+
+        assert_eq!(agent.session_model().as_deref(), Some("gpt-5"));
+    }
+
+    #[test]
+    fn published_message_ids_reads_publication_order_and_skips_harness_notices() {
+        let (early, late) = ("a".repeat(64), "b".repeat(64));
+        let replies = json!([
+            published_reply(&late, 1_790_000_100, "second"),
+            published_reply(
+                &"c".repeat(64),
+                1_790_000_095,
+                &format!("{FAILURE_NOTICE_PREFIX} — the agent exited")
+            ),
+            published_reply(&early, 1_790_000_090, "first"),
+            // A duplicate row must not produce a duplicate `e` tag.
+            published_reply(&early, 1_790_000_090, "first"),
+            // An event with no id is unusable as an `e` tag.
+            json!({"kind": 9, "content": "no id", "created_at": 1_790_000_099u64}),
+        ]);
+
+        assert_eq!(published_message_ids(&replies), vec![early, late]);
     }
 
     #[test]
@@ -8589,6 +9710,92 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
                 target(&cancelled.id.to_hex(), &cancelled.id.to_hex()),
             ]
         );
+        // The harness's own notice lands where an answer would: a reply TO the
+        // newest live trigger, inside the thread it already sits in. Taken from
+        // `events`, never from `cancelled_events` — the cancelled ones belong
+        // to a turn that has already been superseded.
+        assert_eq!(
+            ledger.reply_to,
+            Some(crate::queue::ThreadTags {
+                root_event_id: Some(root.clone()),
+                parent_event_id: Some(fresh.id.to_hex()),
+                mentioned_pubkeys: Vec::new(),
+            })
+        );
+    }
+
+    /// A turn's metric must say which thread it served, or the owner's own
+    /// numbers cannot be attributed to any piece of work.
+    #[test]
+    fn a_turn_in_a_thread_joins_on_that_threads_root() {
+        let root = "a".repeat(64);
+        let reply = signed_event_with_tags(vec![vec![
+            "e".into(),
+            root.clone(),
+            String::new(),
+            "reply".into(),
+        ]]);
+        let batch = batch_with_scope(thread_scope(Uuid::new_v4(), &root), reply.clone());
+
+        let join = TurnJoin::for_batch(Some(&batch));
+
+        assert_eq!(join.thread_root.as_deref(), Some(root.as_str()));
+        assert_eq!(
+            join.triggering_event_id.as_deref(),
+            Some(reply.id.to_hex().as_str())
+        );
+        assert!(join.duration_ms().is_some());
+    }
+
+    /// A top-level trigger has no thread yet, and the reply opens one rooted at
+    /// the trigger. Joining on the trigger is therefore joining on the thread
+    /// the answer will live in — the same key ✅ and the task link note use.
+    #[test]
+    fn a_top_level_trigger_joins_on_itself() {
+        let ch = Uuid::new_v4();
+        let top = signed_event_with_tags(vec![vec!["h".into(), ch.to_string()]]);
+        let batch = batch_with_scope(SessionScope::Conversation { channel_id: ch }, top.clone());
+
+        let join = TurnJoin::for_batch(Some(&batch));
+
+        assert_eq!(join.thread_root, Some(top.id.to_hex()));
+        assert_eq!(join.triggering_event_id, Some(top.id.to_hex()));
+    }
+
+    /// A heartbeat serves no room and no thread, so it claims neither. An empty
+    /// string or a zero duration here would be a claim the harness cannot make.
+    #[test]
+    fn a_heartbeat_joins_to_nothing() {
+        let join = TurnJoin::for_batch(None);
+        assert_eq!(join.thread_root, None);
+        assert_eq!(join.triggering_event_id, None);
+        assert_eq!(join.duration_ms(), None);
+    }
+
+    /// A top-level ask has no thread yet, so the notice must open one on the
+    /// trigger rather than land at the channel root where nobody is looking.
+    #[test]
+    fn a_top_level_trigger_gets_a_notice_anchor_on_itself() {
+        let ch = Uuid::new_v4();
+        let top = signed_event_with_tags(vec![vec!["h".into(), ch.to_string()]]);
+        let batch = batch_with_scope(SessionScope::Conversation { channel_id: ch }, top.clone());
+
+        let ledger = AnswerLedger::for_batch(&batch, 42);
+
+        assert_eq!(
+            ledger.reply_to,
+            Some(crate::queue::ThreadTags {
+                root_event_id: Some(top.id.to_hex()),
+                parent_event_id: Some(top.id.to_hex()),
+                mentioned_pubkeys: Vec::new(),
+            })
+        );
+    }
+
+    /// A heartbeat has no room to be accountable to, so it can owe no notice.
+    #[test]
+    fn a_ledger_with_no_events_has_nowhere_to_post() {
+        assert_eq!(AnswerLedger::default().reply_to, None);
     }
 
     #[tokio::test]
@@ -10036,11 +11243,23 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             acp_stop_to_core(&StopReason::MaxTokens),
             CoreStop::MaxTokens
         );
+        // These two used to be asserted as `Unknown`, which is how the owner's
+        // metric lost every exhausted turn. See `mod turn_outcome_tests`.
         assert_eq!(
             acp_stop_to_core(&StopReason::MaxTurnRequests),
-            CoreStop::Unknown
+            CoreStop::MaxTurnRequests
         );
-        assert_eq!(acp_stop_to_core(&StopReason::Refusal), CoreStop::Unknown);
+        assert_eq!(acp_stop_to_core(&StopReason::Refusal), CoreStop::Refusal);
+        // Nothing maps to `Unknown` any more: every ACP stop reason has a name.
+        for stop in [
+            StopReason::EndTurn,
+            StopReason::Cancelled,
+            StopReason::MaxTokens,
+            StopReason::MaxTurnRequests,
+            StopReason::Refusal,
+        ] {
+            assert_ne!(acp_stop_to_core(&stop), CoreStop::Unknown, "{stop:?}");
+        }
     }
 
     /// `publish_agent_turn_metric` is a no-op when `usage` is `None`.
@@ -10055,6 +11274,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             "sess-1",
             "turn-1",
             Some(buzz_core::agent_turn_metric::StopReason::EndTurn),
+            &TurnJoin::default(),
         )
         .await;
     }
@@ -10090,6 +11310,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             "sess-1",
             "turn-1",
             Some(buzz_core::agent_turn_metric::StopReason::EndTurn),
+            &TurnJoin::default(),
         )
         .await;
     }
@@ -10129,6 +11350,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             "sess-1",
             "turn-1",
             Some(buzz_core::agent_turn_metric::StopReason::EndTurn),
+            &TurnJoin::default(),
         )
         .await;
     }
@@ -10169,6 +11391,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             "sess-cancel",
             "turn-cancel",
             Some(buzz_core::agent_turn_metric::StopReason::Cancelled),
+            &TurnJoin::default(),
         )
         .await;
     }
@@ -10209,6 +11432,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             "sess-ba",
             "turn-ba",
             Some(buzz_core::agent_turn_metric::StopReason::EndTurn),
+            &TurnJoin::default(),
         )
         .await;
     }

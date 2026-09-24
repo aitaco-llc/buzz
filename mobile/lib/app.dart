@@ -386,7 +386,7 @@ class App extends HookConsumerWidget {
     return MaterialApp(
       navigatorKey: _mobileRootNavigatorKey,
       navigatorObservers: [voiceNoteRouteObserver],
-      title: 'Buzz',
+      title: 'aitaco',
       theme: AppTheme.light(
         colorScheme: lightScheme,
         topSectionGradient: buzzLightGradient,
@@ -454,7 +454,7 @@ class _SplashScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return const Scaffold(
       body: Center(
-        child: BuzzLoadingIndicator(size: 56, semanticLabel: 'Starting Buzz'),
+        child: BuzzLoadingIndicator(size: 56, semanticLabel: 'Starting aitaco'),
       ),
     );
   }

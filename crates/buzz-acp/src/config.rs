@@ -380,13 +380,66 @@ pub struct CliArgs {
     #[arg(long, env = "BUZZ_ACP_NO_IGNORE_SELF")]
     pub no_ignore_self: bool,
 
-    /// Wake on a self-authored event only when it carries this tag, written
-    /// `name=value` (e.g. `voice-bridge=ask`). This lets a companion process
-    /// that signs with this agent's key, such as a voice bridge, hand the
-    /// agent work. Every other self-authored event is still dropped. Off by
-    /// default.
+    /// Wake on a self-authored event only when it carries one of these tags,
+    /// written `name=value` and comma-separated (e.g.
+    /// `voice-bridge=ask,job=done`). This lets a companion process that signs
+    /// with this agent's key — a voice bridge, or `buzz-wake` reporting that a
+    /// bench or CI run the agent started has finished — hand the agent work.
+    /// Every other self-authored event is still dropped. Off by default.
     #[arg(long, env = "BUZZ_ACP_SELF_WAKE_TAG", value_parser = parse_self_wake_tag)]
     pub self_wake_tag: Option<SelfWakeTag>,
+
+    /// Pubkeys whose messages are read for tasks before the turn is queued.
+    ///
+    /// Absent by default: with no authors listed, nothing is extracted and no
+    /// model call is made. Comma-separated 64-hex.
+    ///
+    /// Extraction runs at trigger receipt, **after the author gate and before
+    /// the subscription rules**, because the corpus says zero of the owner's
+    /// eleven readable utterances carry a `p` tag — he addresses people in
+    /// prose and posts top level. A seat that is not woken by a message still
+    /// has to capture the work in it.
+    ///
+    /// `hide_env_values` is not because these are secret — a pubkey is public,
+    /// and the seat's own allowlist prints. It is because
+    /// `secret_env_args_hide_their_values_in_help` matches `AUTH` inside
+    /// `AUTHORS`, and a blunt guard that occasionally over-hides is the right
+    /// trade against one that has to be argued with per-arg.
+    #[arg(long, env = "BUZZ_ACP_TASK_EXTRACT_AUTHORS", value_delimiter = ',',
+          value_parser = parse_hex64, hide_env_values = true)]
+    pub task_extract_authors: Vec<String>,
+
+    /// OpenAI-compatible endpoint for the task extractor.
+    #[arg(long, env = "BUZZ_ACP_TASK_EXTRACT_ENDPOINT")]
+    pub task_extract_endpoint: Option<String>,
+
+    /// Served model id for the task extractor.
+    #[arg(
+        long,
+        env = "BUZZ_ACP_TASK_EXTRACT_MODEL",
+        default_value = "gemini-3.8-flash"
+    )]
+    pub task_extract_model: String,
+
+    /// Publish the extraction instead of only recording it.
+    ///
+    /// Off by default, and that is the rollout rather than an afterthought.
+    /// The extractor makes judgements — which asks are work, which are already
+    /// on the board — and the cheapest way to find out whether it makes them
+    /// well on real traffic is to let it decide in the open for a while
+    /// without writing anything anyone has to close. Turn it on once the
+    /// recorded decisions read right.
+    #[arg(long, env = "BUZZ_ACP_TASK_EXTRACT_PUBLISH")]
+    pub task_extract_publish: bool,
+
+    /// Announce provider usage-limit warnings to this channel.
+    ///
+    /// A usage limit belongs to the account, so every seat on the box sees the
+    /// same warning within seconds of the others. Set this on exactly ONE seat
+    /// — the designated announcer — and leave it unset everywhere else, or the
+    /// fleet says the same thing N times. Unset means say nothing.
+    #[arg(long, env = "BUZZ_ACP_LIMIT_WARNING_CHANNEL")]
+    pub limit_warning_channel: Option<Uuid>,
 
     /// Maximum number of context messages to include for thread replies and DMs.
     /// Set to 0 to disable automatic context fetching. Max 100.
@@ -572,12 +625,24 @@ pub struct Config {
     pub initial_message: Option<String>,
     pub subscribe_mode: SubscribeMode,
     pub dedup_mode: DedupMode,
+    /// Where to announce provider usage-limit warnings, if this seat is the
+    /// designated announcer. `None` on every other seat.
+    pub limit_warning_channel: Option<Uuid>,
     /// How ACP provider sessions are scoped in channels (channel vs thread).
     pub session_policy: crate::scope::SessionPolicy,
     pub multiple_event_handling: MultipleEventHandling,
     pub ignore_self: bool,
     /// The one tag that lets a self-authored event through `ignore_self`.
     pub self_wake_tag: Option<SelfWakeTag>,
+    /// Pubkeys whose messages are read for tasks. Empty = extraction off.
+    pub task_extract_authors: HashSet<String>,
+    /// OpenAI-compatible endpoint for the extractor. `None` = extraction off
+    /// even when authors are listed: an extractor with nowhere to ask is a
+    /// per-message warning, not a feature.
+    pub task_extract_endpoint: Option<String>,
+    pub task_extract_model: String,
+    /// Publish the extraction, rather than only recording the decision.
+    pub task_extract_publish: bool,
     pub kinds_override: Option<Vec<u32>>,
     pub channels_override: Option<Vec<String>>,
     pub no_mention_filter: bool,
@@ -747,31 +812,56 @@ fn compose_session_title_with_limit(
 /// (for example, ones a voice bridge sharing its key signs) may wake it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelfWakeTag {
-    pub name: String,
-    pub value: String,
+    /// Each accepted `(name, value)` pair, in configuration order, deduplicated.
+    pub pairs: Vec<(String, String)>,
 }
 
 impl SelfWakeTag {
-    /// True when `event` has a tag whose first two elements are exactly
-    /// `[name, value]`.
+    /// True when `event` has a tag whose first two elements are exactly one of
+    /// the configured `[name, value]` pairs.
     pub fn matches(&self, event: &nostr::Event) -> bool {
-        event.tags.iter().any(|tag| {
-            let parts = tag.as_slice();
-            parts.first().map(String::as_str) == Some(self.name.as_str())
-                && parts.get(1).map(String::as_str) == Some(self.value.as_str())
+        self.matching(event).is_some()
+    }
+
+    /// The configured pair `event` matched, for the admission log line.
+    pub fn matching(&self, event: &nostr::Event) -> Option<&(String, String)> {
+        self.pairs.iter().find(|(name, value)| {
+            event.tags.iter().any(|tag| {
+                let parts = tag.as_slice();
+                parts.first().map(String::as_str) == Some(name.as_str())
+                    && parts.get(1).map(String::as_str) == Some(value.as_str())
+            })
         })
     }
 }
 
 impl std::fmt::Display for SelfWakeTag {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}={}", self.name, self.value)
+        let joined: Vec<String> = self
+            .pairs
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect();
+        f.write_str(&joined.join(","))
     }
 }
 
-/// Parse `BUZZ_ACP_SELF_WAKE_TAG`. Single-letter names are refused: those are
-/// the relay-indexed tags (`p`, `e`, `h`, ...) that ordinary messages carry.
+/// Parse `BUZZ_ACP_SELF_WAKE_TAG`: one or more comma-separated `name=value`
+/// pairs. Single-letter names are refused: those are the relay-indexed tags
+/// (`p`, `e`, `h`, ...) that ordinary messages carry, and admitting one would
+/// wake the agent on its own ordinary posts.
 pub fn parse_self_wake_tag(raw: &str) -> Result<SelfWakeTag, String> {
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for part in raw.split(',').map(str::trim) {
+        let pair = parse_self_wake_pair(part)?;
+        if !pairs.contains(&pair) {
+            pairs.push(pair);
+        }
+    }
+    Ok(SelfWakeTag { pairs })
+}
+
+fn parse_self_wake_pair(raw: &str) -> Result<(String, String), String> {
     let (name, value) = raw
         .split_once('=')
         .ok_or_else(|| format!("self-wake tag must be name=value, got {raw:?}"))?;
@@ -791,10 +881,23 @@ pub fn parse_self_wake_tag(raw: &str) -> Result<SelfWakeTag, String> {
             "self-wake tag name must be at least two characters (single letters are relay-indexed tags), got {name:?}"
         ));
     }
-    Ok(SelfWakeTag {
-        name: name.to_owned(),
-        value: value.to_owned(),
-    })
+    Ok((name.to_owned(), value.to_owned()))
+}
+
+/// Parse one 64-hex pubkey from a CLI value, lowercased.
+///
+/// A malformed author here would silently extract nothing rather than fail
+/// loudly, and "the extractor is quiet" is indistinguishable from "nobody
+/// asked for anything" — so it is refused at startup instead.
+pub fn parse_hex64(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim().to_ascii_lowercase();
+    if trimmed.len() != 64 || !trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!(
+            "expected exactly 64 hex characters, got {raw:?} ({} chars)",
+            trimmed.chars().count()
+        ));
+    }
+    Ok(trimmed)
 }
 
 /// Validate and deduplicate allowlist entries: each must be exactly 64 hex chars.
@@ -866,7 +969,7 @@ fn default_agent_args(command: &str) -> Option<Vec<String>> {
     match normalize_agent_command_identity(command).as_str() {
         "goose" => Some(vec!["acp".to_string()]),
         "codex" | "codex-acp" | "claude-agent-acp" | "claude-code-acp" | "claude-code"
-        | "claudecode" | "buzz-agent" => Some(Vec::new()),
+        | "claudecode" | "buzz-agent" | "rebrand-acp" => Some(Vec::new()),
         _ => None,
     }
 }
@@ -886,6 +989,56 @@ fn default_agent_args(command: &str) -> Option<Vec<String>> {
 pub(crate) fn default_agent_env(command: &str) -> &'static [(&'static str, &'static str)] {
     match normalize_agent_command_identity(command).as_str() {
         "hermes" | "hermes-agent" | "hermes-acp" => &[("HERMES_ACP_SKIP_CONFIGURED_MCP", "1")],
+        _ => &[],
+    }
+}
+
+/// Adapters that reach Anthropic, where an unnamed model is not a default but
+/// a coin flip.
+///
+/// `claude-agent-acp` takes its model from `ANTHROPIC_MODEL` when set and
+/// otherwise from `~/.claude/settings.json` — a file shared by every seat on a
+/// body, which the operator's own `claude` CLI rewrites. A seat that names no
+/// model does not get a documented default; it gets whoever last ran `/model`.
+/// Measured 2026-09-20: two machines' seats were running Opus 5 only because
+/// two unrelated settings files happened to agree.
+pub(crate) fn model_must_be_named(command: &str) -> bool {
+    matches!(
+        normalize_agent_command_identity(command).as_str(),
+        "claude-agent-acp" | "claude-code-acp" | "claude-code" | "claudecode"
+    )
+}
+
+/// Effort levels Claude Code accepts, lowest first.
+pub(crate) const CLAUDE_EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+
+/// How an Anthropic seat's reasoning effort reaches the adapter.
+///
+/// `claude-agent-acp` 0.79.0 advertises only a `model` config option, so
+/// `apply_startup_effort`'s `session/set_config_option` path cannot set effort
+/// there — the ACP feature request for it is still open. The adapter does
+/// inherit its environment, and Claude Code reads `CLAUDE_CODE_EFFORT_LEVEL`
+/// from it. Measured 2026-09-20 on one reasoning-heavy prompt, sonnet:
+/// `low` spent 1,952 output tokens in 17.6s, `max` spent 29,268 in 240s.
+///
+/// So `BUZZ_ACP_EFFORT_LEVEL` — which was silently discarded on this adapter —
+/// is translated into that variable, and the per-seat knob means what it says.
+pub(crate) fn effort_env_var(command: &str) -> Option<&'static str> {
+    model_must_be_named(command).then_some("CLAUDE_CODE_EFFORT_LEVEL")
+}
+
+/// Environment variables an agent process must never receive, inherited or
+/// supplied.
+///
+/// Mirrors [`default_agent_env`], keyed on the same normalized identity.
+///
+/// `rebrand-acp` is a seat's *model*, not a first-party tool: it holds no
+/// signing credential by design and exits at startup if it finds one in its
+/// environment. Every other adapter inherits the harness's environment
+/// unchanged, as before.
+pub(crate) fn removed_agent_env(command: &str) -> &'static [&'static str] {
+    match normalize_agent_command_identity(command).as_str() {
+        "rebrand-acp" => &["BUZZ_PRIVATE_KEY", "BUZZ_AUTH_TAG"],
         _ => &[],
     }
 }
@@ -1218,7 +1371,48 @@ impl Config {
         // Spawned desktop agents now carry a complete instance snapshot. Team
         // instructions arrive independently so they can be layered at runtime.
         let mut persona_env_vars = Vec::new();
-        let model = args.model;
+        if let Some(var) = effort_env_var(&agent_command) {
+            let effort = args.effort_level.as_deref().map(str::trim).unwrap_or("");
+            if !effort.is_empty() {
+                if !CLAUDE_EFFORT_LEVELS.contains(&effort) {
+                    return Err(ConfigError::ConfigFile(format!(
+                        "BUZZ_ACP_EFFORT_LEVEL={effort:?} is not one of {CLAUDE_EFFORT_LEVELS:?}"
+                    )));
+                }
+                // Operator-wins, like every other entry: `AcpClient::spawn`
+                // skips a key already set in the parent environment.
+                persona_env_vars.push((var.to_string(), effort.to_string()));
+            }
+        }
+        // A blank model is not a model. The Anthropic gate below already reads
+        // it that way; `desired_model` did not, and an `EnvironmentFile` has
+        // no way to *unset* a var a shared file set — `BUZZ_ACP_MODEL=` sets
+        // it to empty. So a seat that overrode the fleet default with a blank
+        // line still asked for a switch to `""` on every session, which no
+        // adapter advertises: a warn and an `unsupported_model` frame per
+        // session, for a model nobody asked for.
+        let model = args.model.filter(|m| !m.trim().is_empty());
+
+        // An effort level the harness cannot deliver is worse than none: the
+        // operator believes the seat is configured. Refuse an unknown value
+        // rather than pass it to an adapter that ignores what it cannot parse.
+
+        // A seat on Anthropic must say which model it runs. `ANTHROPIC_MODEL`
+        // is the per-process pin the desktop already uses (it clears
+        // BUZZ_ACP_MODEL and sets that instead), so either names the model;
+        // neither means the seat would inherit a shared file.
+        if model_must_be_named(&agent_command)
+            && model.as_deref().is_none_or(|m| m.trim().is_empty())
+            && !std::env::var("ANTHROPIC_MODEL").is_ok_and(|m| !m.trim().is_empty())
+        {
+            return Err(ConfigError::ConfigFile(format!(
+                "{agent_command} needs its model named: set ANTHROPIC_MODEL (per-process, and \
+                 what the desktop uses) or BUZZ_ACP_MODEL. Unset, this seat runs whatever \
+                 ~/.claude/settings.json says, which every seat on this machine shares and the \
+                 `claude` CLI rewrites. `buzz-acp models --agent-command {agent_command} --json` \
+                 lists the ids this adapter accepts."
+            )));
+        }
 
         // Inject CODEX_CONFIG so the @agentclientprotocol/codex-acp adapter (1.x)
         // opens the Seatbelt network sandbox for buzz-cli (an MCP subprocess). No-op
@@ -1235,6 +1429,7 @@ impl Config {
 
         let config = Config {
             keys,
+            limit_warning_channel: args.limit_warning_channel,
             relay_url: args.relay_url,
             agent_command,
             agent_args,
@@ -1259,6 +1454,13 @@ impl Config {
             multiple_event_handling: args.multiple_event_handling,
             ignore_self: !args.no_ignore_self,
             self_wake_tag: args.self_wake_tag,
+            task_extract_authors: args.task_extract_authors.iter().cloned().collect(),
+            task_extract_endpoint: args
+                .task_extract_endpoint
+                .clone()
+                .filter(|e| !e.trim().is_empty()),
+            task_extract_model: args.task_extract_model.clone(),
+            task_extract_publish: args.task_extract_publish,
             kinds_override: args.kinds,
             channels_override: args.channels,
             no_mention_filter: args.no_mention_filter,
@@ -1628,9 +1830,18 @@ mod tests {
     #[test]
     fn test_parse_self_wake_tag() {
         let tag = parse_self_wake_tag("voice-bridge=ask").expect("valid");
-        assert_eq!(tag.name, "voice-bridge");
-        assert_eq!(tag.value, "ask");
+        assert_eq!(
+            tag.pairs,
+            vec![("voice-bridge".to_owned(), "ask".to_owned())]
+        );
         assert_eq!(tag.to_string(), "voice-bridge=ask");
+        let many =
+            parse_self_wake_tag("voice-bridge=ask, job=done,voice-bridge=ask").expect("valid");
+        assert_eq!(
+            many.to_string(),
+            "voice-bridge=ask,job=done",
+            "trimmed and deduplicated"
+        );
         for bad in [
             "voice-bridge",
             "=ask",
@@ -1638,6 +1849,9 @@ mod tests {
             "p=ask",
             "voice bridge=ask",
             "a=b=c",
+            "voice-bridge=ask,",
+            "voice-bridge=ask,p=x",
+            "",
         ] {
             assert!(parse_self_wake_tag(bad).is_err(), "{bad:?} must be refused");
         }
@@ -1658,11 +1872,46 @@ mod tests {
         assert!(!tag.matches(&event(&["voice-bridge", "asked"])));
         assert!(!tag.matches(&event(&["voice-bridge", "transcript"])));
         assert!(!tag.matches(&event(&["t", "voice-bridge", "ask"])));
+
+        let many = parse_self_wake_tag("voice-bridge=ask,job=done").expect("valid");
+        assert!(many.matches(&event(&["voice-bridge", "ask"])));
+        assert!(many.matches(&event(&["job", "done"])));
+        assert_eq!(
+            many.matching(&event(&["job", "done"])),
+            Some(&("job".to_owned(), "done".to_owned()))
+        );
+        assert!(!many.matches(&event(&["job", "started"])));
+        assert!(!many.matches(&event(&["voice-bridge", "transcript"])));
+    }
+
+    #[test]
+    fn a_malformed_extract_author_is_refused_at_startup() {
+        // A bad pubkey here would extract nothing and say nothing, and "the
+        // extractor is quiet" is indistinguishable from "nobody asked for
+        // anything". Fail at startup instead.
+        assert!(parse_hex64(&"a".repeat(64)).is_ok());
+        assert_eq!(
+            parse_hex64(&"A".repeat(64)).unwrap(),
+            "a".repeat(64),
+            "lowercased"
+        );
+        assert!(parse_hex64(&"a".repeat(63)).is_err());
+        assert!(parse_hex64(&"a".repeat(65)).is_err());
+        assert!(parse_hex64(&"z".repeat(64)).is_err());
+        assert!(parse_hex64("npub1abc").is_err());
+        // A trimmed value is still valid: comma-separated env values arrive
+        // with spaces around them.
+        assert!(parse_hex64(&format!("  {}  ", "b".repeat(64))).is_ok());
     }
 
     /// Build a minimal Config for testing without CLI parsing.
     fn test_config(mode: SubscribeMode) -> Config {
         Config {
+            limit_warning_channel: None,
+            task_extract_authors: Default::default(),
+            task_extract_endpoint: None,
+            task_extract_model: "gemini-3.8-flash".to_string(),
+            task_extract_publish: false,
             keys: nostr::Keys::generate(),
             relay_url: "ws://localhost:3000".into(),
             agent_command: "goose".into(),
@@ -1805,6 +2054,15 @@ mod tests {
             normalize_agent_args("claude-agent-acp", vec!["acp".into()]),
             Vec::<String>::new()
         );
+        // rebrand-acp takes flags only; the Goose `acp` default is a usage error there.
+        assert_eq!(
+            normalize_agent_args("rebrand-acp", vec!["acp".into()]),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            normalize_agent_args("rebrand-acp", vec!["--provider".into(), "gemini".into()]),
+            vec!["--provider", "gemini"]
+        );
     }
 
     #[test]
@@ -1868,6 +2126,83 @@ mod tests {
         assert_eq!(normalize_agent_command_identity("   "), "");
         assert_eq!(normalize_agent_command_identity("/"), "");
         assert_eq!(normalize_agent_command_identity("///"), "");
+    }
+
+    #[test]
+    fn an_anthropic_seats_effort_reaches_the_variable_claude_code_reads() {
+        // claude-agent-acp advertises no thought_level option, so the ACP
+        // config path cannot carry effort; the adapter inherits its
+        // environment instead. Measured on sonnet: low spent 1,952 output
+        // tokens, max spent 29,268.
+        assert_eq!(
+            effort_env_var("claude-agent-acp"),
+            Some("CLAUDE_CODE_EFFORT_LEVEL")
+        );
+        assert_eq!(
+            effort_env_var("/opt/bin/claude-code-acp"),
+            Some("CLAUDE_CODE_EFFORT_LEVEL")
+        );
+        // goose and buzz-agent carry their own thinking env; codex picks its
+        // own; rebrand-acp takes flags.
+        for command in ["goose", "buzz-agent", "codex-acp", "rebrand-acp", ""] {
+            assert_eq!(effort_env_var(command), None, "{command}");
+        }
+    }
+
+    #[test]
+    fn the_effort_levels_are_the_ones_claude_code_accepts() {
+        assert_eq!(
+            CLAUDE_EFFORT_LEVELS,
+            ["low", "medium", "high", "xhigh", "max"]
+        );
+    }
+
+    #[test]
+    fn only_the_anthropic_adapters_must_name_their_model() {
+        for command in [
+            "claude-agent-acp",
+            "/home/seat/.local/bin/claude-code-acp",
+            "CLAUDE-CODE.EXE",
+        ] {
+            assert!(model_must_be_named(command), "{command}");
+        }
+        // Codex authenticates and picks its own model; goose and buzz-agent
+        // carry provider+model env of their own; rebrand-acp takes --model.
+        for command in [
+            "codex-acp",
+            "codex",
+            "goose",
+            "buzz-agent",
+            "rebrand-acp",
+            "",
+        ] {
+            assert!(!model_must_be_named(command), "{command}");
+        }
+    }
+
+    #[test]
+    fn removed_agent_env_is_for_the_keyless_worker_only() {
+        for command in [
+            "rebrand-acp",
+            "/home/seat/.local/bin/rebrand-acp",
+            "REBRAND_ACP.EXE",
+        ] {
+            assert_eq!(
+                removed_agent_env(command),
+                &["BUZZ_PRIVATE_KEY", "BUZZ_AUTH_TAG"],
+                "{command}"
+            );
+        }
+        for command in [
+            "goose",
+            "codex-acp",
+            "claude-agent-acp",
+            "buzz-agent",
+            "rebrand",
+            "",
+        ] {
+            assert!(removed_agent_env(command).is_empty(), "{command}");
+        }
     }
 
     #[test]
@@ -3078,6 +3413,41 @@ channels = "ALL"
     // A minimal valid private key for test use (secp256k1 scalar = 1).
     const TEST_PRIVATE_KEY: &str =
         "0000000000000000000000000000000000000000000000000000000000000001";
+
+    /// A seat's own env file cannot unset `BUZZ_ACP_MODEL` from the shared
+    /// one — it can only blank it. A blank must therefore mean "no model
+    /// asked for", or every session on an adapter that advertises a catalog
+    /// asks to switch to `""` and is told no.
+    #[test]
+    fn a_blank_model_is_no_model() {
+        for blank in ["", "   ", "\t"] {
+            let args = CliArgs::try_parse_from([
+                "buzz-acp",
+                "--private-key",
+                TEST_PRIVATE_KEY,
+                "--agent-command",
+                "rebrand-acp",
+                "--model",
+                blank,
+            ])
+            .expect("clap should parse args");
+            let config = Config::from_args(args).expect("blank model is not an error");
+            assert_eq!(config.model, None, "model {blank:?} should normalize away");
+        }
+
+        let args = CliArgs::try_parse_from([
+            "buzz-acp",
+            "--private-key",
+            TEST_PRIVATE_KEY,
+            "--agent-command",
+            "rebrand-acp",
+            "--model",
+            "gemini-3.8-flash",
+        ])
+        .expect("clap should parse args");
+        let config = Config::from_args(args).expect("named model is not an error");
+        assert_eq!(config.model.as_deref(), Some("gemini-3.8-flash"));
+    }
 
     #[test]
     fn allowed_respond_to_full_path_rejects_disallowed_mode() {

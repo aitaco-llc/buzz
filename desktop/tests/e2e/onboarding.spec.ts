@@ -729,7 +729,7 @@ test("fresh existing-identity path leads with private-key recovery", async ({
     page.getByRole("heading", { name: "Enter your private key" }),
   ).toBeVisible();
   await expect(
-    page.getByText("Paste your private key to sign in to Buzz."),
+    page.getByText("Paste your private key to sign in to aitaco."),
   ).toBeVisible();
   await expect(page.getByTestId("onboarding-content-card")).toBeVisible();
   await expect(page.getByTestId("nostr-import-file-button")).toHaveText(
@@ -3604,13 +3604,13 @@ test("first-run onboarding posts the live Fizz kickoff", async ({ page }) => {
     "offline",
   ]);
   await expect(page.getByTestId("message-timeline")).not.toContainText(
-    "Hi Morty QA, I'm Fizz. Welcome to Buzz.",
+    "Hi Morty QA, I'm Fizz. Welcome to aitaco.",
   );
   await publishWelcomeTeamPresence(page);
   // Greeted by the name typed above — the @mention pill also files the opener
   // into the new user's Inbox mentions feed.
   await expect(page.getByTestId("message-timeline")).toContainText(
-    "Hi Morty QA, I'm Fizz. Welcome to Buzz.",
+    "Hi Morty QA, I'm Fizz. Welcome to aitaco.",
   );
   await expect(page.getByTestId("message-timeline")).toContainText(
     "Honey and Pollen, introduce yourselves",
@@ -3635,7 +3635,7 @@ test("first-run onboarding lands before Welcome team bootstrap completes", async
   await expect(page.getByTestId("app-loading-gate")).toHaveCount(0);
   await publishWelcomeTeamPresence(page);
   await expect(page.getByTestId("message-timeline")).toContainText(
-    "Hi Morty QA, I'm Fizz. Welcome to Buzz.",
+    "Hi Morty QA, I'm Fizz. Welcome to aitaco.",
   );
   await page.waitForTimeout(1_500);
   expect(await commandCount(page, "create_managed_agent")).toBe(3);

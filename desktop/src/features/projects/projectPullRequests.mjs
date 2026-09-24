@@ -9,8 +9,8 @@ import {
 // lifecycle state, so they are only honored when signed by the PR author or
 // the repo owner — an arbitrary relay user must not be able to re-point an
 // open PR at their own commit/clone URL or flip its status.
-function trustedUpdatesForPullRequest(pullRequest, updateEvents) {
-  const allowedActors = allowedActorsForRoot(pullRequest);
+function trustedUpdatesForPullRequest(pullRequest, updateEvents, maintainers) {
+  const allowedActors = allowedActorsForRoot(pullRequest, maintainers);
   return updateEvents.filter(
     (event) =>
       allowedActors.has(event.pubkey.toLowerCase()) &&
@@ -18,14 +18,16 @@ function trustedUpdatesForPullRequest(pullRequest, updateEvents) {
   );
 }
 
-function latestUpdateForPullRequest(pullRequest, updateEvents) {
-  return trustedUpdatesForPullRequest(pullRequest, updateEvents).sort(
-    (left, right) => right.created_at - left.created_at,
-  )[0];
+function latestUpdateForPullRequest(pullRequest, updateEvents, maintainers) {
+  return trustedUpdatesForPullRequest(
+    pullRequest,
+    updateEvents,
+    maintainers,
+  ).sort((left, right) => right.created_at - left.created_at)[0];
 }
 
-function latestStatusForPullRequest(pullRequest, statusEvents) {
-  const allowedActors = allowedActorsForRoot(pullRequest);
+function latestStatusForPullRequest(pullRequest, statusEvents, maintainers) {
+  const allowedActors = allowedActorsForRoot(pullRequest, maintainers);
   return statusEvents
     .filter(
       (event) =>
@@ -247,10 +249,10 @@ function reviewDecisionCommit(comment, initialCommit) {
   return comment.commit ?? initialCommit;
 }
 
-function trustedReviewActors(pullRequest, reviewers) {
+function trustedReviewActors(pullRequest, reviewers, maintainers) {
   const author = pullRequest.pubkey.toLowerCase();
   const trustedActors = new Set(reviewers);
-  for (const actor of allowedActorsForRoot(pullRequest)) {
+  for (const actor of allowedActorsForRoot(pullRequest, maintainers)) {
     if (actor !== author) trustedActors.add(actor);
   }
   return trustedActors;
@@ -306,20 +308,36 @@ export function eventToProjectPullRequest(
   updateEvents = [],
   commentEvents = [],
   statusEvents = [],
+  maintainers = [],
 ) {
-  const latestUpdate = latestUpdateForPullRequest(pullRequest, updateEvents);
-  const latestStatus = latestStatusForPullRequest(pullRequest, statusEvents);
+  const latestUpdate = latestUpdateForPullRequest(
+    pullRequest,
+    updateEvents,
+    maintainers,
+  );
+  const latestStatus = latestStatusForPullRequest(
+    pullRequest,
+    statusEvents,
+    maintainers,
+  );
   const updates = eventsForPullRequest(
     pullRequest.id,
-    trustedUpdatesForPullRequest(pullRequest, updateEvents),
+    trustedUpdatesForPullRequest(pullRequest, updateEvents, maintainers),
   ).map(eventToPullRequestUpdate);
   const parsedComments = eventsForPullRequest(
     pullRequest.id,
     commentEvents,
   ).map(eventToPullRequestComment);
   const reviewers = reviewersForPullRequest(pullRequest, parsedComments);
-  const trustedActors = trustedReviewActors(pullRequest, reviewers);
-  const trustedReviewRequestActors = allowedActorsForRoot(pullRequest);
+  const trustedActors = trustedReviewActors(
+    pullRequest,
+    reviewers,
+    maintainers,
+  );
+  const trustedReviewRequestActors = allowedActorsForRoot(
+    pullRequest,
+    maintainers,
+  );
   const latestCommit = getTag(latestUpdate ?? pullRequest, "c") ?? null;
   const initialCommit = getTag(pullRequest, "c") ?? null;
   const comments = parsedComments.map((comment) => ({
@@ -403,6 +421,7 @@ export function projectPullRequestEventsToPullRequests(
   updateEvents = [],
   commentEvents = [],
   statusEvents = [],
+  maintainers = [],
 ) {
   return [...pullRequestEvents]
     .map((pullRequest) =>
@@ -411,6 +430,7 @@ export function projectPullRequestEventsToPullRequests(
         updateEvents,
         commentEvents,
         statusEvents,
+        maintainers,
       ),
     )
     .sort((left, right) => right.updatedAt - left.updatedAt);

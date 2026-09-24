@@ -20,6 +20,13 @@ import {
 } from "@/features/profile/lib/identity";
 import { getMentionTagPubkey } from "@/shared/lib/resolveMentionNames";
 import {
+  isNewerTurnReceipt,
+  parseTurnReceiptEvent,
+  selectTurnReceiptAnchor,
+  type ParsedTurnReceipt,
+} from "@/features/messages/lib/agentTurnReceipt";
+import {
+  KIND_AGENT_TURN_RECEIPT,
   KIND_JOB_ACCEPTED,
   KIND_JOB_CANCEL,
   KIND_JOB_ERROR,
@@ -301,6 +308,44 @@ export function formatTimelineMessages(
     (event) => isTimelineContentEvent(event) && !deletedEventIds.has(event.id),
   );
   const eventsById = new Map(visibleEvents.map((event) => [event.id, event]));
+
+  // NIP-AR turn receipts (kind:44201). Overlay, not a row: each receipt binds
+  // to exactly ONE visible message — the last `e`-tagged message still on
+  // screen — so a turn that published three messages reports its spend once
+  // instead of three times. Receipts whose publisher is not the author of that
+  // message are dropped; see `agentTurnReceipt.ts` for both rules.
+  const receiptsByTargetId = new Map<string, ParsedTurnReceipt>();
+  for (const event of events) {
+    if (
+      event.kind !== KIND_AGENT_TURN_RECEIPT ||
+      deletedEventIds.has(event.id)
+    ) {
+      continue;
+    }
+
+    const parsed = parseTurnReceiptEvent(event);
+    if (!parsed) continue;
+
+    const anchorId = selectTurnReceiptAnchor({
+      parsed,
+      receiptPubkey: event.pubkey,
+      getHeldEvent: (eventId) => eventsById.get(eventId),
+      resolveAuthor: (target) =>
+        resolveEventAuthorPubkey({
+          event: target,
+          preferActorTag: true,
+          relaySelfPubkey,
+          requireChannelTagForPTags: true,
+        }),
+    });
+    if (!anchorId) continue;
+
+    const existing = receiptsByTargetId.get(anchorId);
+    if (!existing || isNewerTurnReceipt(parsed, existing)) {
+      receiptsByTargetId.set(anchorId, parsed);
+    }
+  }
+
   const reactionPresence = new Map<
     string,
     {
@@ -527,6 +572,7 @@ export function formatTimelineMessages(
         }
         return effectiveTags;
       })(),
+      turnReceipt: receiptsByTargetId.get(event.id)?.receipt,
       reactions: (() => {
         const reactions = reactionsByEventId.get(event.id);
         if (!reactions) return undefined;

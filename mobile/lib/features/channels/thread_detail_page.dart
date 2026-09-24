@@ -17,6 +17,7 @@ import '../../shared/widgets/keyboard_dismiss_on_drag.dart';
 import '../../shared/widgets/message_author_meta.dart';
 import '../../shared/profile/user_cache_provider.dart';
 import '../../shared/profile/user_profile.dart';
+import 'agent_turn_receipt_footer.dart';
 import 'android_ime_lift.dart';
 import 'channel_link_navigation.dart';
 import 'channel_messages_provider.dart';
@@ -120,11 +121,12 @@ class ThreadDetailPage extends HookConsumerWidget {
     final relayReplyState = ref.watch(threadRepliesProvider(repliesArgs));
     final repliesState = ref.watch(threadRepliesWithLocalProvider(repliesArgs));
     final relayRepliesAvailable = relayReplyState.value != null;
-    // The thread query is one-shot and asks only for content kinds, so a
-    // reaction, edit, or deletion that lands while the thread is open never
-    // reaches it — a new pill (and its burst) only showed up after leaving and
-    // re-entering, which refetched. The channel socket already receives those
-    // events, so union the two sources and format once.
+    // The thread query is one-shot: it carries the aux closure as it stood
+    // when it ran, so a reaction, edit, or deletion that lands while the thread
+    // is open never reaches it — a new pill (and its burst) only showed up
+    // after leaving and re-entering, which refetched. The channel socket
+    // already receives those events, so union the two sources and format
+    // once.
     final liveChannelEvents =
         ref.watch(channelMessagesProvider(channelId)).value ??
         const <NostrEvent>[];

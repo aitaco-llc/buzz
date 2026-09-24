@@ -27,6 +27,12 @@ use tauri::menu::{
 use tauri::AppHandle;
 use tauri::{Builder, Runtime};
 
+/// User-facing product name for the macOS app menu and About box. The bundle
+/// keeps `productName` "Buzz" (release lane, reaper and process names depend
+/// on it), so the display name is set here explicitly.
+#[cfg(target_os = "macos")]
+const APP_DISPLAY_NAME: &str = "aitaco";
+
 /// Installs Buzz's menu, replacing the `Menu::default()` Tauri would otherwise
 /// auto-install. A no-op off macOS, where that default is never created and
 /// the Cmd+W accelerator does not exist.
@@ -47,7 +53,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let pkg_info = app.package_info();
     let config = app.config();
     let about_metadata = AboutMetadata {
-        name: Some(pkg_info.name.clone()),
+        name: Some(APP_DISPLAY_NAME.to_string()),
         version: Some(pkg_info.version.to_string()),
         copyright: config.bundle.copyright.clone(),
         authors: config.bundle.publisher.clone().map(|p| vec![p]),
@@ -59,17 +65,17 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         &[
             &Submenu::with_items(
                 app,
-                pkg_info.name.clone(),
+                APP_DISPLAY_NAME,
                 true,
                 &[
                     &PredefinedMenuItem::about(app, None, Some(about_metadata))?,
                     &PredefinedMenuItem::separator(app)?,
                     &PredefinedMenuItem::services(app, None)?,
                     &PredefinedMenuItem::separator(app)?,
-                    &PredefinedMenuItem::hide(app, None)?,
+                    &PredefinedMenuItem::hide(app, Some(&format!("Hide {APP_DISPLAY_NAME}")))?,
                     &PredefinedMenuItem::hide_others(app, None)?,
                     &PredefinedMenuItem::separator(app)?,
-                    &PredefinedMenuItem::quit(app, None)?,
+                    &PredefinedMenuItem::quit(app, Some(&format!("Quit {APP_DISPLAY_NAME}")))?,
                 ],
             )?,
             // `Menu::default()`'s File submenu holds exactly one item on macOS

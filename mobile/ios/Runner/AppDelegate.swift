@@ -6,7 +6,6 @@ import UIKit
 import UserNotifications
 import os.log
 
-@main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private var mediaUploadChannel: FlutterMethodChannel?
   private var pushChannel: FlutterMethodChannel?
@@ -29,6 +28,8 @@ import os.log
     keychainAccessGroup: pushKeychainAccessGroup
   )
   private var qrScannerChannel: FlutterMethodChannel?
+  private var backgroundTaskChannel: FlutterMethodChannel?
+  private var pairingBackgroundTask: UIBackgroundTaskIdentifier = .invalid
   private var inlinePhotoPickerSupportChannel: FlutterMethodChannel?
   private var ageSignalChannel: FlutterMethodChannel?
   var requestPlatformAgeSignal: @MainActor (UIViewController) async throws -> [String: Any] =
@@ -51,6 +52,21 @@ import os.log
     // Flutter. No age-related storage or platform request may delay launch.
     UNUserNotificationCenter.current().delegate = self
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+  }
+
+  private func beginPairingBackgroundTask() {
+    guard pairingBackgroundTask == .invalid else { return }
+    pairingBackgroundTask = UIApplication.shared.beginBackgroundTask(
+      withName: "buzz.pairing"
+    ) { [weak self] in
+      self?.endPairingBackgroundTask()
+    }
+  }
+
+  private func endPairingBackgroundTask() {
+    guard pairingBackgroundTask != .invalid else { return }
+    UIApplication.shared.endBackgroundTask(pairingBackgroundTask)
+    pairingBackgroundTask = .invalid
   }
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
@@ -80,6 +96,24 @@ import os.log
     )
     qrScannerChannel?.setMethodCallHandler { call, result in
       Self.handleQrScannerMethodCall(call, result: result)
+    }
+    // A pairing session asks for background time while the user confirms the
+    // code in another app on this phone; the socket reconnects on return.
+    backgroundTaskChannel = FlutterMethodChannel(
+      name: "buzz/background_task",
+      binaryMessenger: messenger
+    )
+    backgroundTaskChannel?.setMethodCallHandler { [weak self] call, result in
+      switch call.method {
+      case "begin":
+        self?.beginPairingBackgroundTask()
+        result(nil)
+      case "end":
+        self?.endPairingBackgroundTask()
+        result(nil)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
     }
     inlinePhotoPickerSupportChannel = FlutterMethodChannel(
       name: "buzz/inline_photo_picker",

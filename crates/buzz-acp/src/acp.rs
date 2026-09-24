@@ -174,7 +174,48 @@ pub enum AcpError {
     Protocol(String),
 
     #[error("Agent reported error (code {code}): {message}")]
-    AgentError { code: i64, message: String },
+    AgentError {
+        code: i64,
+        message: String,
+        /// The JSON-RPC error's `data`, kept whole.
+        ///
+        /// claude-agent-acp puts its failure classification here —
+        /// `{"errorKind":"rate_limit"}` for a usage limit — and it used to be
+        /// dropped on arrival, so the harness could only tell a limit from a
+        /// crash by matching the human-readable message. Callers dispatch on
+        /// [`error_kind`](AcpError::error_kind) rather than on wording.
+        data: Option<serde_json::Value>,
+    },
+}
+
+impl AcpError {
+    /// The adapter's own name for what went wrong, when it gave one.
+    ///
+    /// A convention across ACP adapters (claude-agent-acp writes it in every
+    /// categorical failure): dispatching on this is stable where matching the
+    /// message text is not.
+    pub fn error_kind(&self) -> Option<&str> {
+        let Self::AgentError { data, .. } = self else {
+            return None;
+        };
+        data.as_ref()?.get("errorKind")?.as_str()
+    }
+
+    /// The adapter's own words, when the failure is one the adapter reported.
+    ///
+    /// Distinct from `Display`, which wraps those words in ours: `Agent
+    /// reported error (code -32603): …`. Anything quoted back to a person
+    /// wants this and not the wrapper, and a voice ask makes the difference
+    /// audible — the wrapper is read aloud as "agent reported error code minus
+    /// three two six zero three", which is our plumbing spoken in the seat's
+    /// voice. `None` for every other variant: those messages are entirely our
+    /// own text, so there is nothing of the provider's to quote.
+    pub fn agent_message(&self) -> Option<&str> {
+        match self {
+            Self::AgentError { message, .. } => Some(message.as_str()),
+            _ => None,
+        }
+    }
 }
 
 /// Build an [`AcpError::AgentError`] from a JSON-RPC error object,
@@ -187,7 +228,11 @@ fn agent_error_from_json(error: &serde_json::Value) -> AcpError {
         Some(m) => m.to_string(),
         None => error.to_string(),
     };
-    AcpError::AgentError { code, message }
+    AcpError::AgentError {
+        code,
+        message,
+        data: error.get("data").cloned(),
+    }
 }
 
 fn build_initialize_params() -> serde_json::Value {
@@ -279,8 +324,27 @@ pub struct AcpClient {
     goose_usage: UsageTracker,
     /// Per-turn prompt-response usage and Claude's optional cumulative cost.
     standard_usage: StandardUsageTracker,
+    /// The provider's most recent rate-limit report for this agent process.
+    ///
+    /// claude-agent-acp forwards the SDK's whole `rate_limit_info` object as
+    /// `_meta["_claude/rateLimit"]` on a `usage_update`, so it arrives on a
+    /// *notification*, in a different message from the error that ends the
+    /// turn. It is the only place a machine-readable `resetsAt` exists — the
+    /// error carries the reset time as prose and nothing else.
+    rate_limit: Option<serde_json::Value>,
     /// Known adapter identity for prompt-response usage mapping.
     standard_adapter: Option<StandardAdapterKind>,
+    /// What [`take_turn_usage`](Self::take_turn_usage) last handed out, kept so
+    /// the NIP-AR receipt can be built after the turn has ended.
+    ///
+    /// The NIP-AM metric consumes the usage inside the prompt task; the receipt
+    /// is only publishable once the relay has been asked which messages the turn
+    /// actually sent, which happens in the main loop after the agent has come
+    /// back. This field is that bridge and nothing else: it is cleared at the
+    /// start of every `session/prompt` and overwritten (with `None` included) by
+    /// every take, so it can never carry a previous turn's counts into a turn
+    /// that reported none of its own.
+    last_turn_usage: Option<TurnUsage>,
 }
 
 /// Recursively merge `overlay` into `base`, with `overlay` winning on scalar/shape
@@ -592,6 +656,12 @@ impl AcpClient {
             cmd.env("CODEX_CONFIG", merged);
         }
 
+        // Last, so it beats both the inherited environment and `extra_env`: a
+        // persona entry must not be able to hand a keyless worker the key.
+        for key in crate::config::removed_agent_env(command) {
+            cmd.env_remove(key);
+        }
+
         // Spawn the agent in its own process group so SIGKILL doesn't propagate
         // to the harness's own process group on Unix.
         // tokio::process::Command::process_group is a stable tokio API (no extra imports needed).
@@ -608,6 +678,12 @@ impl AcpClient {
                     Some(StandardAdapterKind::Claude)
                 }
                 "codex" | "codex-acp" => Some(StandardAdapterKind::Codex),
+                // `rebrand-acp` returns standard `usage` on its `session/prompt`
+                // result (`of-acp/src/server.rs`, `outcome::usage`). Without a
+                // kind here that object is parsed by nobody and every token
+                // count in the turn's NIP-AR receipt is absent — the model and
+                // the harness are named, and what the turn cost is not.
+                "rebrand-acp" => Some(StandardAdapterKind::Rebrand),
                 _ => None,
             };
         let mut child = cmd.spawn()?;
@@ -638,7 +714,9 @@ impl AcpClient {
             steer_rx: None,
             goose_usage: UsageTracker::default(),
             standard_usage: StandardUsageTracker::default(),
+            rate_limit: None,
             standard_adapter,
+            last_turn_usage: None,
         })
     }
 
@@ -878,6 +956,10 @@ impl AcpClient {
         // misattributed to this turn.
         self.goose_usage.begin_turn(session_id);
         self.standard_usage.begin_turn(session_id);
+        // Drop the previous turn's receipt counts here, not at take time: a turn
+        // that dies before any usage arrives must report nothing rather than
+        // inherit what the last one spent.
+        self.last_turn_usage = None;
 
         self.last_prompt_id = Some(self.next_id);
         let id = self.next_id;
@@ -972,10 +1054,44 @@ impl AcpClient {
     /// Consume per-turn usage for NIP-AM publishing. Goose/buzz-agent is an
     /// exclusive cumulative path; standard ACP prompt usage is used only when
     /// goose emitted nothing for this turn.
+    /// The provider's latest rate-limit report, cleared as it is read.
+    ///
+    /// Read once when a turn ends, the same way turn usage is, so a report
+    /// cannot be counted against two turns.
+    pub fn take_rate_limit(&mut self) -> Option<serde_json::Value> {
+        self.rate_limit.take()
+    }
+
     pub fn take_turn_usage(&mut self) -> Option<TurnUsage> {
         let goose_usage = self.goose_usage.take();
         let standard_usage = self.standard_usage.take();
-        goose_usage.or(standard_usage)
+        let taken = goose_usage.or(standard_usage);
+        // Keep a copy for the NIP-AR receipt, which is built after the turn has
+        // ended. Assigning unconditionally — `None` included — means a second
+        // take in the same turn cannot leave the first take's counts behind.
+        self.last_turn_usage = taken.clone();
+        taken
+    }
+
+    /// The usage the most recent [`take_turn_usage`](Self::take_turn_usage) of
+    /// this turn produced, for the NIP-AR receipt.
+    ///
+    /// `None` when this turn reported no usage at all — the receipt then names
+    /// the model and no counts, which is the half of the answer the provider
+    /// never supplies. Never carries a previous turn's counts: the field is
+    /// cleared when a `session/prompt` is sent.
+    pub fn last_turn_usage(&self) -> Option<&TurnUsage> {
+        self.last_turn_usage.as_ref()
+    }
+
+    /// Seed the receipt's usage record without driving a real turn.
+    ///
+    /// Tests only. The production path fills this field from
+    /// [`take_turn_usage`](Self::take_turn_usage); this exists so receipt tests
+    /// in `pool` can fix a turn's counts without a wire fixture.
+    #[cfg(test)]
+    pub(crate) fn set_last_turn_usage_for_test(&mut self, usage: Option<TurnUsage>) {
+        self.last_turn_usage = usage;
     }
 
     /// Notify the usage tracker that buzz-acp just spawned a new session.
@@ -1930,6 +2046,17 @@ impl AcpClient {
                 false
             }
             "usage_update" => {
+                // Before the adapter-specific handler: `standard_adapter` is
+                // derived from the agent COMMAND's name
+                // (`normalize_agent_command_identity`), so a seat that runs
+                // claude-agent-acp through a wrapper — or under any other
+                // name — is classified `None` and skips that handler
+                // entirely. The rate-limit report is namespaced
+                // (`_claude/rateLimit`), so an adapter that sends it means it,
+                // whatever we decided to call the binary. Gating it on the
+                // command name would silently disable every usage-limit hold
+                // on exactly the seats most likely to be wrapped.
+                self.capture_rate_limit(msg);
                 self.handle_standard_usage_update(msg);
                 false
             }
@@ -1938,6 +2065,18 @@ impl AcpClient {
                 tracing::debug!(target: "acp::update", "session/update: {other}");
                 false
             }
+        }
+    }
+
+    /// Keep the provider's rate-limit report off a `usage_update`.
+    ///
+    /// Separate from the cost handler because the two have nothing to do with
+    /// each other: a report carries no `cost`, so anything read after the cost
+    /// lookup would discard every one of them, and a report arrives whether or
+    /// not this adapter is one whose cost accounting we understand.
+    fn capture_rate_limit(&mut self, msg: &serde_json::Value) {
+        if let Some(limit) = msg.pointer("/params/update/_meta/_claude~1rateLimit") {
+            self.rate_limit = Some(limit.clone());
         }
     }
 
@@ -2253,6 +2392,46 @@ pub enum ModelSwitchMethod {
 /// Returns the raw JSON array entries. Each entry has `configId` (spelled `id`
 /// by some adapters, e.g. claude-agent-acp), `displayName`,
 /// `options: [{ value, displayName }]`, etc.
+/// The model a fresh session actually opened on, when the adapter does not
+/// advertise it.
+///
+/// `ANTHROPIC_MODEL` is the only per-process way to pin a Claude adapter's
+/// model — it beats the machine-wide `~/.claude/settings.json` that every seat
+/// on a body otherwise shares — but it is passed through unvalidated. A typo
+/// becomes `currentValue` verbatim and fails only at the first inference, as a
+/// provider 404, minutes into a turn the owner is waiting on. The adapter's own
+/// option list is its answer to "what can I run", so a `currentValue` outside
+/// it is a misconfiguration the harness can name at startup instead.
+///
+/// Returns `(current, advertised)` when they disagree. `None` when they agree,
+/// when the adapter advertises no models (Codex, `rebrand-acp`), or when it
+/// reports no current model — absence of an answer is not a mismatch.
+pub fn unadvertised_session_model(
+    session_new_result: &serde_json::Value,
+) -> Option<(String, Vec<String>)> {
+    for config_opt in extract_model_config_options(session_new_result) {
+        let advertised: Vec<String> = config_opt
+            .get("options")
+            .and_then(|v| v.as_array())
+            .map(|opts| {
+                opts.iter()
+                    .filter_map(|o| o.get("value").and_then(|v| v.as_str()))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let current = match config_opt.get("currentValue").and_then(|v| v.as_str()) {
+            Some(current) => current,
+            None => continue,
+        };
+        if advertised.is_empty() || advertised.iter().any(|v| v == current) {
+            return None;
+        }
+        return Some((current.to_string(), advertised));
+    }
+    None
+}
+
 pub fn extract_model_config_options(result: &serde_json::Value) -> Vec<serde_json::Value> {
     result["configOptions"]
         .as_array()
@@ -3119,6 +3298,40 @@ mod tests {
             .expect("failed to spawn test script")
     }
 
+    /// Spawn a script these tests just wrote, retrying while the kernel still
+    /// sees an open writable fd to it.
+    ///
+    /// The suite runs in parallel, and a sibling test's `fork` inherits this
+    /// thread's writable fd to the file being written. `ETXTBSY` is decided at
+    /// `exec` from the inode's writer count, so our own `exec` of that file
+    /// fails until the sibling's `exec` closes the inherited fd (Rust opens
+    /// files `O_CLOEXEC`, which makes the window short but not empty).
+    /// Reproduced at `5b54d91af`: 2 failures in 30 runs of the `spawn_` tests
+    /// at `--test-threads=8`, both `Os { code: 26, kind: ExecutableFileBusy }`.
+    ///
+    /// Retry the spawn, not the test, and only on that one error — anything
+    /// else is a real failure and panics on the spot.
+    #[cfg(unix)]
+    async fn spawn_retrying_while_the_file_is_still_open_for_writing(
+        path: &str,
+        extra_env: &[(String, String)],
+        what: &str,
+    ) -> AcpClient {
+        const ATTEMPTS: u32 = 100;
+        for attempt in 1..=ATTEMPTS {
+            match AcpClient::spawn(path, &[], extra_env, false).await {
+                Ok(client) => return client,
+                Err(AcpError::Io(e))
+                    if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < ATTEMPTS =>
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                Err(e) => panic!("{what} ({path}): {e:?}"),
+            }
+        }
+        unreachable!("the loop returns or panics on the last attempt")
+    }
+
     #[cfg(unix)]
     async fn spawn_named_script(name: &str, script: &str) -> (AcpClient, std::path::PathBuf) {
         use std::os::unix::fs::PermissionsExt;
@@ -3137,9 +3350,12 @@ mod tests {
             .permissions();
         permissions.set_mode(0o755);
         std::fs::set_permissions(&path, permissions).expect("chmod fake adapter");
-        let client = AcpClient::spawn(path.to_str().expect("utf8 path"), &[], &[], false)
-            .await
-            .expect("spawn named fake adapter");
+        let client = spawn_retrying_while_the_file_is_still_open_for_writing(
+            path.to_str().expect("utf8 path"),
+            &[],
+            "spawn named fake adapter",
+        )
+        .await;
         (client, dir)
     }
 
@@ -3166,14 +3382,12 @@ mod tests {
         permissions.set_mode(0o700);
         std::fs::set_permissions(&path, permissions).expect("chmod probe");
 
-        let mut client = AcpClient::spawn(
+        let mut client = spawn_retrying_while_the_file_is_still_open_for_writing(
             path.to_str().expect("probe path is UTF-8"),
-            &[],
             extra_env,
-            false,
+            "spawn env probe script",
         )
-        .await
-        .expect("spawn env probe script");
+        .await;
         let observed = client
             .reader
             .next()
@@ -3212,6 +3426,58 @@ mod tests {
             spawn_named_and_read_child_env("other-agent", VAR, &[]).await,
             "<unset>",
             "non-Hermes spawns must not receive Hermes defaults"
+        );
+    }
+
+    /// The keyless worker never sees the seat's signing key, even when a
+    /// persona's env supplies one; every other adapter is launched as before.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawn_withholds_the_signing_key_from_the_keyless_worker() {
+        for var in ["BUZZ_PRIVATE_KEY", "BUZZ_AUTH_TAG"] {
+            let supplied = [(var.to_string(), "supplied".to_string())];
+            assert_eq!(
+                spawn_named_and_read_child_env("rebrand-acp", var, &supplied).await,
+                "<unset>",
+                "rebrand-acp must not receive {var}"
+            );
+            if std::env::var_os(var).is_none() {
+                assert_eq!(
+                    spawn_named_and_read_child_env("other-agent", var, &supplied).await,
+                    "supplied",
+                    "other adapters keep receiving {var}"
+                );
+            }
+        }
+    }
+
+    /// A model the adapter does not advertise is named at startup, not left to
+    /// fail as a provider 404 minutes into the first turn.
+    #[test]
+    fn an_unadvertised_session_model_is_reported_with_what_is_advertised() {
+        let session = |current: &str| {
+            serde_json::json!({"configOptions": [{
+                "category": "model", "id": "model", "currentValue": current,
+                "options": [{"value": "opus[1m]"}, {"value": "sonnet"}, {"value": "haiku"}],
+            }]})
+        };
+        // `ANTHROPIC_MODEL=totally-not-a-model` reaches `currentValue` verbatim.
+        let (current, advertised) =
+            unadvertised_session_model(&session("totally-not-a-model")).expect("a mismatch");
+        assert_eq!(current, "totally-not-a-model");
+        assert_eq!(advertised, ["opus[1m]", "sonnet", "haiku"]);
+
+        // An alias the adapter resolved for itself is not a mismatch:
+        // `ANTHROPIC_MODEL=claude-opus-5` opens the session on `opus[1m]`.
+        assert!(unadvertised_session_model(&session("opus[1m]")).is_none());
+
+        // An adapter that advertises no models, or names no current one, is
+        // not misconfigured — it just has nothing to check against.
+        assert!(unadvertised_session_model(&serde_json::json!({"configOptions": []})).is_none());
+        assert!(
+            unadvertised_session_model(&serde_json::json!({"configOptions": [{
+                "category": "model", "id": "model", "options": [{"value": "sonnet"}]}]}))
+            .is_none()
         );
     }
 
@@ -4475,6 +4741,31 @@ mod tests {
         serde_json::json!({"stopReason": "end_turn", "usage": usage})
     }
 
+    /// The `usage` object `rebrand-acp` really sends, in its field order and
+    /// its accounting: `inputTokens` is the whole prompt, `cachedReadTokens`
+    /// a subset of it, `thoughtTokens` disjoint from `outputTokens`, and
+    /// `totalTokens` each counted once (aitaco-llc/rebrand
+    /// `of-acp/src/outcome.rs` `usage`, `of/src/event.rs` `Usage::total`).
+    /// There is no `cachedWriteTokens` and no cost.
+    fn rebrand_prompt_response_usage(
+        input: u64,
+        output: u64,
+        thought: u64,
+        cached_read: Option<u64>,
+        total: u64,
+    ) -> serde_json::Value {
+        let mut usage = serde_json::json!({
+            "inputTokens": input,
+            "outputTokens": output,
+            "thoughtTokens": thought,
+            "totalTokens": total,
+        });
+        if let Some(cached_read) = cached_read {
+            usage["cachedReadTokens"] = serde_json::json!(cached_read);
+        }
+        serde_json::json!({"stopReason": "end_turn", "usage": usage})
+    }
+
     fn standard_cost_update(session_id: &str, cost: f64) -> serde_json::Value {
         serde_json::json!({
             "jsonrpc": "2.0",
@@ -4548,6 +4839,115 @@ mod tests {
         );
         assert_eq!(usage.cumulative_input_tokens, None);
         assert_eq!(usage.cumulative_output_tokens, None);
+    }
+
+    /// `rebrand-acp`'s `inputTokens` is the whole prompt, cached prefix
+    /// included. Adding `cachedReadTokens` back the way Claude's needs it
+    /// would bill the prefix twice — and an agentic loop resends its prefix on
+    /// every iteration, so the error compounds across a turn.
+    #[tokio::test]
+    async fn rebrand_prompt_input_already_includes_its_cached_prefix() {
+        let mut client = spawn_inert_client().await;
+        client.standard_adapter = Some(StandardAdapterKind::Rebrand);
+        client.standard_usage.begin_turn("rebrand-session");
+        client
+            .parse_prompt_response(
+                "rebrand-session",
+                &rebrand_prompt_response_usage(5_000, 100, 0, Some(4_096), 5_100),
+            )
+            .unwrap();
+
+        let usage = client.take_turn_usage().expect("prompt usage");
+        assert_eq!(
+            usage.turn_input_tokens,
+            Some(5_000),
+            "the cached prefix is a subset of the prompt, not an addition"
+        );
+        assert_eq!(usage.turn_cache_read_tokens, Some(4_096));
+        assert_eq!(usage.turn_cache_write_tokens, None);
+        assert_eq!(usage.turn_total_tokens, Some(5_100));
+    }
+
+    /// Thinking is disjoint from output in `of`'s accounting and billed at the
+    /// output rate. Reporting output alone under-states what a thinking model
+    /// cost, and leaves `input + output` short of the reported total.
+    #[tokio::test]
+    async fn rebrand_prompt_bills_thinking_as_output() {
+        let mut client = spawn_inert_client().await;
+        client.standard_adapter = Some(StandardAdapterKind::Rebrand);
+        client.standard_usage.begin_turn("thinking-session");
+        client
+            .parse_prompt_response(
+                "thinking-session",
+                &rebrand_prompt_response_usage(5_000, 200, 800, None, 6_000),
+            )
+            .unwrap();
+
+        let usage = client.take_turn_usage().expect("prompt usage");
+        assert_eq!(
+            usage.turn_output_tokens,
+            Some(1_000),
+            "200 answer + 800 thought"
+        );
+        assert_eq!(usage.turn_total_tokens, Some(6_000));
+        assert_eq!(
+            usage.turn_input_tokens.unwrap() + usage.turn_output_tokens.unwrap(),
+            usage.turn_total_tokens.unwrap(),
+            "a receipt whose parts do not reach its total is unreadable"
+        );
+    }
+
+    /// The identity gate, over the wire: a seat whose `BUZZ_ACP_AGENT_COMMAND`
+    /// is `rebrand-acp` must parse the `usage` that adapter really sends
+    /// (aitaco-llc/rebrand `of-acp/src/outcome.rs`, `usage`). Without the
+    /// adapter kind the object is parsed by nobody and the turn's NIP-AR
+    /// receipt carries no counts at all.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rebrand_named_adapter_wire_lifecycle_records_prompt_usage() {
+        let script = r#"
+            read -r REQ
+            ID=$(printf '%s' "$REQ" | sed -E 's/.*"id":([0-9]+).*/\1/')
+            echo '{"jsonrpc":"2.0","id":'"$ID"',"result":{"stopReason":"end_turn","usage":{"inputTokens":5000,"outputTokens":200,"thoughtTokens":800,"cachedReadTokens":4096,"totalTokens":6000,"costUsd":0.0123}}}'
+            sleep 1
+        "#;
+        let (mut client, dir) = spawn_named_script("rebrand-acp", script).await;
+        assert_eq!(client.standard_adapter, Some(StandardAdapterKind::Rebrand));
+        client.notify_session_spawned("rebrand-wire");
+
+        let stop = client
+            .session_prompt_with_idle_timeout(
+                "rebrand-wire",
+                "hello",
+                std::time::Duration::from_secs(2),
+                std::time::Duration::from_secs(5),
+            )
+            .await
+            .expect("prompt");
+        assert_eq!(stop, StopReason::EndTurn);
+
+        let usage = client.take_turn_usage().expect("prompt usage");
+        assert_eq!(usage.turn_input_tokens, Some(5_000));
+        assert_eq!(usage.turn_output_tokens, Some(1_000));
+        assert_eq!(usage.turn_total_tokens, Some(6_000));
+        assert_eq!(usage.turn_cache_read_tokens, Some(4_096));
+        // `rebrand-acp` DOES send `usage.costUsd`, and has since rebrand
+        // `fcd9f15` (2026-09-21) — `crates/of-acp/src/outcome.rs` `usage()`.
+        // `PromptResponseUsage` has no field for it, so serde drops it and
+        // every rebrand seat's NIP-AM metric and NIP-AR receipt carries no
+        // cost. That is deliberate for now, not an oversight: the number is
+        // computed inside `of-acp` by `of::pricing::calculate_cost` against a
+        // hardcoded per-million table (`of/src/pricing.rs`), so it is
+        // manifest-estimated, and NIP-AM §Numeric validity forbids merging a
+        // manifest-estimated cost with a wire-reported one in an unlabeled
+        // field — which `TokenCounts::cost_usd` is. Ingesting it needs a
+        // provenance field first. The fixture carries `costUsd` so this stays
+        // a decision on the record rather than a field nobody noticed.
+        assert_eq!(
+            usage.turn_cost_usd, None,
+            "rebrand-acp's own price estimate is dropped until cost carries provenance"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
@@ -4700,6 +5100,72 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn the_receipt_can_still_read_the_usage_the_metric_consumed() {
+        // NIP-AR is published after the turn has ended, long after the NIP-AM
+        // metric drained the trackers. The take must leave a readable copy.
+        let mut client = spawn_inert_client().await;
+        client.goose_usage.begin_turn("s1");
+        client.handle_goose_usage_update(&goose_usage_update_msg("s1", 1000, 200, Some(0.01)));
+
+        assert!(
+            client.last_turn_usage().is_none(),
+            "nothing is recorded until the metric takes it"
+        );
+        let taken = client.take_turn_usage().expect("usage present");
+        let recorded = client.last_turn_usage().expect("receipt copy retained");
+        assert_eq!(recorded.session_id, taken.session_id);
+        assert_eq!(
+            recorded.cumulative_input_tokens,
+            taken.cumulative_input_tokens
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_take_in_one_turn_does_not_leave_the_first_takes_counts_behind() {
+        // The initial-message path takes usage, then the real prompt takes
+        // again. A drained second take must clear the record, not preserve a
+        // count the receipt would then attribute to the wrong prompt.
+        let mut client = spawn_inert_client().await;
+        client.goose_usage.begin_turn("s1");
+        client.handle_goose_usage_update(&goose_usage_update_msg("s1", 1000, 200, None));
+        client.take_turn_usage().expect("first take");
+        assert!(client.last_turn_usage().is_some());
+
+        assert!(client.take_turn_usage().is_none(), "trackers are drained");
+        assert!(
+            client.last_turn_usage().is_none(),
+            "a take that found nothing must not leave stale counts"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_new_prompt_clears_the_previous_turns_receipt_usage() {
+        // A turn that dies before reporting any usage must report none, not
+        // inherit what the previous turn spent.
+        let mut client = spawn_inert_client().await;
+        client.goose_usage.begin_turn("s1");
+        client.handle_goose_usage_update(&goose_usage_update_msg("s1", 1000, 200, None));
+        client.take_turn_usage().expect("first turn usage");
+        assert!(client.last_turn_usage().is_some(), "first turn recorded");
+
+        // `cat` echoes the request instead of answering it, so the prompt ends
+        // on its idle timeout — the shape of a turn that reported nothing.
+        let result = client
+            .session_prompt_with_idle_timeout(
+                "s1",
+                "next turn",
+                std::time::Duration::from_millis(120),
+                std::time::Duration::from_millis(400),
+            )
+            .await;
+        assert!(result.is_err(), "inert agent never answers the prompt");
+        assert!(
+            client.last_turn_usage().is_none(),
+            "the next turn must not inherit the previous turn's counts"
+        );
+    }
+
     // ── Goose usage notification integration ──────────────────────────────
 
     /// Build a `_goose/unstable/session/update` JSON-RPC notification.
@@ -4796,7 +5262,7 @@ mod tests {
         // not be silently truncated to "unknown error" — the full JSON is preserved.
         let error = serde_json::json!({"code": -32000, "data": "quota exceeded"});
         match super::agent_error_from_json(&error) {
-            AcpError::AgentError { code, message } => {
+            AcpError::AgentError { code, message, .. } => {
                 assert_eq!(code, -32000);
                 assert!(
                     message.contains("quota exceeded"),
@@ -4811,7 +5277,7 @@ mod tests {
     fn agent_error_from_json_uses_message_field_when_present() {
         let error = serde_json::json!({"code": -32001, "message": "auth denied"});
         match super::agent_error_from_json(&error) {
-            AcpError::AgentError { code, message } => {
+            AcpError::AgentError { code, message, .. } => {
                 assert_eq!(code, -32001);
                 assert_eq!(message, "auth denied");
             }

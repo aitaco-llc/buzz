@@ -4,6 +4,7 @@ set dotenv-load := true
 
 desktop_dir := "desktop"
 desktop_tauri_manifest := "desktop/src-tauri/Cargo.toml"
+voice_bridge_manifest := "crates/buzz-voice-bridge/Cargo.toml"
 web_dir := "web"
 
 # Opt-in mesh-llm. Off by default so `just dev`/`just staging`/`just production`
@@ -1153,6 +1154,44 @@ goose-bg relay="ws://localhost:3000" agents="1" heartbeat="0" prompt="" key="$BU
     source ./scripts/_goose-env.sh "{{relay}}" "{{key}}" "{{agents}}" "{{heartbeat}}" "{{prompt}}"
     screen -dmS goose-agent-{{agents}} bash -c "$(printf '%q ' env "${env_args[@]}") ./target/release/buzz-acp"
     echo "Agent running in screen session 'goose-agent-{{agents}}'. Attach with: screen -r goose-agent-{{agents}}"
+
+# ─── Voice Bridge ─────────────────────────────────────────────────────────────
+# crates/buzz-voice-bridge is outside the root workspace (see `exclude` in
+# Cargo.toml), so `just fmt-check`, `just clippy` and `just test-unit` never
+# reach it. These recipes are its whole gate, the way the desktop-tauri-*
+# recipes are src-tauri's, and `voice-bridge-ci` is what CI runs.
+#
+# Building it needs libopus via pkg-config — `apt-get install libopus-dev` on
+# Linux, `brew install opus` on macOS. Without one, audiopus_sys falls back to
+# a bundled CMake build that predates CMake 4 and fails. That is why this is
+# not part of `just check`: it would break a checkout that has no libopus.
+#
+# The lab (scripts/aitaco/voice-bridge/lab.sh) is the real end-to-end gate and
+# is deliberately not in `voice-bridge-ci`: it needs a relay, a buzz-acp with
+# --self-wake-tag and three service containers, so it stays a by-hand receipt.
+
+# Check voice bridge Rust formatting
+voice-bridge-fmt-check:
+    cargo fmt --manifest-path {{voice_bridge_manifest}} --all -- --check
+
+# Format voice bridge Rust code
+voice-bridge-fmt:
+    cargo fmt --manifest-path {{voice_bridge_manifest}} --all
+
+# Run clippy over the voice bridge with warnings as errors
+voice-bridge-clippy:
+    cargo clippy --manifest-path {{voice_bridge_manifest}} --all-targets -- -D warnings
+
+# Build the voice bridge binary (links libopus, so it catches what clippy cannot)
+voice-bridge-build:
+    cargo build --manifest-path {{voice_bridge_manifest}} --bin buzz-voice-bridge
+
+# Run the voice bridge unit tests
+voice-bridge-test:
+    cargo test --manifest-path {{voice_bridge_manifest}}
+
+# The voice bridge's CI gate: format, clippy, a linking build, and its tests
+voice-bridge-ci: voice-bridge-fmt-check voice-bridge-clippy voice-bridge-build voice-bridge-test
 
 # ─── Benchmarking ─────────────────────────────────────────────────────────────
 

@@ -1,9 +1,11 @@
 import Foundation
 import UIKit
 
-private enum MediaSanitizationError: Error {
+enum MediaSanitizationError: Error {
   case invalidPng
   case invalidJpeg
+  case undecodable
+  case encodeFailed
 }
 
 enum MediaSanitizer {
@@ -24,6 +26,46 @@ enum MediaSanitizer {
       return try scrubPng(encoded)
     default:
       return nil
+    }
+  }
+
+  struct Upload: Equatable {
+    let data: Data
+    let mimeType: String
+  }
+
+  /// Prepares picked, pasted or captured bytes for the relay.
+  ///
+  /// Two things make the original asset bytes unusable. The relay rejects any
+  /// metadata channel structurally — a Photos JPEG still carries its EXIF APP1
+  /// segment and comes back 422 — and its allowlist is jpeg/png/gif/webp, so a
+  /// camera HEIC would come back 415. Re-encoding here settles both, and the
+  /// returned MIME type is the one the bytes actually are, not the one the
+  /// picker declared.
+  static func forUpload(data: Data, mimeType: String) throws -> Upload {
+    let declared = mimeType.lowercased()
+    // An animated GIF cannot survive a re-render, so its bytes go up as they
+    // are. The relay validates GIF metadata on its own side.
+    if declared == "image/gif" {
+      return Upload(data: data, mimeType: declared)
+    }
+    guard let image = UIImage(data: data) else {
+      throw MediaSanitizationError.undecodable
+    }
+    switch declared {
+    case "image/png", "image/webp":
+      // WebP has no UIKit encoder, so it re-renders as PNG.
+      guard let sanitized = try sanitizeImage(image, mimeType: "image/png") else {
+        throw MediaSanitizationError.encodeFailed
+      }
+      return Upload(data: sanitized, mimeType: "image/png")
+    default:
+      // JPEG, and every format outside the allowlist (HEIC and HEIF from the
+      // camera), both land here as a scrubbed JPEG.
+      guard let sanitized = try encodeJpeg(image) else {
+        throw MediaSanitizationError.encodeFailed
+      }
+      return Upload(data: sanitized, mimeType: "image/jpeg")
     }
   }
 

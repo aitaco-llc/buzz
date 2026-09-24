@@ -81,7 +81,7 @@ test("activity pod shows workspace details without a create action", () => {
       ["Projects", 2],
       ["Repositories", 2],
       ["Channels", 2],
-      ["Tasks", 5],
+      ["Issues", 5],
       ["Reviews", 5],
     ],
   );
@@ -207,12 +207,12 @@ test("tasks pod breaks down active and completed work", () => {
     pullRequests: [],
   });
 
-  assert.equal(context.title, "Tasks");
+  assert.equal(context.title, "Issues");
   assert.equal(context.action?.label, "Create task");
   assert.deepEqual(
     context.stats.map((stat) => [stat.label, stat.count]),
     [
-      ["Tasks", 3],
+      ["Issues", 3],
       ["Active", 1],
       ["Completed", 2],
     ],

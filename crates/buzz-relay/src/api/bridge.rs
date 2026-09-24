@@ -407,12 +407,16 @@ fn extract_page_offset(raw: &Value, limit: Option<i64>) -> Option<i64> {
 const BRIDGE_WINDOW_DEFAULT_LIMIT: u32 = 50;
 const BRIDGE_WINDOW_MAX_LIMIT: u32 = 200;
 
-/// Aux closure kinds: reactions, deletions (NIP-09 + NIP-29), edits.
-const WINDOW_AUX_KINDS: [u32; 4] = [
+/// Aux closure kinds: reactions, deletions (NIP-09 + NIP-29), edits, and
+/// NIP-AR turn receipts. All of these overlay onto a row the window already
+/// returned rather than rendering a row of their own, so they ride along with
+/// the page instead of consuming its row budget.
+const WINDOW_AUX_KINDS: [u32; 5] = [
     buzz_core::kind::KIND_DELETION,
     buzz_core::kind::KIND_REACTION,
     buzz_core::kind::KIND_NIP29_DELETE_EVENT,
     buzz_core::kind::KIND_STREAM_MESSAGE_EDIT,
+    buzz_core::kind::KIND_AGENT_TURN_RECEIPT,
 ];
 /// Second-hop kinds: deletions targeting aux events (delete-of-a-reaction).
 const WINDOW_AUX_DELETE_KINDS: [u32; 2] = [
@@ -2643,6 +2647,20 @@ mod postgres_tests {
         assert_eq!(query.limit, None);
         assert_eq!(query.until, None);
         assert_eq!(query.before_id, None);
+    }
+
+    /// The aux closure is the set of kinds that overlay a row instead of being
+    /// one. A NIP-AR receipt annotates the messages it `e`-tags, so a desktop
+    /// channel window that pulls reactions and edits but not receipts renders
+    /// an agent turn with no model and no token counts. Asserted by literal,
+    /// not by re-deriving `WINDOW_AUX_KINDS`, so dropping a kind fails here.
+    #[test]
+    fn the_aux_closure_covers_every_overlay_kind_including_turn_receipts() {
+        assert_eq!(
+            WINDOW_AUX_KINDS.to_vec(),
+            vec![5_u32, 7, 9005, 40003, 44201],
+            "aux closure kinds: deletion, reaction, nip29 deletion, edit, turn receipt"
+        );
     }
 
     fn aux_event(keys: &Keys, created_at: u64, content: &str) -> buzz_core::StoredEvent {

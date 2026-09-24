@@ -75,7 +75,7 @@ async fn fetch_event(client: &BuzzClient, event_id: &str) -> Result<serde_json::
         .ok_or_else(|| CliError::NotFound(format!("event {event_id} not found")))
 }
 
-async fn resolve_thread_ref(
+pub(crate) async fn resolve_thread_ref(
     client: &BuzzClient,
     parent_event_id: &str,
 ) -> Result<ThreadRef, CliError> {

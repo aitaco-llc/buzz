@@ -40,6 +40,33 @@ fn legacy_app_data_dir_maps_dev_worktree_identifier() {
 }
 
 #[test]
+fn legacy_app_data_dir_maps_aitaco_identifier_to_block_buzz() {
+    // The aitaco Desktop lane sets CFBundleIdentifier to co.aitaco.buzz.desktop
+    // (scripts/aitaco/desktop-release.sh). Without this mapping the rename
+    // reads as a fresh install and the user loses agent settings.
+    let current = PathBuf::from("/Users/me/Library/Application Support/co.aitaco.buzz.desktop");
+    let legacy = legacy_app_data_dir(&current).unwrap();
+    assert_eq!(
+        legacy,
+        PathBuf::from("/Users/me/Library/Application Support/xyz.block.buzz.app")
+    );
+}
+
+#[test]
+fn legacy_app_data_dir_rejects_aitaco_prefix_collisions() {
+    // Exact match only: co.aitaco.buzz.desktop has no dev or worktree variants,
+    // so a longer name sharing the prefix is not one of ours.
+    let current = PathBuf::from("/Users/me/Library/Application Support/co.aitaco.buzz.desktop.dev");
+    assert!(legacy_app_data_dir(&current).is_none());
+}
+
+#[test]
+fn legacy_app_data_dir_returns_none_for_unknown_identifier() {
+    let current = PathBuf::from("/Users/me/Library/Application Support/com.example.other");
+    assert!(legacy_app_data_dir(&current).is_none());
+}
+
+#[test]
 fn copy_dir_all_preserves_nested_files_without_overwriting() {
     let dir = tempfile::tempdir().unwrap();
     let src = dir.path().join("old");

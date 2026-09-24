@@ -693,6 +693,7 @@ pub(crate) fn typing_event_tags(
     channel_id: Uuid,
     root_event_id: Option<&str>,
     parent_event_id: Option<&str>,
+    trigger_event_id: Option<&str>,
 ) -> Result<Vec<Tag>, RelayError> {
     let h_tag = Tag::parse(["h", &channel_id.to_string()])
         .map_err(|e| RelayError::AuthFailed(e.to_string()))?;
@@ -711,8 +712,27 @@ pub(crate) fn typing_event_tags(
                 .map_err(|e| RelayError::AuthFailed(e.to_string()))?,
         );
     }
+    // Which event this turn is answering. Deliberately NOT an `e` tag: the
+    // channel surfaces decide where to show an indicator from its `e` tags, and
+    // a top-level trigger must stay channel-keyed (see
+    // `queue::typing_thread_tags`), so an extra `e` would move the indicator
+    // somewhere nobody is looking. A multi-letter tag is unindexed and ignored
+    // by every client that does not know it.
+    //
+    // The voice bridge reads it to tell "the seat picked up my ask" from "the
+    // seat is busy with something else", which it otherwise cannot do for a
+    // top-level ask — the first ask of every call.
+    if let Some(trigger) = trigger_event_id {
+        tags.push(
+            Tag::parse([TYPING_TRIGGER_TAG, trigger])
+                .map_err(|e| RelayError::AuthFailed(e.to_string()))?,
+        );
+    }
     Ok(tags)
 }
+
+/// Tag naming the event a typing indicator's turn is answering.
+pub const TYPING_TRIGGER_TAG: &str = "trigger";
 
 /// Harness-side relay client.
 ///
@@ -1035,8 +1055,9 @@ impl HarnessRelay {
         channel_id: Uuid,
         root_event_id: Option<&str>,
         parent_event_id: Option<&str>,
+        trigger_event_id: Option<&str>,
     ) -> Result<Event, RelayError> {
-        let tags = typing_event_tags(channel_id, root_event_id, parent_event_id)?;
+        let tags = typing_event_tags(channel_id, root_event_id, parent_event_id, trigger_event_id)?;
         let event = EventBuilder::new(Kind::Custom(KIND_TYPING_INDICATOR as u16), "")
             .tags(tags)
             .sign_with_keys(&self.keys)?;

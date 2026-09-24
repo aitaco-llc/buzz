@@ -245,8 +245,10 @@ pub struct TurnUsage {
 }
 
 /// Per-turn usage carried by a standard ACP `session/prompt` response.
-/// Adapter input excludes cache reads and writes, so NIP-AM input must add
-/// those subsets with checked arithmetic.
+///
+/// The field names are shared, the accounting is not: see
+/// [`StandardAdapterKind`] for which adapter reports input inclusive of its
+/// cache subsets and which reports thinking separately from output.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PromptResponseUsage {
@@ -255,12 +257,37 @@ pub(crate) struct PromptResponseUsage {
     pub total_tokens: u64,
     pub cached_read_tokens: Option<u64>,
     pub cached_write_tokens: Option<u64>,
+    /// Thinking tokens, when the adapter reports them apart from output.
+    /// Absent on Claude and Codex; `rebrand-acp` sends `thoughtTokens`.
+    pub thought_tokens: Option<u64>,
 }
 
+/// Which adapter produced a [`PromptResponseUsage`], because the same field
+/// names mean different things per adapter and a receipt that mixes them is a
+/// wrong number that still validates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StandardAdapterKind {
     Claude,
     Codex,
+    /// `rebrand-acp` (aitaco-llc/rebrand `crates/of-acp`). Two differences
+    /// from the others, both load-bearing for cost:
+    ///
+    /// * **Input is already inclusive of the cache subset.** `of` maps
+    ///   `inputTokens` straight from Gemini's `promptTokenCount` and OpenAI's
+    ///   `prompt_tokens`, and reports `cachedReadTokens` from
+    ///   `cachedContentTokenCount` / `prompt_tokens_details.cached_tokens` —
+    ///   subsets of that same prompt, not additions to it
+    ///   (`of/src/orchestrator/gemini.rs` usage mapping;
+    ///   `openai.rs` `a_cached_prefix_is_reported`). Adding them here would
+    ///   bill a cached prefix twice, and an agentic loop resends its prefix on
+    ///   every iteration.
+    /// * **Thinking is disjoint from output.** `of` normalizes both providers
+    ///   so `outputTokens` and `thoughtTokens` never overlap and
+    ///   `totalTokens` counts each once (`of/src/event.rs` `Usage::total`;
+    ///   `openai.rs` `reasoning_tokens_are_a_breakdown_not_an_addition`).
+    ///   Both are billed as output, so NIP-AM output is their sum — which is
+    ///   also what keeps `input + output == total` for a thinking model.
+    Rebrand,
 }
 
 #[derive(Debug, Default)]
@@ -325,15 +352,34 @@ impl StandardUsageTracker {
 
         let (inclusive_input, output_tokens, total_tokens, cache_read, cache_write) = match prompt {
             Some((_, usage, adapter)) => {
-                let inclusive_input = usage
-                    .input_tokens
-                    .checked_add(usage.cached_read_tokens.unwrap_or(0))
-                    .and_then(|input| input.checked_add(usage.cached_write_tokens.unwrap_or(0)));
+                // Claude and Codex report input net of their cache subsets, so
+                // NIP-AM input adds them back. `rebrand-acp` already reports
+                // the inclusive prompt — see `StandardAdapterKind::Rebrand`.
+                let inclusive_input = if adapter == StandardAdapterKind::Rebrand {
+                    Some(usage.input_tokens)
+                } else {
+                    usage
+                        .input_tokens
+                        .checked_add(usage.cached_read_tokens.unwrap_or(0))
+                        .and_then(|input| input.checked_add(usage.cached_write_tokens.unwrap_or(0)))
+                };
+                // Billed output. Thinking is disjoint from output on
+                // `rebrand-acp` and billed at the output rate; on the others
+                // `thoughtTokens` is absent and this is `output_tokens`.
+                let billed_output = if adapter == StandardAdapterKind::Rebrand {
+                    usage
+                        .output_tokens
+                        .checked_add(usage.thought_tokens.unwrap_or(0))
+                } else {
+                    Some(usage.output_tokens)
+                };
+                // Claude's `totalTokens` is not a per-turn figure; the other
+                // two adapters report one that counts each token once.
                 let total_tokens =
-                    (adapter == StandardAdapterKind::Codex).then_some(usage.total_tokens);
+                    (adapter != StandardAdapterKind::Claude).then_some(usage.total_tokens);
                 (
                     inclusive_input,
-                    inclusive_input.map(|_| usage.output_tokens),
+                    inclusive_input.and(billed_output),
                     inclusive_input.and(total_tokens),
                     inclusive_input.and(usage.cached_read_tokens),
                     inclusive_input.and(usage.cached_write_tokens),

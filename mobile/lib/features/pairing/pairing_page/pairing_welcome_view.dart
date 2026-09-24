@@ -50,14 +50,11 @@ class _PairingWelcomeView extends StatelessWidget {
                     shape: BoxShape.circle,
                     color: Color(0x4DFFFFFF),
                   ),
-                  child: const TappableFlappingBee(
-                    width: 76,
-                    color: _onboardingInk,
-                  ),
+                  child: const AitacoMark(size: 116, semanticLabel: 'aitaco'),
                 ),
                 const SizedBox(height: Grid.sm),
                 Text(
-                  'Welcome to Buzz',
+                  'Welcome to aitaco',
                   textAlign: TextAlign.center,
                   style: context.textTheme.headlineSmall?.copyWith(
                     color: _onboardingInk,
@@ -67,7 +64,7 @@ class _PairingWelcomeView extends StatelessWidget {
                 ),
                 const SizedBox(height: Grid.xxs),
                 Text(
-                  'Scan the QR code from your desktop app\nor paste a pairing code to connect.',
+                  'Scan the code from aitaco Desktop or from\nAdd a device on your phone, or paste it.',
                   textAlign: TextAlign.center,
                   style: context.textTheme.bodyMedium?.copyWith(
                     color: _onboardingMutedInk,

@@ -7,6 +7,7 @@ import 'package:local_auth/local_auth.dart';
 import 'package:nostr/nostr.dart' as nostr;
 import 'package:buzz/features/pairing/pairing_crypto.dart';
 import 'package:buzz/features/pairing/pairing_provider.dart';
+import 'package:buzz/shared/community/aitaco_community.dart';
 import 'package:buzz/features/pairing/pairing_socket.dart';
 import 'package:buzz/shared/auth/auth.dart';
 import 'package:buzz/shared/crypto/ecdh.dart';
@@ -54,7 +55,7 @@ void main() {
         final input = base64Url.encode(
           utf8.encode(
             jsonEncode({
-              'relayUrl': 'https://relay.example',
+              'relayUrl': 'https://buzz.aitaco.co',
               'nsec': 'pending-key',
             }),
           ),
@@ -129,6 +130,21 @@ void main() {
       final state = container.read(pairingProvider);
       expect(state.status, PairingStatus.error);
       expect(state.errorMessage, contains('missing nsec'));
+      expect(fakeAuth.lastCommunity, isNull);
+    });
+
+    test('refuses a pairing code for another community', () async {
+      container = createContainer();
+
+      final code = _encodePairingCode(
+        relayUrl: 'https://relay.example.com',
+        nsec: nostr.Keys.generate().nsec,
+      );
+      await container.read(pairingProvider.notifier).pair(code);
+
+      final state = container.read(pairingProvider);
+      expect(state.status, PairingStatus.error);
+      expect(state.errorMessage, foreignCommunityMessage);
       expect(fakeAuth.lastCommunity, isNull);
     });
 
@@ -283,7 +299,7 @@ void main() {
             'type': 'payload',
             'payload_type': 'credentials',
             'payload': jsonEncode({
-              'relayUrl': 'https://relay.test',
+              'relayUrl': 'https://buzz.aitaco.co',
               'pubkey': nostr.Keys(sourceSecret).public,
               'nsec': nostr.Keys(sourceSecret).nsec,
             }),
@@ -780,7 +796,7 @@ void main() {
         () async {
           final community = _exportCommunity(
             SensitiveActionPolicy.disabledByUser,
-          ).copyWith(relayUrl: 'wss://relay.test');
+          ).copyWith(relayUrl: 'wss://buzz.aitaco.co');
           container
               .read(relayConfigProvider.notifier)
               .update(baseUrl: community.relayUrl, nsec: community.nsec);
@@ -966,7 +982,7 @@ void main() {
 
 /// Encode a credentials payload the same way the desktop app would.
 String _encodePairingCode({
-  String relayUrl = 'http://test:3000',
+  String relayUrl = 'https://buzz.aitaco.co',
   String? pubkey,
   String? nsec,
 }) {
@@ -1028,7 +1044,7 @@ class _DisconnectingSocket extends PairingSocket {
 Community _exportCommunity(SensitiveActionPolicy policy) => Community(
   id: 'export-community',
   name: 'Export',
-  relayUrl: 'https://relay.test',
+  relayUrl: 'https://buzz.aitaco.co',
   nsec: _RecoveryRelayConfig.nsec,
   sensitiveActionPolicy: policy,
   addedAt: DateTime.utc(2026),
@@ -1040,7 +1056,8 @@ class _RecoveryRelayConfig extends RelayConfigNotifier {
   ).nsec;
 
   @override
-  RelayConfig build() => RelayConfig(baseUrl: 'https://relay.test', nsec: nsec);
+  RelayConfig build() =>
+      RelayConfig(baseUrl: 'https://buzz.aitaco.co', nsec: nsec);
 }
 
 class _FakeSensitiveActionAuthorizer implements SensitiveActionAuthorizer {
@@ -1151,7 +1168,7 @@ class _ControllableSocket extends PairingSocket {
 class _PendingValidationSocket extends RelaySocket {
   _PendingValidationSocket()
     : super(
-        wsUrl: 'wss://relay.example',
+        wsUrl: 'wss://buzz.aitaco.co',
         nsec: null,
         onMessage: (_) {},
         onConnected: () {},

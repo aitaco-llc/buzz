@@ -1,4 +1,5 @@
 import XCTest
+
 @testable import BuzzPushKit
 
 /// Bech32 codec tests against independently published npub vectors — the
@@ -9,6 +10,23 @@ import XCTest
 /// rejection are pinned at canonicalNpub/npubBytes, the npub seam Buzz
 /// actually uses.
 final class Bech32Tests: XCTestCase {
+  func testNsecCodecRejectsWrongPrefixesLengthsAndNonzeroPadding() throws {
+    let zero = [UInt8](repeating: 0, count: 32)
+    let encoded = "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqwkhnav"
+    XCTAssertEqual(NostrKeyEncoding.nsec(from: zero), encoded)
+    XCTAssertEqual(NostrKeyEncoding.privateKeyBytes(from: encoded.uppercased()), zero)
+    XCTAssertNil(NostrKeyEncoding.nsec(from: Array(zero.dropLast())))
+    XCTAssertNil(NostrKeyEncoding.privateKeyBytes(from: "N" + encoded.dropFirst()))
+    XCTAssertNil(NostrKeyEncoding.privateKeyBytes(from: String(encoded.dropLast()) + "x"))
+    XCTAssertNil(NostrKeyEncoding.privateKeyBytes(from: try XCTUnwrap(Bech32.npub(from: zero))))
+    var values = try XCTUnwrap(Bech32.convertBits(zero, fromBits: 8, toBits: 5, padding: true))
+    values[values.count - 1] = 1
+    let nonzeroPadding = try XCTUnwrap(Bech32.encode(hrp: "nsec", values: values))
+    XCTAssertNil(NostrKeyEncoding.privateKeyBytes(from: nonzeroPadding))
+    let wrongLength = try XCTUnwrap(Bech32.encode(hrp: "nsec", values: Array(values.dropLast())))
+    XCTAssertNil(NostrKeyEncoding.privateKeyBytes(from: wrongLength))
+  }
+
   /// Hex public keys with their published npub equivalents.
   static let npubVectors: [(hex: String, npub: String)] = [
     // nostr-rs 0.44 key test: aa4fc866… ↔ npub14f8usejl…qqh9nsy.
@@ -22,7 +40,10 @@ final class Bech32Tests: XCTestCase {
       "npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6"
     ),
     // Degenerate key material still encodes (and exercises 5-bit padding).
-    (String(repeating: "00", count: 32), "npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqzqujme"),
+    (
+      String(repeating: "00", count: 32),
+      "npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqzqujme"
+    ),
   ]
 
   func testNpubEncodingMatchesKnownVectors() throws {

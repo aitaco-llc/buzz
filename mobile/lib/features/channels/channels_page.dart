@@ -12,14 +12,14 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../shared/auth/auth.dart';
-import '../../shared/community/community_icon_provider.dart';
+import '../../shared/community/aitaco_community.dart';
 import '../../shared/relay/relay.dart';
 import '../../shared/theme/theme.dart';
+import '../../shared/widgets/aitaco_mark.dart';
 import '../../shared/widgets/avatar_image.dart';
 import '../../shared/widgets/anchored_popover_menu.dart';
 import '../../shared/widgets/bee_refresh_indicator.dart';
 import '../../shared/widgets/buzz_loading_indicator.dart';
-import '../../shared/widgets/buzz_titled_sheet_layout.dart';
 import '../../shared/widgets/frosted_app_bar.dart';
 import '../../shared/widgets/frosted_scaffold.dart';
 import '../../shared/widgets/modal_presentation.dart';
@@ -31,8 +31,6 @@ import '../profile/profile_avatar.dart';
 import '../profile/profile_provider.dart';
 import '../profile/presence_cache_provider.dart';
 import '../../shared/profile/user_cache_provider.dart';
-import '../pairing/pairing_page.dart';
-import '../pairing/pairing_provider.dart';
 import 'channel.dart';
 import 'channel_actions_sheet.dart';
 import 'channel_detail_page.dart';
@@ -302,17 +300,6 @@ class ChannelsPage extends HookConsumerWidget {
       return timer.cancel;
     }, [isReconnectingWithContent]);
 
-    void openCommunitySwitcher() {
-      unawaited(HapticFeedback.selectionClick());
-      ref.invalidate(communityIconProvider);
-      showBuzzModalBottomSheet<void>(
-        context: context,
-        showCloseButton: false,
-        showDragHandle: false,
-        builder: (_) => const _CommunitySwitcherSheet(),
-      );
-    }
-
     final topSectionGradient = context.appColors.topSectionGradient;
     final usesPinnedGradient = topSectionGradient != null;
 
@@ -334,13 +321,10 @@ class ChannelsPage extends HookConsumerWidget {
             ? _kHeaderFrostMaxBlurSigma * headerFrostProgress.value
             : 20,
         showBottomDivider: false,
-        leading: _CommunityIndicator(onTap: openCommunitySwitcher),
+        leading: const _CommunityIndicator(),
         centerTitle: false,
         titleStyle: headerTitleStyle,
-        title: _CommunityHeaderTitle(
-          style: headerTitleStyle,
-          onTap: openCommunitySwitcher,
-        ),
+        title: _CommunityHeaderTitle(style: headerTitleStyle),
         actions: [
           SizedBox(
             width: Grid.xl,

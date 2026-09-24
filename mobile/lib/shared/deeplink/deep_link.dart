@@ -211,6 +211,11 @@ MessageDeepLink? parseMessageDeepLink(Uri uri) {
   );
 }
 
+/// The URL scheme only this app claims. Block's Buzz also claims `buzz://`,
+/// and iOS does not say which app opens a scheme two apps claim, so the
+/// invite page hands off to this one.
+const aitacoAppScheme = 'co.aitaco.buzz';
+
 /// Parse canonical HTTPS invite links and `buzz://join` app handoffs.
 ///
 /// Accepted forms:
@@ -218,6 +223,7 @@ MessageDeepLink? parseMessageDeepLink(Uri uri) {
 /// - `http://localhost/invite/<code>` -> `ws://localhost` + code in debug builds
 /// - `buzz://join?relay=<wss://relay>&code=<code>` -> relay + code
 /// - `buzz://join?relay=<ws://localhost>&code=<code>` -> local relay in debug
+/// - `co.aitaco.buzz://join?…` -> the same, on the scheme only this app claims
 ///
 /// Rejects credentials, fragments, missing params, nested relay credentials, and
 /// non-invite paths so scanners do not accidentally treat arbitrary URLs as
@@ -225,7 +231,7 @@ MessageDeepLink? parseMessageDeepLink(Uri uri) {
 InviteDeepLink? parseInviteDeepLink(Uri uri) {
   if (uri.hasFragment || uri.userInfo.isNotEmpty) return null;
 
-  if (uri.scheme == 'buzz') {
+  if (uri.scheme == 'buzz' || uri.scheme == aitacoAppScheme) {
     if (uri.host != 'join') return null;
     final relay = uri.queryParameters['relay'];
     final code = uri.queryParameters['code'];

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 
+import '../../shared/community/aitaco_community.dart';
 import '../../shared/deeplink/deep_link.dart';
 import '../../shared/deeplink/pending_deep_link_provider.dart';
 import '../invites/invite_join_provider.dart';
@@ -196,16 +197,20 @@ class _DeepLinkDispatcherState extends ConsumerState<DeepLinkDispatcher> {
           }
         } else if (status == InviteJoinStatus.switchedExisting) {
           messenger?.showSnackBar(
-            const SnackBar(content: Text('Switched to this community')),
+            const SnackBar(
+              content: Text('You’re already in $aitacoCommunityName'),
+            ),
           );
         }
       } catch (error) {
         debugPrint('deep-link: failed to prepare invite: $error');
         if (navigatorContext.mounted) {
           messenger?.showSnackBar(
-            const SnackBar(
+            SnackBar(
               content: Text(
-                'Could not open this invite. Re-open the invite link to try again.',
+                error is ForeignCommunityException
+                    ? foreignCommunityMessage
+                    : 'Could not open this invite. Re-open the invite link to try again.',
               ),
             ),
           );

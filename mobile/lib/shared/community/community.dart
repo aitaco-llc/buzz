@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:uuid/uuid.dart';
 
 import '../push/push_subscription.dart';
+import 'aitaco_community.dart';
 
 const _uuid = Uuid();
 const _sentinel = Object();
@@ -161,6 +162,7 @@ class Community {
 
   /// Derive a human-friendly community name from a relay URL.
   static String nameFromUrl(String url) {
+    if (isAitacoRelayUrl(url)) return aitacoCommunityName;
     try {
       final host = Uri.parse(url).host;
       if (host.contains('localhost') || host == '127.0.0.1') return 'Local Dev';

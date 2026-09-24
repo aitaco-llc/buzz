@@ -24,6 +24,16 @@ use crate::util::replace_with_symlink;
 const CANONICAL_DEV_IDENTIFIER: &str = "xyz.block.buzz.app.dev";
 const LEGACY_CANONICAL_DEV_IDENTIFIER: &str = "xyz.block.sprout.app.dev";
 const LEGACY_RELEASE_IDENTIFIER: &str = "xyz.block.sprout.app";
+/// Release identifier of the aitaco Desktop build, set by the release overlay
+/// in `scripts/aitaco/desktop-release.sh` (see `docs/aitaco/DESKTOP_LANE.md`).
+/// Tracked `tauri.conf.json` keeps Block's value, so this constant is the only
+/// place the fork's identifier appears in upstream-shared code.
+const AITACO_RELEASE_IDENTIFIER: &str = "co.aitaco.buzz.desktop";
+/// Data directory the aitaco build inherits from: the Block Buzz release
+/// identifier. Block's own Sprout carry-over already folded
+/// `xyz.block.sprout.app` into this directory on any Mac that ran Buzz, so one
+/// hop lands on the live data rather than chaining through the Sprout name.
+const AITACO_PREDECESSOR_IDENTIFIER: &str = "xyz.block.buzz.app";
 
 /// JSON files symlinked from worktree data directories to the canonical
 /// dev data directory. Only data files — never `agent-pids/` or `logs/`.
@@ -60,6 +70,12 @@ pub(crate) fn legacy_app_data_dir(current: &Path) -> Option<PathBuf> {
     let name = current.file_name()?.to_str()?;
     let legacy_name = if name.starts_with(CANONICAL_DEV_IDENTIFIER) {
         name.replacen(CANONICAL_DEV_IDENTIFIER, LEGACY_CANONICAL_DEV_IDENTIFIER, 1)
+    } else if name == AITACO_RELEASE_IDENTIFIER {
+        // The fork rename. Matched exactly, not by prefix: this build has no
+        // dev or worktree variants (dev keeps `xyz.block.buzz.app.dev`, see
+        // `docs/aitaco/DESKTOP_LANE.md`), so there is no suffix to carry and a
+        // prefix match would only invent collisions.
+        AITACO_PREDECESSOR_IDENTIFIER.to_string()
     } else if name.starts_with("xyz.block.buzz.app") {
         name.replacen("xyz.block.buzz.app", LEGACY_RELEASE_IDENTIFIER, 1)
     } else {

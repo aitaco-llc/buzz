@@ -86,3 +86,34 @@
     transform: none;
   }
 }
+
+/* The aitaco mark's loading motion.
+ *
+ * `transform` and `opacity` only, so this runs on the compositor (Core
+ * Animation in WKWebView) rather than WebKit's main thread. That matters for
+ * the cold boot gate specifically: the mark is on screen exactly while bundle
+ * eval and the first React render are hogging the main thread, which is why
+ * the bee's wing-flap was built as HTML-level transform layers rather than as
+ * an animated <circle>. The same constraint applies to whatever replaces it. */
+@keyframes aitaco-mark-pulse {
+  0%,
+  100% {
+    transform: scale(0.94);
+  }
+  50% {
+    transform: scale(1.06);
+  }
+}
+
+.aitaco-mark--pulse {
+  animation: aitaco-mark-pulse 1.8s ease-in-out infinite;
+  transform-origin: center;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aitaco-mark--pulse {
+    animation: none;
+    transform: none;
+  }
+}

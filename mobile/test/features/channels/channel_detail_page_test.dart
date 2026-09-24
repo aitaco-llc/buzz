@@ -15,6 +15,7 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:nostr/nostr.dart' as nostr;
 import 'package:pointycastle/digests/sha256.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
+import 'package:buzz/features/channels/agent_turn_receipt_footer.dart';
 import 'package:buzz/features/channels/channel.dart';
 import 'package:buzz/features/channels/channel_detail_page.dart';
 import 'package:buzz/features/channels/channel_management_provider.dart';
@@ -196,6 +197,51 @@ NostrEvent _edit({
   content: content,
   sig: '',
 );
+
+/// A NIP-AR (`kind:44201`) turn receipt naming [targetIds] in publication
+/// order, authored by [pubkey].
+NostrEvent _turnReceipt({
+  required String id,
+  required List<String> targetIds,
+  String pubkey = 'agent',
+  String model = 'claude-opus-4-5',
+  int createdAt = 2000,
+  Map<String, Object?> turn = const {
+    'inputTokens': 191261,
+    'outputTokens': 683,
+    'cacheReadTokens': 122407,
+    'cacheWriteTokens': null,
+  },
+}) => NostrEvent(
+  id: id,
+  pubkey: pubkey,
+  createdAt: createdAt,
+  kind: EventKind.agentTurnReceipt,
+  tags: [
+    const ['h', _channelId],
+    for (final targetId in targetIds) ['e', targetId],
+    ['model', model],
+  ],
+  content: jsonEncode({
+    'model': model,
+    'harness': 'claude-agent-acp',
+    'turn': turn,
+  }),
+  sig: '',
+);
+
+/// Every string the receipt footer puts on screen, in layout order. Comparing
+/// this between the channel and thread views is what pins the two surfaces to
+/// the same rendering.
+List<String> _receiptFooterTexts(WidgetTester tester) => tester
+    .widgetList<Text>(
+      find.descendant(
+        of: find.byType(AgentTurnReceiptFooter),
+        matching: find.byType(Text),
+      ),
+    )
+    .map((text) => text.data ?? '')
+    .toList();
 
 Widget _buildTestable({
   required List<NostrEvent> messages,
@@ -9456,6 +9502,152 @@ void main() {
       expect(findRichText('V3'), findsOneWidget);
       expect(findRichText('V1'), findsNothing);
       expect(findRichText('V2'), findsNothing);
+    });
+  });
+
+  group('Agent turn receipts', () {
+    const users = {
+      'agent': UserProfile(pubkey: 'agent', displayName: 'Scout'),
+      'alice': UserProfile(pubkey: 'alice', displayName: 'Alice'),
+    };
+
+    testWidgets('the channel timeline shows the model and token counts under '
+        'an agent turn', (tester) async {
+      await tester.pumpWidget(
+        _buildTestable(
+          messages: [
+            _textMsg(id: 'agent-msg', pubkey: 'agent', content: 'Shipped it.'),
+            _turnReceipt(id: 'receipt', targetIds: const ['agent-msg']),
+          ],
+          users: users,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byType(AgentTurnReceiptFooter), findsOneWidget);
+      expect(_receiptFooterTexts(tester), [
+        'claude-opus-4-5',
+        '· in 191,261',
+        '· out 683',
+        '· cache read 122,407',
+        // The harness reported no cache-write count. It must not read as 0.
+        '· cache write —',
+      ]);
+    });
+
+    testWidgets('a turn that published three messages shows the footer once, '
+        'under the last of them', (tester) async {
+      await tester.pumpWidget(
+        _buildTestable(
+          messages: [
+            _textMsg(
+              id: 'first',
+              pubkey: 'agent',
+              content: 'Looking.',
+              createdAt: 1000,
+            ),
+            _textMsg(
+              id: 'second',
+              pubkey: 'agent',
+              content: 'Found it.',
+              createdAt: 1001,
+            ),
+            _textMsg(
+              id: 'third',
+              pubkey: 'agent',
+              content: 'Shipped it.',
+              createdAt: 1002,
+            ),
+            _turnReceipt(
+              id: 'receipt',
+              targetIds: const ['first', 'second', 'third'],
+            ),
+          ],
+          users: users,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // One turn, one footer — not one per message it happened to split into.
+      expect(find.byType(AgentTurnReceiptFooter), findsOneWidget);
+      final footerBottom = tester
+          .getRect(find.byType(AgentTurnReceiptFooter))
+          .bottom;
+      expect(
+        footerBottom,
+        greaterThan(tester.getRect(findRichText('Shipped it.')).top),
+        reason: 'the footer belongs under the last message of the turn',
+      );
+    });
+
+    testWidgets('a receipt authored by someone other than the message author '
+        'renders nothing', (tester) async {
+      await tester.pumpWidget(
+        _buildTestable(
+          messages: [
+            _textMsg(id: 'agent-msg', pubkey: 'agent', content: 'Shipped it.'),
+            _turnReceipt(
+              id: 'forged',
+              targetIds: const ['agent-msg'],
+              pubkey: 'alice',
+            ),
+          ],
+          users: users,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byType(AgentTurnReceiptFooter), findsNothing);
+    });
+
+    testWidgets('the thread view renders the same footer as the channel '
+        'timeline', (tester) async {
+      final events = [
+        _textMsg(id: 'agent-msg', pubkey: 'agent', content: 'Shipped it.'),
+        _turnReceipt(id: 'receipt', targetIds: const ['agent-msg']),
+      ];
+
+      await tester.pumpWidget(
+        _buildTestable(
+          messages: events,
+          users: users,
+          threadReplies: const {'agent-msg': []},
+        ),
+      );
+      await tester.pumpAndSettle();
+      final fromChannel = _receiptFooterTexts(tester);
+      expect(fromChannel, isNotEmpty);
+
+      // Unmount before the second tree: a ProviderScope element cannot be
+      // reused across two different override lists.
+      await tester.pumpWidget(const SizedBox.shrink());
+
+      final timelineMessages = formatTimeline(events);
+      await tester.pumpWidget(
+        _buildTestable(
+          messages: events,
+          users: users,
+          threadReplies: const {'agent-msg': []},
+          home: ThreadDetailPage(
+            threadHead: timelineMessages.single,
+            allMessages: timelineMessages,
+            channelId: _channelId,
+            currentPubkey: null,
+            isMember: true,
+            isArchived: false,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byType(AgentTurnReceiptFooter), findsOneWidget);
+      expect(
+        _receiptFooterTexts(tester),
+        fromChannel,
+        reason:
+            'both surfaces render one AgentTurnReceiptFooter, which owns '
+            'its own indent — there is no per-site layout to drift',
+      );
     });
   });
 

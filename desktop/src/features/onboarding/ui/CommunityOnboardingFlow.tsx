@@ -753,8 +753,8 @@ export function CommunityOnboardingFlow({
                   Meet your starter team
                 </h1>
                 <p className="mx-auto mt-3 max-w-[400px] text-sm leading-6 text-foreground/80">
-                  Buzz lets you bring multiple agents into the same workspace.
-                  Your team will help you get started using Buzz.
+                  aitaco lets you bring multiple agents into the same workspace.
+                  Your team will help you get started using aitaco.
                 </p>
                 <div className="flex w-full flex-1 items-center justify-center py-6">
                   {starterPersonas.length > 0 ? (
@@ -806,7 +806,7 @@ export function CommunityOnboardingFlow({
                     {isPending || transaction.stage === "entering" ? (
                       <LoadingDots label="Preparing Welcome" />
                     ) : (
-                      "Take me to Buzz"
+                      "Take me to aitaco"
                     )}
                   </Button>
                   {starterChannelFailureCount >= 2 ? (

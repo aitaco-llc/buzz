@@ -7,9 +7,18 @@
 #
 # A phone-shaped call: the caller creates the huddle's backing channel, posts
 # kind:48100 in its DM with the seat, joins the audio room and talks. The
-# bridge must join, hand Gemini the audio, post an ask that wakes the seat,
-# carry the seat's answer back, resume the Gemini session after goAway, speak
-# into the room, and post the transcript. lab_check.py scores it.
+# bridge must join, fetch the DM's history, hand Gemini the audio, post an ask
+# that wakes the seat with the call so far, carry the seat's answer back,
+# resume the Gemini session after goAway, speak into the room, post the
+# transcript, and wake the seat once more to record the call. lab_check.py
+# scores it.
+#
+# LAB_FAULT forces a failure instead, to prove that a call which dies still
+# writes an ending naming the cause:
+#   room_join      the huddle names a channel that does not exist
+#   gemini_connect the Gemini endpoint refuses the connection
+#   mid_call       Gemini disappears mid-call, past its reconnect budget
+#   relay_gone     the relay dies mid-call, under both sockets at once
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -125,10 +134,15 @@ ENV
 chmod 600 "${STATE}/relay.env"
 (set -a; . "${STATE}/relay.env"; set +a; "${ADMIN_BIN}" migrate) >>"${RUN_DIR}/lab.log" 2>&1
 (set -a; . "${STATE}/relay.env"; set +a; exec "${RELAY_BIN}") >"${RUN_DIR}/relay.log" 2>&1 &
-PIDS+=($!)
+RELAY_PID=$!
+PIDS+=("${RELAY_PID}")
 for _ in $(seq 1 60); do curl -sf "http://127.0.0.1:${RELAY_PORT}/_liveness" >/dev/null && break; sleep 1; done
 curl -sf "http://127.0.0.1:${RELAY_PORT}/_liveness" >/dev/null || { log "relay did not come up"; exit 70; }
 as caller --format compact relay members add --pubkey "${SEAT_PUB}" --role member >>"${RUN_DIR}/lab.log"
+# The bridge reads its names from kind:0 profiles, so the throwaway keys get
+# the names the scorer looks for; no VOICE_BRIDGE_*_LABEL is set below.
+as caller --format compact users set-profile --name Lloyd >>"${RUN_DIR}/lab.log"
+as seat --format compact users set-profile --name rock >>"${RUN_DIR}/lab.log"
 as caller --format compact dms open --pubkey "${SEAT_PUB}" > "${RUN_DIR}/dm-open.json"
 DM="$(grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' "${RUN_DIR}/dm-open.json" | head -1)"
 [[ -n "${DM}" ]] || { log "no DM id in $(cat "${RUN_DIR}/dm-open.json")"; exit 70; }
@@ -140,12 +154,35 @@ log "relay up on ${RELAY_URL}; DM ${DM}"
 # needs LAB_CALLER_PCM (s16le 48 kHz mono speech) for the caller to say.
 LAB_GEMINI="${LAB_GEMINI:-fake}"
 echo "${LAB_GEMINI}" > "${RUN_DIR}/gemini_mode"
+LAB_FAULT="${LAB_FAULT:-none}"
+echo "${LAB_FAULT}" > "${RUN_DIR}/fault"
+# LAB_ANSWER_DELAY_S holds the seat's answer back so the run covers what the
+# caller hears while the seat is thinking: the progress line on the bridge's
+# own clock, and the working sound under the room track. The caller has to
+# stay on the line long enough to hear it.
+LAB_ANSWER_DELAY_S="${LAB_ANSWER_DELAY_S:-0}"
+# LAB_SEAT=silent starts the seat without the self-wake opt-in, so the ask is
+# published, delivered, and never picked up by anything. That is the shape of
+# Lloyd's call 3e9686d6 — a seat that could not run — and it is the only way to
+# make the bridge's "has not picked this up yet" line happen on a real call
+# path rather than in a unit test.
+# LAB_SEAT=limited leaves the opt-in in place — the seat DOES wake — but its
+# agent refuses every turn the way a provider usage limit does. That exercises
+# the other half: buzz-acp must hold the trigger instead of retrying it to
+# death, and say so once in the ask's own thread.
+LAB_SEAT="${LAB_SEAT:-live}"
+case "${LAB_SEAT}" in live|silent|limited) ;; *) echo "LAB_SEAT must be live, silent or limited" >&2; exit 2;; esac
+LAB_PROGRESS_S="${LAB_PROGRESS_S:-10}"
+echo "${LAB_ANSWER_DELAY_S}" > "${RUN_DIR}/answer_delay_s"
+echo "${LAB_SEAT}" > "${RUN_DIR}/seat_mode"
+echo "${LAB_PROGRESS_S}" > "${RUN_DIR}/progress_s"
 if [[ "${LAB_GEMINI}" == "fake" ]]; then
   FAKE_GEMINI_LOG="${RUN_DIR}/gemini.jsonl" python3 "${HERE}/fake_gemini.py" "${GEMINI_PORT}" \
     >"${RUN_DIR}/gemini.log" 2>&1 &
-  PIDS+=($!)
+  FAKE_GEMINI_PID=$!
+  PIDS+=("${FAKE_GEMINI_PID}")
   GEMINI_ENV=(VOICE_BRIDGE_GEMINI_URL="ws://127.0.0.1:${GEMINI_PORT}" GEMINI_API_KEY=lab-key)
-  CALLER_TALK=(--talk-secs 3 --listen-secs "${LAB_LISTEN_S:-25}")
+  CALLER_TALK=(--talk-secs 3 --listen-secs "${LAB_LISTEN_S:-$((25 + LAB_ANSWER_DELAY_S))}")
 else
   [[ -f "${LAB_CALLER_PCM:-}" ]] || { echo "LAB_GEMINI=real needs LAB_CALLER_PCM" >&2; exit 64; }
   GEMINI_ENV=()
@@ -169,6 +206,17 @@ require_mention = false
 filter = 'author == "${CALLER_PUB}"'
 prompt_tag = "front-door"
 TOML
+# The opt-in that lets a bridge ask wake the seat. Dropping it is what makes
+# LAB_SEAT=silent a seat that never picks up: it still connects and subscribes,
+# so the readiness gate below still passes, and the ask simply lands on nobody.
+# Omitted, not emptied: buzz-acp rejects `--self-wake-tag ""` outright ("must
+# be name=value"), and the seat we want is one that never opted in at all.
+SEAT_WAKE=(BUZZ_ACP_SELF_WAKE_TAG=voice-bridge=ask)
+[[ "${LAB_SEAT}" == "silent" ]] && SEAT_WAKE=()
+# Far enough out that the run never reaches it: this lab is about the hold
+# being taken and announced, not about the release.
+SEAT_RATE_LIMIT=""
+[[ "${LAB_SEAT}" == "limited" ]] && SEAT_RATE_LIMIT="$(( $(date +%s) + 3600 ))"
 NONCE="$(head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 echo "${NONCE}" > "${RUN_DIR}/nonce"
 env -i HOME="${HOME}" USER="${USER}" PATH="$(dirname "${BUZZ_BIN}"):/usr/bin:/bin" NO_COLOR=1 \
@@ -177,9 +225,11 @@ env -i HOME="${HOME}" USER="${USER}" PATH="$(dirname "${BUZZ_BIN}"):/usr/bin:/bi
   BUZZ_ACP_AGENT_COMMAND="${HERE}/stub_seat_agent.py" BUZZ_ACP_MCP_COMMAND="" \
   BUZZ_ACP_NO_MEMORY=true BUZZ_ACP_SUBSCRIBE=config BUZZ_ACP_CONFIG="${RUN_DIR}/seat-rules.toml" \
   BUZZ_ACP_RESPOND_TO=owner-only BUZZ_ACP_AGENT_OWNER="${CALLER_PUB}" \
-  BUZZ_ACP_SESSION_POLICY=thread BUZZ_ACP_SELF_WAKE_TAG=voice-bridge=ask \
+  BUZZ_ACP_SESSION_POLICY=thread ${SEAT_WAKE[@]+"${SEAT_WAKE[@]}"} \
   BUZZ_ACP_TURN_LOG_DIR="${RUN_DIR}/turnlog" \
   STUB_SEAT_LOG="${RUN_DIR}/seat-prompts.jsonl" STUB_SEAT_NONCE="${NONCE}" \
+  STUB_SEAT_DELAY_SECS="${LAB_ANSWER_DELAY_S}" \
+  STUB_SEAT_RATE_LIMIT="${SEAT_RATE_LIMIT}" \
   RUST_LOG=buzz_acp=info \
   "${ACP_BIN}" >"${RUN_DIR}/seat.log" 2>&1 &
 PIDS+=($!)
@@ -187,17 +237,35 @@ for _ in $(seq 1 60); do grep -q "subscribed to channel" "${RUN_DIR}/seat.log" &
 grep -q "subscribed to channel" "${RUN_DIR}/seat.log" || { log "seat did not subscribe"; exit 70; }
 
 # ── the bridge, reading the seat's own env file ──────────────────────────────
-env -i HOME="${HOME}" PATH=/usr/bin:/bin \
-  BUZZ_RELAY_URL="${RELAY_URL}" VOICE_BRIDGE_KEY_FILE="${STATE}/keys/seat.env" \
-  VOICE_BRIDGE_PARENT_CHANNELS="${DM}" VOICE_BRIDGE_STARTERS="${CALLER_PUB}" \
-  "${GEMINI_ENV[@]}" \
-  VOICE_BRIDGE_LOG_DIR="${RUN_DIR}/bridge-calls" VOICE_BRIDGE_ASK_TIMEOUT_SECS=60 \
-  RUST_LOG=buzz_voice_bridge=info \
-  "${BRIDGE_BIN}" >"${RUN_DIR}/bridge.log" 2>&1 &
-PIDS+=($!)
-BRIDGE_PID=$!
-for _ in $(seq 1 30); do grep -q "watching for huddles" "${RUN_DIR}/bridge.log" && break; sleep 1; done
-grep -q "watching for huddles" "${RUN_DIR}/bridge.log" || { log "bridge did not start"; exit 70; }
+# A closed port for the gemini_connect fault: nothing listens on GEMINI_PORT+1.
+if [[ "${LAB_FAULT}" == "gemini_connect" ]]; then
+  GEMINI_ENV=(VOICE_BRIDGE_GEMINI_URL="ws://127.0.0.1:$((GEMINI_PORT + 1))" GEMINI_API_KEY=lab-key)
+fi
+BRIDGE_STARTS=0
+start_bridge() {  # waits for this start's own "watching for huddles"
+  BRIDGE_STARTS=$((BRIDGE_STARTS + 1))
+  env -i HOME="${HOME}" PATH=/usr/bin:/bin \
+    BUZZ_RELAY_URL="${RELAY_URL}" VOICE_BRIDGE_KEY_FILE="${STATE}/keys/seat.env" \
+    VOICE_BRIDGE_PARENT_CHANNELS="${DM}" VOICE_BRIDGE_STARTERS="${CALLER_PUB}" \
+    ${GEMINI_ENV[@]+"${GEMINI_ENV[@]}"} \
+    VOICE_BRIDGE_LOG_DIR="${RUN_DIR}/bridge-calls" VOICE_BRIDGE_ASK_TIMEOUT_SECS=60 \
+    VOICE_BRIDGE_HEARTBEAT_SECS="${LAB_HEARTBEAT_S:-5}" \
+    VOICE_BRIDGE_TRACE_FRAMES="${LAB_TRACE_FRAMES:-0}" \
+    VOICE_BRIDGE_PROGRESS_SECS="${LAB_PROGRESS_S}" \
+    VOICE_BRIDGE_WORKING_SOUND="${LAB_WORKING_SOUND:-typing}" \
+    VOICE_BRIDGE_WORKING_SOUND_DELAY_MS="${LAB_WORKING_SOUND_DELAY_MS:-2000}" \
+    RUST_LOG=buzz_voice_bridge=info,buzz_ws_client=info,tungstenite=info \
+    "${BRIDGE_BIN}" >>"${RUN_DIR}/bridge.log" 2>&1 &
+  BRIDGE_PID=$!
+  PIDS+=("${BRIDGE_PID}")
+  for _ in $(seq 1 30); do
+    [[ "$(grep -c "watching for huddles" "${RUN_DIR}/bridge.log")" -ge "${BRIDGE_STARTS}" ]] && return 0
+    sleep 1
+  done
+  log "bridge start ${BRIDGE_STARTS} never reached the relay"
+  exit 70
+}
+start_bridge
 
 # ── the call, shaped like the phone's ────────────────────────────────────────
 EPH="$(as caller --format compact channels create --name "huddle-lab" --type stream --visibility private --ttl 3600 \
@@ -207,21 +275,58 @@ announce() {  # the caller's kind:48100 / 48103, signed and posted as the phone 
   "${CALLER_BIN}" --relay "${RELAY_URL}" --key-file "${STATE}/keys/caller.env" \
     --channel "${EPH}" --parent "${DM}" --announce "$1" >>"${RUN_DIR}/lab.log"
 }
-announce 48100
-log "huddle ${EPH} started in ${DM}"
-sleep "${LAB_CALLER_DELAY_S:-3}"
-"${CALLER_BIN}" --relay "${RELAY_URL}" --key-file "${STATE}/keys/caller.env" \
-  --channel "${EPH}" --parent "${DM}" "${CALLER_TALK[@]}" --save-received "${RUN_DIR}/heard_48k.raw" \
-  > "${RUN_DIR}/caller.json" 2>"${RUN_DIR}/caller.log"
-log "caller hung up: $(cat "${RUN_DIR}/caller.json")"
+if [[ "${LAB_FAULT}" == "room_join" ]]; then
+  # The relay refuses a kind:48100 whose backing channel does not exist, so
+  # the huddle has to be announced while the channel is still there. Stop the
+  # watcher, announce, delete the channel, start the watcher again: it picks
+  # the huddle up from the subscription's 30 s backfill and finds no room.
+  kill -TERM "${BRIDGE_PID}" 2>/dev/null || true
+  for _ in $(seq 1 20); do kill -0 "${BRIDGE_PID}" 2>/dev/null || break; sleep 0.5; done
+  announce 48100
+  as caller --format compact channels delete --channel "${EPH}" >>"${RUN_DIR}/lab.log"
+  log "room_join fault: huddle ${EPH} announced, backing channel deleted"
+  start_bridge
+  # The join retries take 1+2+4+8+8 s; let the bridge exhaust them.
+  sleep 35
+else
+  announce 48100
+  log "huddle ${EPH} started in ${DM}"
+  sleep "${LAB_CALLER_DELAY_S:-3}"
+  if [[ "${LAB_FAULT}" == "mid_call" || "${LAB_FAULT}" == "relay_gone" ]]; then
+    ( sleep "${LAB_FAULT_AFTER_S:-6}"
+      case "${LAB_FAULT}" in
+        mid_call)   kill -KILL "${FAKE_GEMINI_PID:-0}" 2>/dev/null || true ;;
+        relay_gone) kill -KILL "${RELAY_PID}" 2>/dev/null || true ;;
+      esac
+      echo "fault ${LAB_FAULT} fired" >> "${RUN_DIR}/lab.log" ) &
+  fi
+  "${CALLER_BIN}" --relay "${RELAY_URL}" --key-file "${STATE}/keys/caller.env" \
+    --channel "${EPH}" --parent "${DM}" "${CALLER_TALK[@]}" --save-received "${RUN_DIR}/heard_48k.raw" \
+    > "${RUN_DIR}/caller.json" 2>"${RUN_DIR}/caller.log" || log "caller exited $?"
+  log "caller hung up: $(cat "${RUN_DIR}/caller.json" 2>/dev/null)"
+fi
 sleep 4
-announce 48103
+# Neither the deleted channel nor the dead relay can take a kind:48103.
+case "${LAB_FAULT}" in
+  room_join|relay_gone) : ;;
+  *) announce 48103 ;;
+esac
 sleep 3
 
-as caller messages get --channel "${EPH}" --limit 50 > "${RUN_DIR}/ephemeral-messages.json" || true
-as caller messages get --channel "${DM}" --limit 50 > "${RUN_DIR}/dm-messages.json" || true
+if [[ "${LAB_FAULT}" != "relay_gone" ]]; then
+  as caller messages get --channel "${EPH}" --limit 50 > "${RUN_DIR}/ephemeral-messages.json" || true
+  as caller messages get --channel "${DM}" --limit 50 > "${RUN_DIR}/dm-messages.json" || true
+fi
+
+# bridge.jsonl must survive a restart and show it: stop, start, stop.
 kill -TERM "${BRIDGE_PID}" 2>/dev/null || true
-sleep 2
+for _ in $(seq 1 20); do kill -0 "${BRIDGE_PID}" 2>/dev/null || break; sleep 0.5; done
+if [[ "${LAB_FAULT}" != "relay_gone" ]]; then
+  start_bridge
+  sleep "${LAB_RESTART_WATCH_S:-8}"
+  kill -TERM "${BRIDGE_PID}" 2>/dev/null || true
+  sleep 2
+fi
 
 python3 "${HERE}/lab_check.py" --run-dir "${RUN_DIR}" --seat "${SEAT_PUB}" --caller "${CALLER_PUB}" \
-  --results "${STATE}/results.jsonl"
+  --fault "${LAB_FAULT}" --results "${STATE}/results.jsonl"
