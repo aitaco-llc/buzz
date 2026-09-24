@@ -1,5 +1,0 @@
-/private/tmp/claude-501/-Users-lth-dev-buzz-voicebetter/93c14bb8-1603-478a-90af-3ce797cf620d/scratchpad/pr40/scripts/rebrand-proof/acp/target/debug/build/serde_json-af121622cab8fc47/build_script_build-af121622cab8fc47.d: /private/tmp/claude-501/-Users-lth-dev-buzz-voicebetter/93c14bb8-1603-478a-90af-3ce797cf620d/scratchpad/pr40/.hermit/rust/registry/src/index.crates.io-1949cf8c6b5b557f/serde_json-1.0.151/build.rs
-
-/private/tmp/claude-501/-Users-lth-dev-buzz-voicebetter/93c14bb8-1603-478a-90af-3ce797cf620d/scratchpad/pr40/scripts/rebrand-proof/acp/target/debug/build/serde_json-af121622cab8fc47/build_script_build-af121622cab8fc47: /private/tmp/claude-501/-Users-lth-dev-buzz-voicebetter/93c14bb8-1603-478a-90af-3ce797cf620d/scratchpad/pr40/.hermit/rust/registry/src/index.crates.io-1949cf8c6b5b557f/serde_json-1.0.151/build.rs
-
-/private/tmp/claude-501/-Users-lth-dev-buzz-voicebetter/93c14bb8-1603-478a-90af-3ce797cf620d/scratchpad/pr40/.hermit/rust/registry/src/index.crates.io-1949cf8c6b5b557f/serde_json-1.0.151/build.rs:
