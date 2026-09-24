@@ -74,6 +74,42 @@ class EndpointLaunchConfig:
     provider: str
     api_key_env: str
     env: dict[str, str] = field(default_factory=dict)
+    # Which ACP adapter buzz-acp drives for this endpoint. Empty keeps
+    # `buzz-agent`, the stack the desktop launches. An endpoint that names its
+    # own adapter (e.g. `rebrand-acp`, whose worker holds no signing key and
+    # takes its provider and model on the command line) is launched through
+    # that binary instead — the rest of the tree, buzz-acp above and
+    # buzz-dev-mcp beside it, is unchanged. `agent_command` is resolved under
+    # the uploaded bin directory unless it is already absolute.
+    agent_command: str = ""
+    # Passed as BUZZ_ACP_AGENT_ARGS, which buzz-acp splits on commas
+    # (crates/buzz-acp/src/config.rs), so write `--provider,gemini`, not
+    # `--provider gemini`.
+    agent_args: str = ""
+    # Host path of the adapter binary to upload as `agent_command`. Required
+    # whenever `agent_command` is a bare name other than `buzz-agent`: the
+    # harness uploads what it runs rather than trusting the task image.
+    agent_binary: str = ""
+
+    def __post_init__(self) -> None:
+        command = self.agent_command
+        if command and not command.startswith("/") and command != "buzz-agent":
+            if "/" in command:
+                raise ValueError(
+                    f"agent_command {command!r} must be a bare name or an absolute path"
+                )
+            if not self.agent_binary:
+                raise ValueError(
+                    f"agent_command {command!r} names an adapter the harness must "
+                    "upload; set agent_binary to its host path"
+                )
+
+    def adapter_upload(self) -> tuple[str, str] | None:
+        """(host source, container name) for an adapter this endpoint uploads."""
+        command = self.agent_command
+        if not command or command.startswith("/") or command == "buzz-agent":
+            return None
+        return (self.agent_binary, command)
 
 
 @dataclass(slots=True)
@@ -274,6 +310,13 @@ class BuzzContainerRuntime:
             f"{REMOTE_BIN}/buzz-agent": self.buzz_agent_binary,
             f"{REMOTE_BIN}/buzz-dev-mcp": self.buzz_dev_mcp_binary,
         }
+        # Each adapter an endpoint names, uploaded beside buzz-agent so
+        # `_agent_command` resolves it to a binary the harness pinned.
+        for endpoint in self.endpoints.values():
+            adapter = endpoint.adapter_upload()
+            if adapter is not None:
+                source, name = adapter
+                uploads[f"{REMOTE_BIN}/{name}"] = source
         if self.relay_gateway:
             uploads[FORWARDER] = self.forwarder_binary
         for source in uploads.values():
@@ -436,8 +479,8 @@ class BuzzContainerRuntime:
             # so buzz-dev-mcp's shim can wire git auth/signing for the agent.
             "NOSTR_PRIVATE_KEY": credential.nostr_secret_key,
             "BUZZ_AUTH_TAG": credential.nostr_auth_tag,
-            "BUZZ_ACP_AGENT_COMMAND": f"{REMOTE_BIN}/buzz-agent",
-            "BUZZ_ACP_AGENT_ARGS": "",
+            "BUZZ_ACP_AGENT_COMMAND": self._agent_command(endpoint),
+            "BUZZ_ACP_AGENT_ARGS": endpoint.agent_args,
             "BUZZ_ACP_MCP_COMMAND": f"{REMOTE_BIN}/buzz-dev-mcp",
             "BUZZ_ACP_CHANNELS": trial.channel_id,
             "BUZZ_ACP_SUBSCRIBE": "mentions",
@@ -463,6 +506,19 @@ class BuzzContainerRuntime:
             "BUZZ_AGENT_NO_HINTS": "1",
             endpoint.api_key_env: credential.llm_api_key,
         }
+
+    @staticmethod
+    def _agent_command(endpoint: EndpointLaunchConfig) -> str:
+        """The adapter binary, under the uploaded bin dir unless absolute.
+
+        A bare name is resolved rather than left to PATH on purpose: the
+        harness uploads the binaries it is pinning shas for, and a PATH lookup
+        would silently run whatever the task image happened to ship.
+        """
+        command = endpoint.agent_command or "buzz-agent"
+        if command.startswith("/"):
+            return command
+        return f"{REMOTE_BIN}/{command}"
 
     @staticmethod
     def _rust_log(configured: str | None) -> str:

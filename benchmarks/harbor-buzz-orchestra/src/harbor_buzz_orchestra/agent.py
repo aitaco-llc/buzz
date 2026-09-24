@@ -129,6 +129,9 @@ class BuzzOrchestraAgent(BaseAgent):
                 provider=value["provider"],
                 api_key_env=value["api_key_env"],
                 env=value.get("env", {}),
+                agent_command=value.get("agent_command", ""),
+                agent_args=value.get("agent_args", ""),
+                agent_binary=value.get("agent_binary", ""),
             )
             for name, value in endpoint_data.items()
         }

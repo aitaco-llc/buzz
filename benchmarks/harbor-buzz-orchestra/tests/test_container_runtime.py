@@ -253,6 +253,70 @@ async def test_install_stack_uploads_the_pinned_stack(tmp_path):
     assert any("chmod 0755" in cmd for cmd, _ in environment.commands)
 
 
+async def test_an_endpoints_adapter_is_uploaded_and_launched(tmp_path):
+    binaries = {}
+    for name in ("buzz-acp", "buzz-agent", "buzz-dev-mcp", "rebrand-acp"):
+        path = tmp_path / name
+        path.write_text("#!binary")
+        binaries[name] = str(path)
+    rt = BuzzContainerRuntime(
+        logs_dir=tmp_path / "logs",
+        artifact_root=tmp_path,
+        endpoints={
+            "orch-model": EndpointLaunchConfig(
+                "gemini",
+                "GEMINI_API_KEY",
+                agent_command="rebrand-acp",
+                agent_args="--provider,gemini",
+                agent_binary=binaries["rebrand-acp"],
+            ),
+            "worker-model": EndpointLaunchConfig("anthropic", "ANTHROPIC_API_KEY"),
+        },
+        buzz_acp_binary=binaries["buzz-acp"],
+        buzz_agent_binary=binaries["buzz-agent"],
+        buzz_dev_mcp_binary=binaries["buzz-dev-mcp"],
+    )
+    environment = Environment()
+    await rt._install_stack(environment)
+    assert (binaries["rebrand-acp"], f"{REMOTE_BIN}/rebrand-acp") in environment.uploads
+
+    manifest = write_manifest(tmp_path)
+    orch = credential("orch-1", "orchestrator", "orch-model")
+    launch_env = Environment(
+        responses={"buzz-acp": ExecResult(stdout="4242\n", stderr="", return_code=0)}
+    )
+    await rt._launch_agent(
+        environment=launch_env,
+        trial=trial_handle((orch,)),
+        credential=orch,
+        agent_class=manifest.roster[0],
+        trial_dir=tmp_path,
+    )
+    _, env = launch_env.commands[-1]
+    assert env["BUZZ_ACP_AGENT_COMMAND"] == f"{REMOTE_BIN}/rebrand-acp"
+    assert env["BUZZ_ACP_AGENT_ARGS"] == "--provider,gemini"
+
+
+def test_an_adapter_with_nothing_to_upload_is_refused_at_load():
+    with pytest.raises(ValueError, match="agent_binary"):
+        EndpointLaunchConfig("gemini", "GEMINI_API_KEY", agent_command="rebrand-acp")
+    with pytest.raises(ValueError, match="bare name or an absolute path"):
+        EndpointLaunchConfig(
+            "gemini",
+            "GEMINI_API_KEY",
+            agent_command="bin/rebrand-acp",
+            agent_binary="/x",
+        )
+    # buzz-agent and absolute paths need nothing uploaded.
+    assert (
+        EndpointLaunchConfig("a", "K", agent_command="buzz-agent").adapter_upload()
+        is None
+    )
+    assert (
+        EndpointLaunchConfig("a", "K", agent_command="/opt/x").adapter_upload() is None
+    )
+
+
 async def test_install_stack_requires_binaries_on_disk(tmp_path):
     rt = runtime(tmp_path, buzz_acp_binary=str(tmp_path / "missing"))
     with pytest.raises(RuntimeLaunchError, match="binary not found"):

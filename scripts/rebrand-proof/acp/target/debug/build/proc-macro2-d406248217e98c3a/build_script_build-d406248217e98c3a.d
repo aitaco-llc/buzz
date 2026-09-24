@@ -1,0 +1,5 @@
+/private/tmp/claude-501/-Users-lth-dev-buzz-voicebetter/93c14bb8-1603-478a-90af-3ce797cf620d/scratchpad/pr40/scripts/rebrand-proof/acp/target/debug/build/proc-macro2-d406248217e98c3a/build_script_build-d406248217e98c3a.d: /private/tmp/claude-501/-Users-lth-dev-buzz-voicebetter/93c14bb8-1603-478a-90af-3ce797cf620d/scratchpad/pr40/.hermit/rust/registry/src/index.crates.io-1949cf8c6b5b557f/proc-macro2-1.0.107/build.rs
+
+/private/tmp/claude-501/-Users-lth-dev-buzz-voicebetter/93c14bb8-1603-478a-90af-3ce797cf620d/scratchpad/pr40/scripts/rebrand-proof/acp/target/debug/build/proc-macro2-d406248217e98c3a/build_script_build-d406248217e98c3a: /private/tmp/claude-501/-Users-lth-dev-buzz-voicebetter/93c14bb8-1603-478a-90af-3ce797cf620d/scratchpad/pr40/.hermit/rust/registry/src/index.crates.io-1949cf8c6b5b557f/proc-macro2-1.0.107/build.rs
+
+/private/tmp/claude-501/-Users-lth-dev-buzz-voicebetter/93c14bb8-1603-478a-90af-3ce797cf620d/scratchpad/pr40/.hermit/rust/registry/src/index.crates.io-1949cf8c6b5b557f/proc-macro2-1.0.107/build.rs:
