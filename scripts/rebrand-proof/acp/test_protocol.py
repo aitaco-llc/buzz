@@ -83,8 +83,12 @@ class ProtocolTests(unittest.TestCase):
                         'name': 'search_messages', 'arguments': json.dumps({'query': 'incident fixture'})}}]}
                     finish = 'error' if mode == 'model-error' else 'tool_calls'
                 elif i == 2:
+                    # 'unseen-id': an ID search_messages never returned. With no
+                    # `enum` in the schema, the host's own check is what refuses
+                    # it, so this is the case that guarantee has to hold.
+                    wanted = 'e' * 64 if mode == 'unseen-id' else ROOT
                     delta = {'tool_calls': [{'index': 0, 'id': 'call2', 'type': 'function', 'function': {
-                        'name': 'read_thread', 'arguments': json.dumps({'event_id': ROOT})}}]}
+                        'name': 'read_thread', 'arguments': json.dumps({'event_id': wanted})}}]}
                     finish = 'tool_calls'
                 else:
                     answer = {'answer': 'SOLVED-123456' if mode == 'invented-code' else 'SOLVED-fixture7',
@@ -163,7 +167,14 @@ class ProtocolTests(unittest.TestCase):
                         # is offered none and carries the schema.
                         offered = [[t['function']['name'] for t in c.get('tools') or []] for c in chats]
                         self.assertEqual(offered, [['search_messages'], ['read_thread'], []])
-                        self.assertEqual(chats[1]['tools'][0]['function']['parameters']['properties']['event_id']['enum'], [ROOT])
+                        # read_thread takes a plain string, deliberately: an
+                        # `enum` of the found IDs read to the model as the set of
+                        # candidate answers (RESULTS.md). The host refusing an
+                        # unseen ID is the guarantee that replaces it, and
+                        # test_unseen_event_id_is_refused covers that.
+                        event_id = chats[1]['tools'][0]['function']['parameters']['properties']['event_id']
+                        self.assertEqual(event_id['type'], 'string')
+                        self.assertNotIn('enum', event_id)
                         self.assertNotIn('response_format', chats[0])
                         self.assertEqual(chats[2]['response_format']['type'], 'json_schema')
                         sent = chats[2]['response_format']['json_schema']['schema']
@@ -192,6 +203,11 @@ class ProtocolTests(unittest.TestCase):
                             self.assertIn('less than 1 item', json.loads((d / 'result.run.json').read_text())['error']['message'])
                         if mode == 'invented-code':
                             self.assertIn('SOLVED-123456', json.loads((d / 'result.run.json').read_text())['answer_text'])
+                        if mode == 'unseen-id':
+                            report = json.loads((d / 'result.run.json').read_text())
+                            self.assertIn({'call': 'read_thread', 'ok': False}, report['mcp'],
+                                          'the host must refuse an ID search never returned')
+                            self.assertNotIn(('e' * 64), json.dumps(report.get('thread_source_ids') or []))
                     self.assertTrue(all(q['#h'] == [CHANNEL] and q['kinds'] == [9, 40002] for q in queries))
                     if mode != 'ok':
                         self.assertEqual(publications, [], 'failed/cancelled run published a reply')
@@ -222,6 +238,7 @@ class ProtocolTests(unittest.TestCase):
     def test_empty_citation_list_from_an_unconstrained_turn(self): self.run_case('empty-citations')
     def test_wrong_channel(self): self.run_case('wrong-channel')
     def test_model_error(self): self.run_case('model-error')
+    def test_unseen_event_id_is_refused(self): self.run_case('unseen-id')
 
 
 if __name__ == '__main__':
