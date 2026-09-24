@@ -3,37 +3,45 @@
 //!
 //! ```text
 //! scripts/task-extractor/task-extractor-eval.py --fetch > utterances.json
+//!
+//! # Track 1 — "will production pass?": greedy, board built as it goes.
 //! cargo run -p buzz-acp --example task-extract-replay -- \
-//!     --utterances utterances.json \
-//!     --endpoint https://generativelanguage.googleapis.com/v1beta/openai \
-//!     --model gemini-3.8-flash \
-//!     --out predictions.json
-//! scripts/task-extractor/task-extractor-eval.py --predictions predictions.json
+//!     --utterances utterances.json --out predictions.json --detail detail.json
+//!
+//! # Track 2 — "is prompt B better than A?": sampled, and the board held still.
+//! cargo run -p buzz-acp --example task-extract-replay -- \
+//!     --utterances utterances.json --write-board-snapshot board.json --out /dev/null
+//! cargo run -p buzz-acp --example task-extract-replay -- \
+//!     --utterances utterances.json --board-snapshot board.json \
+//!     --temperature 0.7 --out predictions.json
 //! ```
 //!
-//! # Why the replay is sequential, and why it has to be
+//! # Two tracks, because they answer different questions
 //!
-//! The corpus ships labels, not a board — and **`attach` is undecidable without
-//! one**. Two of its utterances are the same sentence shape with different
-//! answers:
+//! **Greedy is one sample.** Eight replays at `temperature: 0` against a
+//! byte-identical prompt are one draw plus endpoint noise, not eight
+//! observations — they tell you the mode and nothing about the spread around
+//! it. That is the right instrument for "will the fleet pass the gate", and the
+//! wrong one for "is this prompt better". A prompt comparison needs
+//! `--temperature 0.7` and k ≥ 8.
 //!
-//! - `17ced753` "where are we with assessing spark 1.3?" → `attach`
-//! - `5d472ef8` "where are we at in all our initiatives?" → `none`
+//! **And the board is an input.** The corpus ships labels, not a board, and
+//! `attach` is undecidable without one: "where are we with assessing spark
+//! 1.3?" attaches, "where are we at in all our initiatives?" does not, and
+//! nothing in the text separates them. So the default replay walks the window
+//! in order and grows the board as it goes — the board at utterance N is what
+//! 1..N-1 created, which is what the live path does.
 //!
-//! Nothing in the text separates them. What separates them is that the Spark
-//! task is on the board and "all our initiatives" is not one item. An extractor
-//! handed an empty board can only answer `create` or `none` to both, so scoring
-//! it against those labels would measure the fixture, not the extractor.
-//!
-//! So the replay walks the window in order and grows the board as it goes: the
-//! board at utterance N is what utterances 1..N-1 created. That is also exactly
-//! what the live path does, which makes this a rehearsal rather than a
-//! simulation. `9aee0484` — the window's first message — is what puts the Spark
-//! task on the board for `17ced753` to attach to, nineteen hours later.
+//! That fidelity has a cost for comparison: a miss **cascades**, so the board a
+//! later utterance sees varies run to run, and some of what looks like model
+//! variance is input variance. `--board-snapshot` pins it. Produce one with
+//! `--write-board-snapshot` from a sequential run, then hold it fixed across
+//! both arms.
 //!
 //! The synthetic issue ids are derived from the source event id so a prediction
 //! can be traced back to the utterance that created its attach target.
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -56,35 +64,40 @@ struct Args {
     utterances: PathBuf,
     out: PathBuf,
     detail: Option<PathBuf>,
+    board_snapshot: Option<PathBuf>,
+    write_board_snapshot: Option<PathBuf>,
     endpoint: String,
     model: String,
     reasoning_effort: Option<String>,
-    two_pass: bool,
+    temperature: f64,
 }
 
 fn parse_args() -> Args {
     let mut utterances = None;
     let mut out = None;
     let mut detail = None;
-    let mut endpoint =
-        "https://generativelanguage.googleapis.com/v1beta/openai".to_string();
+    let mut board_snapshot = None;
+    let mut write_board_snapshot = None;
+    let mut endpoint = "https://generativelanguage.googleapis.com/v1beta/openai".to_string();
     let mut model = "gemini-3.8-flash".to_string();
     let mut reasoning_effort: Option<String> = None;
-    let mut two_pass = false;
+    let mut temperature = 0.0;
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
         match flag.as_str() {
             "--utterances" => utterances = it.next().map(PathBuf::from),
             "--out" => out = it.next().map(PathBuf::from),
             "--detail" => detail = it.next().map(PathBuf::from),
+            "--board-snapshot" => board_snapshot = it.next().map(PathBuf::from),
+            "--write-board-snapshot" => write_board_snapshot = it.next().map(PathBuf::from),
             "--endpoint" => endpoint = it.next().unwrap_or(endpoint),
             "--model" => model = it.next().unwrap_or(model),
+            "--temperature" => {
+                temperature = it.next().and_then(|v| v.parse().ok()).unwrap_or(temperature)
+            }
             // `none` sends no field at all, so the endpoint's own default
             // thinking budget applies.
-            "--two-pass" => two_pass = true,
-            "--reasoning-effort" => {
-                reasoning_effort = it.next().filter(|v| v != "none");
-            }
+            "--reasoning-effort" => reasoning_effort = it.next().filter(|v| v != "none"),
             other => {
                 eprintln!("unknown flag {other}");
                 std::process::exit(2);
@@ -98,18 +111,18 @@ fn parse_args() -> Args {
         }),
         out: out.unwrap_or_else(|| PathBuf::from("predictions.json")),
         detail,
+        board_snapshot,
+        write_board_snapshot,
         endpoint,
         model,
         reasoning_effort,
-        two_pass,
+        temperature,
     }
 }
 
 /// A board id for the `n`th task created by `event_id`.
 ///
 /// Traceable on sight: the first 62 hex of the source event, then the index.
-/// Reusing the source keeps a prediction's attach target readable back to the
-/// utterance that put it there.
 fn synthetic_id(event_id: &str, n: usize) -> String {
     let mut base: String = event_id.chars().filter(|c| c.is_ascii_hexdigit()).take(62).collect();
     while base.len() < 62 {
@@ -130,18 +143,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(2);
     }
 
-    let utterances: Vec<Utterance> =
-        serde_json::from_slice(&std::fs::read(&args.utterances)?)?;
+    let utterances: Vec<Utterance> = serde_json::from_slice(&std::fs::read(&args.utterances)?)?;
+    let pinned: Option<HashMap<String, Vec<BoardTask>>> = match &args.board_snapshot {
+        Some(p) => Some(serde_json::from_slice(&std::fs::read(p)?)?),
+        None => None,
+    };
     eprintln!(
-        "replaying {} utterances through {} at {} (reasoning_effort={})",
+        "replaying {} utterances through {} at {}",
         utterances.len(),
         args.model,
-        args.endpoint,
-        args.reasoning_effort.as_deref().unwrap_or("<endpoint default>")
+        args.endpoint
     );
     eprintln!(
-        "enumeration: {}",
-        if args.two_pass { "its own first pass" } else { "in the classify call" }
+        "  temperature={}  reasoning_effort={}  board={}",
+        args.temperature,
+        args.reasoning_effort.as_deref().unwrap_or("<endpoint default>"),
+        if pinned.is_some() { "pinned snapshot" } else { "grown sequentially" }
     );
 
     let cfg = TaskExtractConfig {
@@ -151,19 +168,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_tokens: 8_000,
         reasoning_effort: args.reasoning_effort.clone(),
         attempts: 3,
-        two_pass: args.two_pass,
+        temperature: args.temperature,
     };
     // No roster: the corpus has no pubkeys, and an empty known-set means the
     // extractor accepts any well-formed 64-hex assignee rather than rejecting
     // every one. Scoring is on action and count, not assignment.
     let extractor = TaskExtractor::new(api_key, HashSet::new());
 
-    let mut errors = 0usize;
     let mut board: Vec<BoardTask> = Vec::new();
+    let mut snapshot: HashMap<String, Vec<BoardTask>> = HashMap::new();
     let mut predictions = serde_json::Map::new();
     let mut detail = Vec::new();
+    let mut errors = 0usize;
+    let mut thin_total = 0usize;
+    let mut dup_total = 0usize;
 
     for u in &utterances {
+        let board_for_row = match &pinned {
+            Some(p) => p.get(&u.id).cloned().unwrap_or_default(),
+            None => board.clone(),
+        };
+        snapshot.insert(u.id.clone(), board_for_row.clone());
+
         let input = ExtractInput {
             message: Some(SourceMessage {
                 id: u.event_id.clone(),
@@ -173,55 +199,75 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 thread_root: None,
             }),
             thread_context: vec![],
-            board: board.clone(),
+            board: board_for_row,
         };
-        let board_before = board.len();
+        let board_before = input.board.len();
         let extraction = extractor.extract(&cfg, &input).await;
         if let Some(err) = &extraction.error {
             // A failed call and a `none` verdict both publish nothing. Scoring
             // them the same is how the first run of this corpus reported four
             // model verdicts that were really a prompt the model never
-            // answered. Say which, and refuse to exit 0.
+            // answered — and how a later comparison table called a regression
+            // catastrophic when it was merely worse.
             eprintln!("  !! {} EXTRACTION FAILED: {err}", u.id);
             errors += 1;
         }
-        let verdict = extraction.verdict();
-        let (action, count) = match verdict {
+        let duplicates = extraction.duplicate_subjects();
+        thin_total += extraction.thin.len();
+        dup_total += duplicates;
+
+        let (action, count) = match extraction.verdict() {
             Verdict::Create { count } => ("create", count),
             Verdict::Attach { count } => ("attach", count),
             Verdict::None { count } => ("none", count),
         };
         println!(
-            "  {:<10} {:<7} count={}  board_before={}  dropped={}",
+            "  {:<10} {:<7} count={}  asks={}  board={}  dup={}  thin={}  dropped={}",
             u.id,
             action,
             count,
+            extraction.asks.len(),
             board_before,
+            duplicates,
+            extraction.thin.len(),
             extraction.dropped.len()
         );
+        // `thin` and `duplicates` ride with the prediction so the scorer can
+        // count a create nobody can close as the defect it is, rather than as
+        // work extracted.
         predictions.insert(
             u.id.clone(),
-            serde_json::json!({ "action": action, "count": count }),
+            serde_json::json!({
+                "action": action,
+                "count": count,
+                "thin": extraction.thin.len(),
+                "duplicates": duplicates,
+                "asks": extraction.asks.len(),
+                "error": extraction.error.is_some(),
+            }),
         );
 
-        let mut created = Vec::new();
-        for (n, task) in extraction.tasks.iter().enumerate() {
+        let mut emitted = Vec::new();
+        for task in extraction.tasks.iter() {
             match task {
-                TaskAction::Create { subject, done_when, .. } => {
+                TaskAction::Create { ask, subject, done_when, blocked_by, .. } => {
                     let id = synthetic_id(&u.event_id, board.len());
-                    created.push(serde_json::json!({
-                        "id": id, "subject": subject, "doneWhen": done_when
+                    emitted.push(serde_json::json!({
+                        "ask": ask, "id": id, "subject": subject,
+                        "doneWhen": done_when, "blockedBy": blocked_by
                     }));
-                    board.push(BoardTask {
-                        id,
-                        subject: subject.clone(),
-                        state: "open".into(),
-                        assignee: None,
-                    });
+                    if pinned.is_none() {
+                        board.push(BoardTask {
+                            id,
+                            subject: subject.clone(),
+                            state: "open".into(),
+                            assignee: None,
+                        });
+                    }
                 }
-                TaskAction::Attach { attach_to, note } => {
-                    created.push(serde_json::json!({
-                        "attachTo": attach_to, "note": note, "index": n
+                TaskAction::Attach { ask, attach_to, note } => {
+                    emitted.push(serde_json::json!({
+                        "ask": ask, "attachTo": attach_to, "note": note
                     }));
                 }
             }
@@ -231,29 +277,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "action": action,
             "count": count,
             "boardBefore": board_before,
-            "error": extraction.error,
             "asks": extraction.asks,
-            "tasks": created,
+            "tasks": emitted,
+            "thin": extraction.thin,
+            "duplicates": duplicates,
             "dropped": extraction
                 .dropped
                 .iter()
                 .map(|d| serde_json::json!({ "index": d.index, "reason": d.reason }))
                 .collect::<Vec<_>>(),
+            "error": extraction.error,
+            // The evidence that was missing when the one-task collapse had to
+            // be explained: key order shows what the model wrote first, and an
+            // unknown key shows work nested where the parser cannot see it.
+            "finishReason": extraction.finish_reason,
+            "rawReply": extraction.raw_reply,
         }));
     }
 
     std::fs::write(&args.out, serde_json::to_string_pretty(&predictions)? + "\n")?;
     eprintln!("wrote {}", args.out.display());
-    if let Some(path) = args.detail {
-        std::fs::write(&path, serde_json::to_string_pretty(&detail)? + "\n")?;
+    if let Some(path) = &args.detail {
+        std::fs::write(path, serde_json::to_string_pretty(&detail)? + "\n")?;
         eprintln!("wrote {}", path.display());
     }
+    if let Some(path) = &args.write_board_snapshot {
+        std::fs::write(path, serde_json::to_string_pretty(&snapshot)? + "\n")?;
+        eprintln!("wrote {} (pin it with --board-snapshot)", path.display());
+    }
+    eprintln!("defects: {thin_total} creates with no observable doneWhen, {dup_total} duplicate subjects");
     if errors > 0 {
         eprintln!(
             "\n{errors} of {} extractions never got an answer. The predictions file is \
              written, but it is NOT a model result: an errored row scores as `none` and \
-             will read as a deliberate verdict. Fix the transport and replay before \
-             quoting any number from it.",
+             will read as a deliberate verdict. Exclude those rows from any denominator, \
+             and say how many there were.",
             utterances.len()
         );
         std::process::exit(1);
