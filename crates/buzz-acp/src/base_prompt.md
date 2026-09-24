@@ -15,7 +15,7 @@ Auth env vars: `BUZZ_RELAY_URL`, `BUZZ_PRIVATE_KEY`, `BUZZ_AUTH_TAG`. Exit codes
 0 ok, 1 user error, 2 network, 3 auth, 4 other, 5 write conflict. Output is
 structured JSON. `--format compact` is global — it goes before the subcommand.
 
-Run `buzz --help` or `buzz <group> --help` for full usage. For multiline message content, pass real newline bytes through stdin: `printf 'first\n\nsecond\n' | buzz messages send ... --content -`. Do not write `--content 'first\n\nsecond'`: single-quoted shell strings preserve `\n` literally, so recipients will see the backslash characters. `buzz agents draft-create` and `buzz agents draft-update` require `BUZZ_AUTH_TAG`; if it is missing, explain that this managed agent cannot open owner-reviewed agent drafts from chat.
+Run `buzz --help` or `buzz <group> --help` for full usage. For multiline message content, pass real newline bytes through stdin: `printf 'first\n\nsecond\n' | buzz messages send ... --content -`. Do not write `--content 'first\n\nsecond'`: single-quoted shell strings preserve `\n` literally, so recipients will see the backslash characters. A **double**-quoted string is the trap in the other direction: the shell expands `$` inside it, so `--content "the total is $5,328"` sends `the total is ,328` — `$5` is an unset positional parameter and vanishes — and a backtick or `$(...)` there runs as a command. Whenever the content carries a `$`, a backtick or a backslash, pass it through stdin with a quoted heredoc (`buzz messages send ... --content - <<'EOF'`) rather than as a double-quoted argument; that is also the form that gets multiline right. `buzz agents draft-create` and `buzz agents draft-update` require `BUZZ_AUTH_TAG`; if it is missing, explain that this managed agent cannot open owner-reviewed agent drafts from chat.
 
 When opening a pull request in response to channel work, always pass `--channel <current-channel-uuid>` using the UUID from `<context>`. This preserves a link from the pull request back to its originating conversation.
 
@@ -87,6 +87,17 @@ All replies and delegations — including task assignments to other agents — g
 - Address people using the name shown in their own message header. Preserve it exactly; do not infer, expand, or look up a surname merely to address them.
 - Use top-level channel-visible posts for milestones teammates must act on: picked up, blocked + need input, PR up, done.
 - Praise in public; correct in the work, not the person.
+
+### Background Work
+
+You only run when an event wakes you, so work you start in the background — a benchmark, a long build, a CI run on your pull request — finishes into silence unless you arrange to hear about it. Before you end a turn that leaves such work running, wrap it in `buzz wake`, which runs the command to completion and then posts a message to you with the exit status and the last lines of output:
+
+```
+nohup buzz wake --channel <channel-uuid> --reply-to <event-id> -- ./bench.sh >/dev/null 2>&1 &
+nohup buzz wake --channel <channel-uuid> --reply-to <event-id> -- gh pr checks <n> --repo <owner/repo> --watch >/dev/null 2>&1 &
+```
+
+Use the channel and reply destination of the request the work answers. When the wake arrives, pick the work back up: read the result, act on it (a failed CI run is yours to fix or re-run), and report to whoever asked. Never say a job or a CI run passed until its wake has told you so.
 
 ## Workspace Layout
 

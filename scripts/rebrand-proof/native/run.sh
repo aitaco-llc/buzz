@@ -112,10 +112,10 @@ container redis -p "127.0.0.1:${REDIS_PORT}:6379" redis:7-alpine
 docker rm -f "${PREFIX}-minio" >/dev/null 2>&1 || true
 container minio -e MINIO_ROOT_USER=buzz_dev -e MINIO_ROOT_PASSWORD=buzz_dev_secret \
   --tmpfs /data:rw,size=1g \
-  -p "127.0.0.1:${MINIO_PORT}:9000" quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
+  -p "127.0.0.1:${MINIO_PORT}:9000" cgr.dev/chainguard/minio:latest-dev@sha256:4b862594d23cb20ae0fbeb93311ed312a5b566ecba2293220b204c89ef3c1fe2 server /data
 for _ in $(seq 1 60); do docker exec "${PREFIX}-pg" pg_isready -U buzz >/dev/null 2>&1 && break; sleep 1; done
 for _ in $(seq 1 60); do curl -sf "http://127.0.0.1:${MINIO_PORT}/minio/health/live" >/dev/null && break; sleep 1; done
-docker run --rm --network host --entrypoint /bin/sh quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z -c \
+docker run --rm --network host --entrypoint /bin/sh cgr.dev/chainguard/minio:latest-dev@sha256:4b862594d23cb20ae0fbeb93311ed312a5b566ecba2293220b204c89ef3c1fe2 -c \
   "mc alias set local http://127.0.0.1:${MINIO_PORT} buzz_dev buzz_dev_secret >/dev/null && mc mb --ignore-existing local/buzz-media >/dev/null" \
   >>"${RUN_DIR}/run.log" 2>&1
 
@@ -274,6 +274,22 @@ for _ in $(seq 1 90); do
 done
 kill -TERM "${PIDS[-1]}" 2>/dev/null || true   # the seat: flushes the turn log on exit
 sleep 4
+
+# Was this run alone on the card? The start-time guard cannot answer that: on
+# 2026-09-19 a neighbour's allocation cycled, so a run was admitted at a genuine
+# 1.49 GiB trough and the 15 GiB came back 14 s later and stayed for its whole
+# 2m26s. vram.tsv samples every second through the run, so the run can say so
+# itself. PROOF_VRAM_OWN_MAX_MIB is this workload's own ceiling: serve's KV pool
+# plus weights, about 8.3 GiB at 32k, with headroom.
+OWN_MAX_MIB="${PROOF_VRAM_OWN_MAX_MIB:-10000}"
+if [[ -s "${RUN_DIR}/vram.tsv" ]]; then
+  peak_mib="$(awk -F'\t' '{ if ($2+0 > m) m = $2+0 } END { printf "%d", m / 1048576 }' "${RUN_DIR}/vram.tsv")"
+  put vram_peak_mib "${peak_mib}"
+  if (( peak_mib > OWN_MAX_MIB )); then
+    put contended "${peak_mib} MiB peak against this workload's ${OWN_MAX_MIB} MiB ceiling"
+    log "CONTENDED: VRAM peaked at ${peak_mib} MiB, above this workload's ${OWN_MAX_MIB} MiB ceiling — another job shared the card. Pass/fail stands; wall clock and throughput from this run do not."
+  fi
+fi
 
 python3 "${HERE}/native/summarize.py" --run-dir "${RUN_DIR}" --seat "${SEAT_PUB}" --results "${RESULTS}" \
   --loop "$([[ -n "${REBRAND_ACP_BIN}" ]] && echo rebrand-acp || echo rebrand-of-agent)"

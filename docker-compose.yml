@@ -101,7 +101,14 @@ services:
     restart: unless-stopped
 
   minio:
-    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    # MinIO's own images are gone: quay.io/minio answers 401 since 2026-09-23
+    # and Docker Hub's minio/* before it. Chainguard's is the same MinIO,
+    # public, amd64+arm64, pinned by index digest; the -dev variant carries a
+    # shell, wget and mc, so one image serves the server and the bucket init.
+    # It runs as uid 65532 by default. Root here keeps existing named volumes
+    # (written root-owned by the old image) readable.
+    image: cgr.dev/chainguard/minio:latest-dev@sha256:4b862594d23cb20ae0fbeb93311ed312a5b566ecba2293220b204c89ef3c1fe2
+    user: "0:0"
     container_name: buzz-minio
     command: server /data --console-address ":9001"
     environment:
@@ -115,7 +122,7 @@ services:
     networks:
       - buzz-net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9000/minio/health/live"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -130,7 +137,8 @@ services:
     restart: unless-stopped
 
   minio-init:
-    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    image: cgr.dev/chainguard/minio:latest-dev@sha256:4b862594d23cb20ae0fbeb93311ed312a5b566ecba2293220b204c89ef3c1fe2
+    user: "0:0"
     container_name: buzz-minio-init
     depends_on:
       minio:

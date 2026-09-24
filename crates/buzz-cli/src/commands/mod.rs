@@ -23,6 +23,7 @@ pub mod social;
 pub mod tasks;
 pub mod upload;
 pub mod users;
+pub mod wake;
 pub mod workflows;
 
 use crate::{client::normalize_write_response, error::CliError};

@@ -285,6 +285,10 @@ enum Cmd {
     /// Relay administration — NIP-43 relay membership
     #[command(subcommand)]
     Relay(RelayCmd),
+    /// Wake yourself when background work finishes: run a command to
+    /// completion (after `--`), then post a self-signed `job=done` message
+    /// addressed to you. Needs `BUZZ_ACP_SELF_WAKE_TAG` to include the tag.
+    Wake(commands::wake::WakeArgs),
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -2330,6 +2334,7 @@ async fn run(cli: Cli) -> Result<(), CliError> {
         Cmd::Mem(sub) => commands::mem::dispatch(sub, &client).await,
         Cmd::Moderation(sub) => commands::moderation::dispatch(sub, &client, &cli.format).await,
         Cmd::Relay(sub) => commands::relay::dispatch(sub, &client).await,
+        Cmd::Wake(args) => commands::wake::cmd_wake(&client, args).await,
         Cmd::Pack(_) => unreachable!("handled above"),
     }
 }
@@ -2500,6 +2505,39 @@ mod tests {
     }
 
     #[test]
+    fn wake_takes_its_command_after_a_double_dash() {
+        let channel = "daa0371a-17fc-41a8-bb70-272b7c7e8be0";
+        let cli = Cli::try_parse_from([
+            "buzz",
+            "wake",
+            "--channel",
+            channel,
+            "--",
+            "gh",
+            "pr",
+            "checks",
+            "78",
+            "--watch",
+        ])
+        .expect("parse");
+        match cli.command {
+            Cmd::Wake(args) => {
+                assert_eq!(args.channel, channel);
+                assert_eq!(args.tag, "job=done", "the default wake tag");
+                assert_eq!(args.command, ["gh", "pr", "checks", "78", "--watch"]);
+            }
+            _ => panic!("expected wake"),
+        }
+        let bare = Cli::try_parse_from(["buzz", "wake", "--channel", channel, "--content", "done"])
+            .expect("a wake with no command is a plain note");
+        assert!(matches!(bare.command, Cmd::Wake(ref a) if a.command.is_empty()));
+        assert!(
+            Cli::try_parse_from(["buzz", "wake"]).is_err(),
+            "--channel is required"
+        );
+    }
+
+    #[test]
     fn command_inventory_is_stable() {
         let expected_groups: Vec<&str> = vec![
             "agents",
@@ -2526,6 +2564,7 @@ mod tests {
             "tasks",
             "upload",
             "users",
+            "wake",
             "workflows",
         ];
 

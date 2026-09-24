@@ -19,6 +19,7 @@ async fn session_new_full_sends_pi_replacement_prompt_in_meta() {
             vec![],
             Some(SystemPromptTransport::PiMeta("Buzz instructions")),
             Some("Pi · #buzz-dev"),
+            None,
         )
         .await
         .expect("session_new_full should succeed");
@@ -57,6 +58,7 @@ async fn session_new_full_sends_claude_meta_system_prompt_when_claude_meta_trans
             "/tmp",
             vec![],
             Some(SystemPromptTransport::ClaudeMeta("Be concise")),
+            None,
             None,
         )
         .await
@@ -97,6 +99,7 @@ async fn session_new_full_merges_claude_meta_and_session_title_into_single_meta_
             vec![],
             Some(SystemPromptTransport::ClaudeMeta("Be concise")),
             Some("Fizz · #buzz-dev"),
+            None,
         )
         .await
         .expect("session_new_full should succeed");
