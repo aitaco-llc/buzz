@@ -84,7 +84,15 @@ ending = first(call_log, "call_end") or first(call_log, "call_failed") or {}
 outcome_posts = [r for r in dm if tag(r, "voice-bridge") in ("transcript", "ask")
                  and r.get("content", "").startswith("Voice call `")]
 
+dm_id = text("dm")
+discovered = [e["data"] for e in bridge_log if e["event"] == "dms_discovered"]
+
 instrumented = {
+    # No channel is configured: the bridge found the caller's DM with the seat
+    # on the relay (kind:41001), which is what lets it serve any agent.
+    "the_dm_was_discovered_not_configured":
+        bool(discovered)
+        and any(dm_id in (d.get("dms") or []) for d in discovered),
     "call_start_names_the_build_and_the_config":
         bool(start.get("build_sha")) and start["build_sha"] != "unknown"
         and bool(start.get("pid")) and bool((start.get("config") or {}).get("relay_url")),
@@ -108,6 +116,25 @@ instrumented = {
     "an_outcome_reaches_the_parent": len(outcome_posts) == 1
         and "log `" in outcome_posts[0]["content"],
 }
+
+if text("desktop") == "1":
+    # Desktop voices a huddle it started with the agent in it. The bridge saw
+    # the huddle, recognised it, and did not join: no call, no Gemini session.
+    skips = [e["data"] for e in bridge_log if e["event"] == "skipped"]
+    checks = {
+        "the_dm_was_discovered_not_configured": instrumented["the_dm_was_discovered_not_configured"],
+        "the_bridge_saw_the_huddle": "huddle_seen" in bridge_events,
+        "it_left_a_desktop_voiced_huddle_to_desktop":
+            any(s.get("reason") == "desktop is voicing this huddle" for s in skips),
+        "no_call_was_spawned": "call_spawned" not in bridge_events and not calls,
+        "gemini_was_never_opened": not setups,
+    }
+    result = {"pass": all(checks.values()), "mode": "desktop", "checks": checks, "run_dir": str(a.run_dir),
+              "bridge_events": bridge_events}
+    with a.results.open("a") as out:
+        out.write(json.dumps(result) + "\n")
+    print(json.dumps(result, indent=2))
+    sys.exit(0 if result["pass"] else 1)
 
 if a.fault != "none":
     # A forced failure: the call must name what stopped it, in the log and in

@@ -156,6 +156,7 @@ LAB_GEMINI="${LAB_GEMINI:-fake}"
 echo "${LAB_GEMINI}" > "${RUN_DIR}/gemini_mode"
 LAB_FAULT="${LAB_FAULT:-none}"
 echo "${LAB_FAULT}" > "${RUN_DIR}/fault"
+echo "${LAB_DESKTOP:-0}" > "${RUN_DIR}/desktop"
 # LAB_ANSWER_DELAY_S holds the seat's answer back so the run covers what the
 # caller hears while the seat is thinking: the progress line on the bridge's
 # own clock, and the working sound under the room track. The caller has to
@@ -246,7 +247,7 @@ start_bridge() {  # waits for this start's own "watching for huddles"
   BRIDGE_STARTS=$((BRIDGE_STARTS + 1))
   env -i HOME="${HOME}" PATH=/usr/bin:/bin \
     BUZZ_RELAY_URL="${RELAY_URL}" VOICE_BRIDGE_KEY_FILE="${STATE}/keys/seat.env" \
-    VOICE_BRIDGE_PARENT_CHANNELS="${DM}" VOICE_BRIDGE_STARTERS="${CALLER_PUB}" \
+    ${LAB_CONFIGURED_CHANNELS:+VOICE_BRIDGE_PARENT_CHANNELS="${DM}"} VOICE_BRIDGE_STARTERS="${CALLER_PUB}" \
     ${GEMINI_ENV[@]+"${GEMINI_ENV[@]}"} \
     VOICE_BRIDGE_LOG_DIR="${RUN_DIR}/bridge-calls" VOICE_BRIDGE_ASK_TIMEOUT_SECS=60 \
     VOICE_BRIDGE_HEARTBEAT_SECS="${LAB_HEARTBEAT_S:-5}" \
@@ -288,6 +289,16 @@ if [[ "${LAB_FAULT}" == "room_join" ]]; then
   start_bridge
   # The join retries take 1+2+4+8+8 s; let the bridge exhaust them.
   sleep 35
+elif [[ "${LAB_DESKTOP:-0}" == "1" ]]; then
+  # Desktop's shape: the DM's agent is added to the huddle's channel and the
+  # voice guidelines are posted there before the huddle is announced. Desktop
+  # voices the agent itself, so the bridge must not join.
+  as caller --format compact channels add-member --channel "${EPH}" --pubkey "${SEAT_PUB}" --role bot >>"${RUN_DIR}/lab.log"
+  "${CALLER_BIN}" --relay "${RELAY_URL}" --key-file "${STATE}/keys/caller.env" \
+    --channel "${EPH}" --parent "${DM}" --guidelines >>"${RUN_DIR}/lab.log"
+  announce 48100
+  log "desktop-shaped huddle ${EPH} started in ${DM}"
+  sleep 12
 else
   announce 48100
   log "huddle ${EPH} started in ${DM}"

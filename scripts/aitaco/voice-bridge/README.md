@@ -6,7 +6,9 @@ Gemini talks **as the seat**, in the first person, and it has exactly one tool,
 `work`, which hands a request to the seat. The design, and rock's conditions
 for it, are in the `#buzz-platform` thread `54da67d0` and
 `~/.buzz/PLANS/BUZZ_VOICE_AND_REBRAND.md` on hip. One bridge process is one
-seat's voice; run one per seat to huddle with any agent.
+seat's voice, and every seat gets one (`buzz-voice-bridge@<seat>` on hip,
+`install-launchd.sh <seat>` on metal): open any agent's DM and start a huddle,
+and that agent answers, in its own persona and its own voice.
 
 ```text
 phone or Desktop ──huddle──▶ relay audio room ◀──Opus 20 ms──▶ bridge ◀──PCM──▶ Gemini Live
@@ -44,10 +46,24 @@ phone or Desktop ──huddle──▶ relay audio room ◀──Opus 20 ms─�
   sound and the progress line carry on until it goes quiet. A late reply to
   a timed-out ask is spoken as its answer, never as the next ask's.
 
-- **Trigger.** The caller's kind:48100 in a configured parent channel. The
-  relay adds a parent-channel member to the huddle's private channel when it
-  joins the audio (`crates/buzz-relay/src/audio/handler.rs`, auto-add path), so
-  the call works from any client, the phone included.
+- **Trigger.** A starter's kind:48100 in any 1:1 DM between them and this
+  seat. The DMs are discovered, not configured: the seat's DM metadata
+  (kind:39000, `t=dm`, one `p` per participant) is read on start and on every
+  heartbeat, and a DM opened later is watched from the next heartbeat. Group
+  DMs and channels are not discovered, because every agent in them would
+  answer; list one with `VOICE_BRIDGE_PARENT_CHANNELS` to opt it in. The relay
+  adds a parent-channel member to the huddle's private channel when it joins
+  the audio (`crates/buzz-relay/src/audio/handler.rs`, auto-add path), so the
+  call works from any client, the phone included.
+- **Desktop keeps its own.** Desktop voices the agent it started a huddle with
+  (its own STT/TTS, kind:48106 guidelines in the huddle channel). A huddle
+  whose channel carries those guidelines is skipped, so the agent is never
+  voiced twice.
+- **Persona and voice.** `VOICE_BRIDGE_PERSONA_FILE` is the seat's own persona,
+  the file its harness reads; its body (front matter dropped) goes into the
+  voice's instruction under "Who you are". With no `VOICE_BRIDGE_VOICE`, a
+  Gemini prebuilt voice is picked from the seat's key, so each agent sounds
+  like itself and not like the others.
 - **Identity.** The bridge signs with the seat's key, read from the seat's own
   env file. Every event it signs carries `["voice-bridge", "ask"|"transcript"]`.
   Only `ask` wakes the seat, and only a seat that opted in with
@@ -129,10 +145,16 @@ LAB_FAULT=gemini_connect ...
 LAB_FAULT=mid_call ...
 ```
 
-## Deploy (rock's go only)
+## Deploy
 
-1. The rock seat runs a buzz-acp with `--self-wake-tag` (aitaco-llc/buzz#24),
-   with `BUZZ_ACP_SELF_WAKE_TAG=voice-bridge=ask` in its env.
-2. Secret `gemini-live-api-key` exists in `aitaco-ml-dev`. The bridge reads it
-   at start with `gcloud`.
-3. Install the binary and `buzz-voice-bridge.service`, then start the unit.
+For every seat that should have a voice:
+
+1. Its buzz-acp runs with `BUZZ_ACP_SELF_WAKE_TAG` including `voice-bridge=ask`
+   (with `buzz wake`: `voice-bridge=ask,job=done`). Without it, asks and
+   call-end recaps are dropped like any other self-post.
+2. Secret `gemini-live-api-key` exists in `aitaco-ml-dev`, and the body's
+   `gcloud` can read it; the bridge reads it at start.
+3. hip: install the binary and `buzz-voice-bridge@.service`, then
+   `systemctl --user enable --now buzz-voice-bridge@<seat>` per seat. Disable
+   the old single-seat `buzz-voice-bridge` unit first, or rock answers twice.
+   metal: install the binary, then `install-launchd.sh <seat>...`.

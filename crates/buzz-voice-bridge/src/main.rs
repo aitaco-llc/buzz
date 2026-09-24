@@ -14,12 +14,12 @@
 
 use anyhow::{Context, Result};
 use buzz_voice_bridge::jsonl::{self, JsonlLog, RateLimit};
-use buzz_voice_bridge::{call, config, recovery, relay_io, BUILD_SHA, VERSION};
+use buzz_voice_bridge::{call, config, discovery, recovery, relay_io, BUILD_SHA, VERSION};
 use buzz_ws_client::{NostrWsConnection, RelayMessage, WsClientError};
 use clap::Parser;
 use nostr::Event;
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
@@ -149,12 +149,18 @@ async fn main() -> Result<()> {
         &mut watcher,
     )?;
     let starters: HashSet<String> = args.starters.iter().cloned().collect();
-    let parents: HashSet<Uuid> = args.parent_channels.iter().copied().collect();
-    let parent_ids: Vec<String> = parents.iter().map(Uuid::to_string).collect();
+    let me = keys.public_key().to_hex();
+    // A seat nobody configured a voice for still sounds like itself, and not
+    // like every other agent: the voice is picked from its key.
+    if args.voice.is_none() {
+        args.voice = Some(config::default_voice(&me).to_owned());
+    }
     info!(
         pubkey = %keys.public_key().to_hex(),
         relay = %args.relay_url,
-        parents = ?parents,
+        configured_channels = ?args.parent_channels,
+        dm_discovery = args.dm_discovery,
+        voice = ?args.voice,
         model = %args.model,
         build_sha = BUILD_SHA,
         "voice bridge up"
@@ -215,6 +221,19 @@ async fn main() -> Result<()> {
         if last_sweep.elapsed() >= SWEEP_EVERY {
             last_sweep = sweep(&mut watcher, &log_dir, args.retention_days, &bridge_path);
         }
+        // The channels to watch, recomputed on every (re)connect: the ones
+        // configured, and every 1:1 DM between this seat and a starter.
+        let parents = watched_channels(&args, &publisher, &me, &starters, &mut watcher).await;
+        if parents.is_empty() {
+            // A seat with no DM yet has nothing to subscribe to, and a REQ
+            // with an empty `#h` is refused. Look again after a heartbeat.
+            watcher.log.record("no_channels_yet", json!({}));
+            tokio::select! {
+                _ = shutdown.cancelled() => break,
+                _ = tokio::time::sleep(heartbeat_every) => continue,
+            }
+        }
+        let parent_ids: Vec<String> = parents.iter().map(Uuid::to_string).collect();
         let mut conn =
             match NostrWsConnection::connect_authenticated(&args.relay_url, &keys, None).await {
                 Ok(conn) => {
@@ -276,6 +295,25 @@ async fn main() -> Result<()> {
                 && probe.is_none()
                 && last_beat.is_none_or(|at| at.elapsed() >= heartbeat_every)
             {
+                // A DM opened since the last look is a channel to watch now.
+                // Resubscribing is a reconnect; the subscription's 30 s
+                // backfill covers a huddle started during it.
+                if last_beat.is_some() {
+                    let fresh =
+                        watched_channels(&args, &publisher, &me, &starters, &mut watcher).await;
+                    if !fresh.is_empty() && fresh != parents {
+                        info!(
+                            before = parents.len(),
+                            after = fresh.len(),
+                            "watched channels changed; resubscribing"
+                        );
+                        watcher.log.record(
+                            "channels_changed",
+                            json!({ "before": parents.len(), "after": fresh.len() }),
+                        );
+                        break;
+                    }
+                }
                 probe_seq += 1;
                 let id = format!("hb-{probe_seq}");
                 // `limit: 0` is NIP-01 for "no results from this filter"
@@ -328,7 +366,8 @@ async fn main() -> Result<()> {
                         &gemini_key,
                         &mut active,
                         &mut watcher,
-                    );
+                    )
+                    .await;
                 }
                 Ok(RelayMessage::Eose { subscription_id }) => {
                     if probe.as_ref().is_some_and(|(id, _)| *id == subscription_id) {
@@ -490,12 +529,43 @@ fn parent_of(event: &Event) -> Option<Uuid> {
     })
 }
 
+/// Configured channels plus, with discovery on, every 1:1 DM between this seat
+/// and a starter. A discovery that fails keeps what is configured and says so;
+/// it never empties a list that was working.
+async fn watched_channels(
+    args: &config::Args,
+    publisher: &relay_io::Publisher,
+    me: &str,
+    starters: &HashSet<String>,
+    watcher: &mut Watcher,
+) -> BTreeSet<Uuid> {
+    let mut channels: BTreeSet<Uuid> = args.parent_channels.iter().copied().collect();
+    if args.dm_discovery {
+        match discovery::discover_dms(publisher, me, starters).await {
+            Ok(dms) => {
+                watcher
+                    .log
+                    .record("dms_discovered", json!({ "count": dms.len(), "dms": dms }));
+                channels.extend(dms);
+            }
+            Err(error) => {
+                warn!(%error, "DM discovery failed; watching configured channels only");
+                watcher.log.record(
+                    "dm_discovery_failed",
+                    json!({ "error": format!("{error:#}") }),
+                );
+            }
+        }
+    }
+    channels
+}
+
 #[allow(clippy::too_many_arguments)]
-fn handle_event(
+async fn handle_event(
     event: &Event,
     args: &config::Args,
     names: &config::Names,
-    parents: &HashSet<Uuid>,
+    parents: &BTreeSet<Uuid>,
     starters: &HashSet<String>,
     publisher: &relay_io::Publisher,
     gemini_key: &str,
@@ -554,6 +624,30 @@ fn handle_event(
                     );
                 }
                 return;
+            }
+            // Desktop already voices a huddle it started with this agent in it;
+            // a second voice would talk over it. Bounded: an unanswered huddle
+            // is worse than a doubled one, so a slow or failed check joins.
+            match tokio::time::timeout(
+                discovery::VOICED_CHECK_TIMEOUT,
+                discovery::desktop_voiced(publisher, ephemeral),
+            )
+            .await
+            {
+                Ok(Ok(true)) => {
+                    info!(%ephemeral, "Desktop is voicing this huddle; leaving it to Desktop");
+                    watcher.skipped("desktop is voicing this huddle", event);
+                    return;
+                }
+                Ok(Ok(false)) => {}
+                Ok(Err(error)) => watcher.log.record(
+                    "voiced_check_failed",
+                    json!({ "ephemeral": ephemeral, "error": format!("{error:#}") }),
+                ),
+                Err(_) => watcher.log.record(
+                    "voiced_check_failed",
+                    json!({ "ephemeral": ephemeral, "error": "timed out" }),
+                ),
             }
             let cancel = CancellationToken::new();
             let log_path = args.log_dir().join(format!(

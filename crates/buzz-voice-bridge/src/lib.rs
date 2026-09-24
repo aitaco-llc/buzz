@@ -12,6 +12,7 @@ pub mod bed;
 pub mod call;
 pub mod config;
 pub mod context;
+pub mod discovery;
 pub mod gemini;
 pub mod jsonl;
 pub mod outcome;

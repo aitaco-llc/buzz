@@ -1,15 +1,29 @@
-# ~/.config/systemd/user/buzz-voice-bridge.service
+# ~/.config/systemd/user/buzz-voice-bridge@.service
 #
-# rock's voice in Lloyd's huddles (V1). Install and start only on rock's go:
+# One seat's voice in Lloyd's huddles. One instance per seat, named for it:
 #   install -m 0755 <build>/buzz-voice-bridge ~/.local/bin/buzz-voice-bridge
-#   systemctl --user daemon-reload && systemctl --user enable --now buzz-voice-bridge
+#   install -m 0644 buzz-voice-bridge@.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now buzz-voice-bridge@rock buzz-voice-bridge@matt ...
 #
-# The bridge signs with rock's key, read from the file rock's seat reads; it
-# keeps no copy. The rock seat must run a buzz-acp with --self-wake-tag and
-# BUZZ_ACP_SELF_WAKE_TAG=voice-bridge=ask, or asks never wake it.
+# Each instance signs with its seat's key, read from the file the seat itself
+# reads, and wears that seat's persona. It watches every 1:1 DM between the seat
+# and Lloyd, found on the relay, so a huddle started in any agent's DM — from
+# the phone or anywhere else — is answered by that agent. A huddle Desktop
+# started with the agent in it is left to Desktop, which voices it already.
+#
+# The seat's buzz-acp must run with BUZZ_ACP_SELF_WAKE_TAG including
+# voice-bridge=ask, or asks and call-end recaps never wake it.
+#
+# Replaces the single-seat buzz-voice-bridge.service: disable that one first
+# (`systemctl --user disable --now buzz-voice-bridge`), or rock answers twice.
+#
+# Per-seat overrides (VOICE_BRIDGE_VOICE, VOICE_BRIDGE_AGENT_NAME, extra
+# VOICE_BRIDGE_PARENT_CHANNELS for a group channel) go in
+# ~/.config/aitaco/voice-bridge/<seat>.env.
 
 [Unit]
-Description=aitaco voice bridge (rock's voice in Lloyd's huddles)
+Description=aitaco voice bridge: %i's voice in Lloyd's huddles
 After=network-online.target
 StartLimitIntervalSec=300
 StartLimitBurst=5
@@ -17,9 +31,9 @@ StartLimitBurst=5
 [Service]
 Type=simple
 Environment=BUZZ_RELAY_URL=wss://buzz.aitaco.co
-Environment=VOICE_BRIDGE_KEY_FILE=%h/.config/buzz-agents/rock.env
-# V1 scope (rock's condition 4): only huddles Lloyd starts in his DM with rock.
-Environment=VOICE_BRIDGE_PARENT_CHANNELS=daa0371a-17fc-41a8-bb70-272b7c7e8be0
+Environment=VOICE_BRIDGE_KEY_FILE=%h/.config/buzz-agents/%i.env
+Environment=VOICE_BRIDGE_PERSONA_FILE=%h/.local/share/aitaco-agents/personas/%i.md
+# Channels are discovered: every 1:1 DM between this seat and a starter.
 Environment=VOICE_BRIDGE_STARTERS=0f8471300f7806058507999b06f16805168c640aad3ffa5474cf8ec9e7c6a0ca
 # Context pack (rock's call, #buzz-platform 54da67d0): the roster only. No
 # status snapshot: every fact about the work goes through the `work` tool. The
@@ -33,7 +47,7 @@ Environment=VOICE_BRIDGE_CONTEXT_FILES=%h/.buzz/GUIDES/AGENT_ROSTER.md
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 # Named, not inherited from $HOME: the unit must not be able to move its own
 # evidence. bridge.jsonl and the per-call logs live here.
-Environment=VOICE_BRIDGE_LOG_DIR=%h/.local/state/buzz-voice-bridge
+Environment=VOICE_BRIDGE_LOG_DIR=%h/.local/state/buzz-voice-bridge/%i
 # Call logs hold every word spoken on the call, so they expire at 30 days,
 # matching the seat turn logs. bridge.jsonl holds no speech and is kept.
 Environment=VOICE_BRIDGE_RETENTION_DAYS=30
@@ -41,6 +55,7 @@ Environment=VOICE_BRIDGE_RETENTION_DAYS=30
 # alone discards every tungstenite and buzz-ws-client line, and those are what
 # explain a call that never happened.
 Environment=RUST_LOG=buzz_voice_bridge=info,buzz_ws_client=info,tokio_tungstenite=info,tungstenite=info
+EnvironmentFile=-%h/.config/aitaco/voice-bridge/%i.env
 ExecStart=%h/.local/bin/buzz-voice-bridge
 Restart=on-failure
 RestartSec=5

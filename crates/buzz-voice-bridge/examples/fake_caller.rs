@@ -47,6 +47,26 @@ async fn main() -> Result<()> {
         .map(std::fs::File::create)
         .transpose()?;
 
+    // `--guidelines`: post Desktop's kind:48106 voice guidelines into the
+    // huddle's own channel, as Desktop does before it announces, and exit. A
+    // huddle carrying them is Desktop-voiced, and the bridge must stay out.
+    if std::env::args().any(|a| a == "--guidelines") {
+        let event = nostr::EventBuilder::new(
+            nostr::Kind::Custom(48106),
+            "You are in a live voice huddle.",
+        )
+        .tag(nostr::Tag::parse(["h", channel.to_string().as_str()])?)
+        .sign_with_keys(&keys)?;
+        let posted = relay_io::Publisher::new(&relay, keys.clone())?
+            .publish_event(event)
+            .await?;
+        println!(
+            "{}",
+            serde_json::json!({ "guidelines": posted.id.to_hex() })
+        );
+        return Ok(());
+    }
+
     // `--announce 48100|48103`: post the caller's huddle lifecycle event in
     // the parent, as the phone does, and exit.
     if let Some(kind) = arg("--announce") {

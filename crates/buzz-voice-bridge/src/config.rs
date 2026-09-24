@@ -22,14 +22,27 @@ pub struct Args {
     #[arg(long, env = "VOICE_BRIDGE_KEY_FILE")]
     pub key_file: PathBuf,
 
-    /// Parent channels whose huddles the bridge joins (comma-separated UUIDs).
+    /// Extra channels whose huddles the bridge joins (comma-separated UUIDs),
+    /// beyond the discovered DMs. Needed only for a group channel.
+    #[arg(long, env = "VOICE_BRIDGE_PARENT_CHANNELS", value_delimiter = ',')]
+    pub parent_channels: Vec<Uuid>,
+
+    /// Watch every 1:1 DM between this seat and a starter, found on the relay
+    /// and refreshed every heartbeat, so any DM huddle with this agent is
+    /// answered with no channel list to keep.
     #[arg(
         long,
-        env = "VOICE_BRIDGE_PARENT_CHANNELS",
-        value_delimiter = ',',
-        required = true
+        env = "VOICE_BRIDGE_DM_DISCOVERY",
+        action = clap::ArgAction::Set,
+        default_value = "1",
+        value_parser = parse_flag
     )]
-    pub parent_channels: Vec<Uuid>,
+    pub dm_discovery: bool,
+
+    /// The seat's persona — the same file its harness reads — so the voice
+    /// has its character, not only its name. YAML front matter is dropped.
+    #[arg(long, env = "VOICE_BRIDGE_PERSONA_FILE")]
+    pub persona_file: Option<PathBuf>,
 
     /// Pubkeys (hex) whose huddle starts the bridge answers (comma-separated).
     #[arg(
@@ -181,6 +194,9 @@ impl Args {
             "relay_url": self.relay_url,
             "key_file": self.key_file.display().to_string(),
             "parent_channels": self.parent_channels,
+            "dm_discovery": self.dm_discovery,
+            "persona_file": self.persona_file.as_ref().map(|p| p.display().to_string()),
+            "persona_chars": self.persona().map(|p| p.chars().count()),
             "starters": self.starters,
             "model": self.model,
             "voice": self.voice,
@@ -268,6 +284,15 @@ impl Args {
     /// what [`crate::context::recent_history`] rendered, if anything.
     pub fn system_instruction(&self, names: &Names, history: Option<&str>) -> String {
         let mut text = persona(&names.agent, &names.human);
+        if let Some(brief) = self.persona() {
+            text.push_str(&format!(
+                "\n\n## Who you are\n\n\
+                 This is your own character and working brief, written for your text self. On this call \
+                 you are the same person: the same voice, opinions, priorities and relationships. Where it \
+                 describes tools, channels, commands or procedures, those are behind `work`; where it says \
+                 how to write, speak the way it means instead.\n\n{brief}"
+            ));
+        }
         if let Some(history) = history.filter(|h| !h.trim().is_empty()) {
             text.push_str(&format!(
                 "\n\n## Recent conversation in this channel, oldest first\n\n\
@@ -340,6 +365,58 @@ impl Names {
 /// The persona, with the names filled in.
 pub fn persona(agent: &str, human: &str) -> String {
     PERSONA.replace("{agent}", agent).replace("{human}", human)
+}
+
+impl Args {
+    /// The persona body, front matter dropped, capped; `None` when unset,
+    /// unreadable or empty.
+    pub fn persona(&self) -> Option<String> {
+        let path = self.persona_file.as_ref()?;
+        match std::fs::read_to_string(path) {
+            Ok(text) => {
+                let body = strip_front_matter(&text).trim();
+                (!body.is_empty()).then(|| body.chars().take(PERSONA_CHAR_CAP).collect())
+            }
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "persona file unreadable; the voice has its name only");
+                None
+            }
+        }
+    }
+}
+
+/// The persona, in characters. Personas are written for a text agent and can
+/// be long; this keeps the voice's instruction well inside a live session's
+/// budget while carrying every persona in the fleet whole.
+const PERSONA_CHAR_CAP: usize = 16 * 1024;
+
+/// Drop a leading `---` … `---` YAML block.
+pub fn strip_front_matter(text: &str) -> &str {
+    let Some(rest) = text
+        .strip_prefix("---\n")
+        .or_else(|| text.strip_prefix("---\r\n"))
+    else {
+        return text;
+    };
+    match rest.find("\n---") {
+        Some(end) => {
+            let after = &rest[end + 4..];
+            after.split_once('\n').map_or("", |(_, body)| body)
+        }
+        None => text,
+    }
+}
+
+/// Gemini Live prebuilt voices. Each seat gets one by its key, so agents sound
+/// like different people with no configuration; `--voice` overrides.
+pub const VOICES: [&str; 8] = [
+    "Puck", "Charon", "Kore", "Fenrir", "Aoede", "Leda", "Orus", "Zephyr",
+];
+
+/// A stable voice for a seat: the same key always gets the same voice.
+pub fn default_voice(pubkey_hex: &str) -> &'static str {
+    let digest = <sha2::Sha256 as sha2::Digest>::digest(pubkey_hex.as_bytes());
+    VOICES[usize::from(digest[0]) % VOICES.len()]
 }
 
 /// Per context file, in characters. Beyond this Gemini is given a prefix, and
@@ -500,6 +577,66 @@ mod tests {
         assert!(!args(&[])
             .system_instruction(&names, Some("   "))
             .contains("Recent conversation"));
+    }
+
+    #[test]
+    fn the_persona_is_the_seats_own_brief_without_its_front_matter() {
+        let dir = std::env::temp_dir().join(format!("voice-bridge-persona-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("woody.md");
+        std::fs::write(
+            &path,
+            "---\nname: woody\nruntime: claude\n---\nYou are woody, the iOS lead.\nYou ship.\n",
+        )
+        .expect("write");
+        let with = args(&["--persona-file", path.to_str().unwrap()]);
+        assert_eq!(
+            with.persona().as_deref(),
+            Some("You are woody, the iOS lead.\nYou ship.")
+        );
+        let names = Names::resolve(&with, Some("woody"), Some("Lloyd"));
+        let text = with.system_instruction(&names, None);
+        assert!(text.starts_with("You are woody, on a live voice call with Lloyd."));
+        assert!(text.contains("## Who you are"));
+        assert!(text.contains("You are woody, the iOS lead."));
+        assert!(
+            !text.contains("runtime: claude"),
+            "front matter is not character"
+        );
+        assert!(args(&[]).persona().is_none());
+        assert!(args(&["--persona-file", "/nonexistent/x.md"])
+            .persona()
+            .is_none());
+        assert_eq!(strip_front_matter("no front matter"), "no front matter");
+        assert_eq!(strip_front_matter("---\nunterminated"), "---\nunterminated");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn each_seat_keeps_one_voice_and_the_fleet_gets_several() {
+        let a = "0fe0d41b07cc0d9aad5dde0e65638ea1768dd309d2a4fa4d1eabc95a1b051fb0";
+        assert_eq!(default_voice(a), default_voice(a), "stable");
+        let voices: std::collections::HashSet<&str> = (0..64)
+            .map(|i| default_voice(&format!("{i:064x}")))
+            .collect();
+        assert!(voices.len() >= 4, "keys spread over the voices: {voices:?}");
+    }
+
+    #[test]
+    fn channels_are_optional_and_discovery_is_on_by_default() {
+        let bare = Args::try_parse_from([
+            "buzz-voice-bridge",
+            "--relay-url",
+            "wss://x",
+            "--key-file",
+            "/dev/null",
+            "--starters",
+            STARTER,
+        ])
+        .expect("no channel list needed");
+        assert!(bare.parent_channels.is_empty());
+        assert!(bare.dm_discovery);
+        assert!(!args(&["--dm-discovery", "0"]).dm_discovery);
     }
 
     #[test]
