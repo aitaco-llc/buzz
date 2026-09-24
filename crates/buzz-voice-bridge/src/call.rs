@@ -314,6 +314,13 @@ impl AudioStats {
     fn peer(&mut self, index: u8, pubkey: &str) -> &mut PeerAudio {
         let entry = self.inbound.entry(index).or_default();
         if entry.pubkey != pubkey {
+            // The relay reuses a departed peer's index. The frame counts stay
+            // cumulative per index, but sequence continuity belongs to one
+            // sender: carried over, the newcomer's first frame would read as
+            // a gap or a regression against a stream it never sent.
+            if !entry.pubkey.is_empty() {
+                entry.arrival = InboundArrival::default();
+            }
             entry.pubkey = pubkey.to_owned();
         }
         entry
@@ -2285,6 +2292,30 @@ mod tests {
         let snapshot = audio.snapshot(Duration::ZERO);
         assert_eq!(snapshot["in"][0]["pubkey"], "cd");
         assert_eq!(snapshot["in"][0]["opus_frames"], 2);
+    }
+
+    #[test]
+    fn a_new_sender_on_a_reused_index_starts_its_own_sequence() {
+        let t0 = Instant::now();
+        let mut audio = AudioStats::default();
+        audio.peer(1, "ab").arrival.observe(500, t0);
+        audio
+            .peer(1, "ab")
+            .arrival
+            .observe(501, t0 + Duration::from_millis(20));
+        // A different key takes index 1 and starts its own stream at 7.
+        audio
+            .peer(1, "cd")
+            .arrival
+            .observe(7, t0 + Duration::from_millis(40));
+        audio
+            .peer(1, "cd")
+            .arrival
+            .observe(8, t0 + Duration::from_millis(60));
+        let arrival = &audio.snapshot(Duration::ZERO)["in"][0]["arrival"];
+        assert_eq!(arrival["seq_gaps"], 0, "{arrival}");
+        assert_eq!(arrival["seq_regressions"], 0, "{arrival}");
+        assert_eq!(arrival["seq_missing"], 0, "{arrival}");
     }
 
     #[test]

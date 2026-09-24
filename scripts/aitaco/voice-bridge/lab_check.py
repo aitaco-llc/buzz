@@ -322,6 +322,15 @@ if a.fault == "none":
             and (first(call_log, "gemini_connected") or {}).get("connect_ms") is not None
             and (first(call_log, "seat_answer") or {}).get("waited_ms") is not None
             and ending.get("duration_ms") is not None,
+        # buzz#63: the receive loop folds every inbound frame into the
+        # per-peer arrival block. The fake caller sends one contiguous stream,
+        # so the block must exist, have counted continuity, and report no loss.
+        # Without this, deleting the `observe` call compiles and fails nothing.
+        "inbound_arrival_is_counted_per_peer":
+            isinstance(inbound[0].get("arrival"), dict)
+            and inbound[0]["arrival"].get("seq_missing") == 0
+            and inbound[0]["arrival"].get("seq_regressions") == 0
+            and inbound[0]["arrival"].get("gap_worst_ms", 0) > 0,
         "the_answer_latency_is_measured":
             any(e["event"] == "response_latency"
                 and e["data"].get("gemini_first_audio_ms") is not None for e in call_log),
