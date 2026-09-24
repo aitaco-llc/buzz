@@ -70,6 +70,7 @@ struct Args {
     model: String,
     reasoning_effort: Option<String>,
     temperature: f64,
+    no_board_match: bool,
 }
 
 fn parse_args() -> Args {
@@ -82,6 +83,7 @@ fn parse_args() -> Args {
     let mut model = "gemini-3.8-flash".to_string();
     let mut reasoning_effort: Option<String> = None;
     let mut temperature = 0.0;
+    let mut no_board_match = false;
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
         match flag.as_str() {
@@ -97,6 +99,7 @@ fn parse_args() -> Args {
             }
             // `none` sends no field at all, so the endpoint's own default
             // thinking budget applies.
+            "--no-board-match" => no_board_match = true,
             "--reasoning-effort" => reasoning_effort = it.next().filter(|v| v != "none"),
             other => {
                 eprintln!("unknown flag {other}");
@@ -117,6 +120,7 @@ fn parse_args() -> Args {
         model,
         reasoning_effort,
         temperature,
+        no_board_match,
     }
 }
 
@@ -160,6 +164,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.reasoning_effort.as_deref().unwrap_or("<endpoint default>"),
         if pinned.is_some() { "pinned snapshot" } else { "grown sequentially" }
     );
+    eprintln!(
+        "  board-match second pass: {}",
+        if args.no_board_match { "off" } else { "on" }
+    );
 
     let cfg = TaskExtractConfig {
         endpoint: args.endpoint,
@@ -169,6 +177,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         reasoning_effort: args.reasoning_effort.clone(),
         attempts: 3,
         temperature: args.temperature,
+        board_match: !args.no_board_match,
     };
     // No roster: the corpus has no pubkeys, and an empty known-set means the
     // extractor accepts any well-formed 64-hex assignee rather than rejecting
@@ -181,6 +190,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut detail = Vec::new();
     let mut errors = 0usize;
     let mut thin_total = 0usize;
+    let mut rematched_total = 0usize;
     let mut dup_total = 0usize;
 
     for u in &utterances {
@@ -214,6 +224,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         let duplicates = extraction.duplicate_subjects();
         thin_total += extraction.thin.len();
+        rematched_total += extraction.rematched;
         dup_total += duplicates;
 
         let (action, count) = match extraction.verdict() {
@@ -222,12 +233,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Verdict::None { count } => ("none", count),
         };
         println!(
-            "  {:<10} {:<7} count={}  asks={}  board={}  dup={}  thin={}  dropped={}",
+            "  {:<10} {:<7} count={}  asks={}  board={}  rematched={}  dup={}  thin={}  dropped={}",
             u.id,
             action,
             count,
             extraction.asks.len(),
             board_before,
+            extraction.rematched,
             duplicates,
             extraction.thin.len(),
             extraction.dropped.len()
@@ -243,6 +255,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "thin": extraction.thin.len(),
                 "duplicates": duplicates,
                 "asks": extraction.asks.len(),
+                "rematched": extraction.rematched,
                 "error": extraction.error.is_some(),
             }),
         );
@@ -305,7 +318,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::fs::write(path, serde_json::to_string_pretty(&snapshot)? + "\n")?;
         eprintln!("wrote {} (pin it with --board-snapshot)", path.display());
     }
-    eprintln!("defects: {thin_total} creates with no observable doneWhen, {dup_total} duplicate subjects");
+    eprintln!(
+        "defects: {thin_total} creates with no observable doneWhen, {dup_total} duplicate subjects; \
+         board-match converted {rematched_total} create(s) into attaches"
+    );
     if errors > 0 {
         eprintln!(
             "\n{errors} of {} extractions never got an answer. The predictions file is \

@@ -131,6 +131,20 @@ pub struct TaskExtractConfig {
     /// `scripts/task-extractor/README.md`.
     #[serde(default)]
     pub temperature: f64,
+    /// Ask, once per proposed `create`, whether an open task already covers it.
+    ///
+    /// The per-ask schema decomposes well and matches the board badly, and
+    /// four attempts to fix the second inside the first failed — two in prose,
+    /// two in the schema, including making `attachTo` an enum so that attaching
+    /// was mechanically free. `attach` stayed on the floor while decomposition
+    /// sat at 14/16. The constraint was never the barrier; the judgement was.
+    ///
+    /// So this asks it as its own question, with only one candidate subject and
+    /// the board in front of it — a two-item comparison instead of a judgement
+    /// smuggled into a classification. Runs concurrently across candidates, and
+    /// only for `create` records, which are sparse.
+    #[serde(default = "default_board_match")]
+    pub board_match: bool,
 }
 
 fn default_timeout_ms() -> u64 {
@@ -143,6 +157,10 @@ fn default_max_tokens() -> u32 {
 
 fn default_attempts() -> u32 {
     3
+}
+
+fn default_board_match() -> bool {
+    true
 }
 
 /// The message being extracted from.
@@ -270,6 +288,10 @@ pub struct Extraction {
     /// where the parser cannot see it.
     pub raw_reply: Option<String>,
     pub finish_reason: Option<String>,
+    /// How many proposed `create` records the board-match pass turned into
+    /// attaches. Diagnostic: a run where this is always zero means the second
+    /// pass is not earning its calls.
+    pub rematched: usize,
 }
 
 impl Extraction {
@@ -402,12 +424,16 @@ impl TaskExtractor {
                     for i in &extraction.thin {
                         warn!(index = i, "task extraction produced a create with no doneWhen");
                     }
+                    if cfg.board_match && !input.board.is_empty() {
+                        self.match_against_board(cfg, input, &mut extraction).await;
+                    }
                     debug!(
                         tasks = extraction.tasks.len(),
                         distinct = extraction.distinct_subjects().len(),
                         duplicates = extraction.duplicate_subjects(),
                         dropped = extraction.dropped.len(),
                         asks = extraction.asks.len(),
+                        rematched = extraction.rematched,
                         "task extraction complete"
                     );
                     return extraction;
@@ -440,6 +466,143 @@ impl TaskExtractor {
             failed.raw_reply = Some(last_reply);
         }
         failed
+    }
+
+    /// Ask the board question once per proposed `create`, concurrently, and
+    /// convert the ones that are already on the board into attaches.
+    ///
+    /// Fails soft in both directions: a call that errors leaves its create
+    /// alone (better a duplicate than a lost task), and a match to an id that
+    /// is somehow not on the board is ignored.
+    async fn match_against_board(
+        &self,
+        cfg: &TaskExtractConfig,
+        input: &ExtractInput,
+        extraction: &mut Extraction,
+    ) {
+        let candidates: Vec<(usize, String, String)> = extraction
+            .tasks
+            .iter()
+            .enumerate()
+            .filter_map(|(i, t)| match t {
+                TaskAction::Create { ask, subject, .. } => {
+                    Some((i, ask.clone(), subject.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+
+        let verdicts = futures_util::future::join_all(
+            candidates
+                .iter()
+                .map(|(_, ask, subject)| self.board_match_one(cfg, input, ask, subject)),
+        )
+        .await;
+
+        let board_ids: HashSet<&str> = input.board.iter().map(|t| t.id.as_str()).collect();
+        // Highest index first, so a conversion cannot shift an index we have
+        // not reached yet.
+        let mut conversions: Vec<(usize, String)> = Vec::new();
+        for ((index, _, subject), verdict) in candidates.iter().zip(verdicts) {
+            match verdict {
+                Ok(Some(id)) if board_ids.contains(id.as_str()) => {
+                    debug!(%subject, covered_by = %id, "board match: already on the board");
+                    conversions.push((*index, id));
+                }
+                Ok(Some(id)) => {
+                    warn!(%subject, %id, "board match named an id that is not on the board — ignored")
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    // Better a duplicate than a lost task.
+                    warn!(%subject, error = %e, "board match failed — leaving the create alone")
+                }
+            }
+        }
+
+        for (index, id) in conversions.into_iter().rev() {
+            let already = extraction.tasks.iter().any(|t| {
+                matches!(t, TaskAction::Attach { attach_to, .. } if attach_to == &id)
+            });
+            let ask = extraction.tasks[index].ask().to_string();
+            if already {
+                // A second link to the same board item is one link.
+                extraction.tasks.remove(index);
+            } else {
+                extraction.tasks[index] = TaskAction::Attach {
+                    ask,
+                    attach_to: id,
+                    note: "the owner asked about work already on the board".to_string(),
+                };
+            }
+            extraction.rematched += 1;
+        }
+    }
+
+    async fn board_match_one(
+        &self,
+        cfg: &TaskExtractConfig,
+        input: &ExtractInput,
+        ask: &str,
+        subject: &str,
+    ) -> Result<Option<String>, String> {
+        let mut list = String::new();
+        for t in input.board.iter().take(MAX_BOARD_ENTRIES) {
+            list.push_str(&format!("  {} — {}\n", t.id, t.subject));
+        }
+        let ids: Vec<&str> =
+            input.board.iter().map(|t| t.id.as_str()).take(MAX_BOARD_ENTRIES).collect();
+        let body = serde_json::json!({
+            "model": cfg.model,
+            "temperature": 0,
+            "max_tokens": cfg.max_tokens,
+            "messages": [
+                { "role": "system", "content": BOARD_MATCH_PROMPT },
+                { "role": "user", "content": format!(
+                    "OPEN TASKS:\n{list}\nTHE WORK:\n  what was asked: {}\n  proposed task: {}\n",
+                    ask.chars().take(MAX_ASK_CHARS).collect::<String>(),
+                    subject.chars().take(MAX_SUBJECT_CHARS).collect::<String>(),
+                ) },
+            ],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "board_match",
+                    "schema": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "coveredBy": { "type": ["string", "null"], "enum":
+                                ids.iter().map(|i| serde_json::Value::String((*i).to_string()))
+                                   .chain(std::iter::once(serde_json::Value::Null))
+                                   .collect::<Vec<_>>() },
+                            "why": { "type": "string", "maxLength": MAX_LINE_CHARS }
+                        },
+                        "required": ["coveredBy"]
+                    }
+                }
+            }
+        });
+        let (reply, _) = self.post(cfg, body).await?;
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Match {
+            #[serde(default)]
+            covered_by: Option<String>,
+        }
+        let trimmed = reply.trim();
+        let parsed: Match = serde_json::from_str(trimmed).or_else(|_| {
+            let start = trimmed.find('{').ok_or("no JSON object in board-match reply")?;
+            let end = trimmed
+                .rfind('}')
+                .filter(|e| *e > start)
+                .ok_or("board-match reply looks truncated")?;
+            serde_json::from_str(&trimmed[start..=end]).map_err(|e| e.to_string())
+        })?;
+        Ok(parsed.covered_by.filter(|s| !s.trim().is_empty()))
     }
 
     async fn ask(
@@ -613,11 +776,12 @@ impl TaskExtractor {
 /// structurally impossible rather than rejected after the fact, which is worth
 /// having on its own.
 ///
-/// What is left to try is a second question rather than a better constraint:
-/// keep this schema for decomposition, then ask once per proposed `create`
-/// whether any open task already covers *that subject*, with only the subject
-/// and the board in front of it. One extra call per create, and it is the
-/// question the per-ask framing cannot hold.
+/// The answer was a second question rather than a better constraint — see
+/// [`BOARD_MATCH_PROMPT`] and [`TaskExtractConfig::board_match`]. Asked on its
+/// own, with one candidate subject and the board and nothing else, the model
+/// answers it: `attach` went from 4/24 to 20/24, decomposition held at 15/16,
+/// and per-utterance accuracy reached 94% — past the two-array design it
+/// replaced, which never got the gate above 3 of 8.
 ///
 /// `additionalProperties: false` is not tidiness. A model that expresses "then
 /// once all of that is done" as a nested `steps` key inside the first record
@@ -710,6 +874,30 @@ struct ParseFailure {
     error: String,
     reply: String,
 }
+
+/// The second pass: one candidate against the board, and nothing else.
+///
+/// Deliberately narrow. It is not asked to decide whether the work should
+/// exist, how to phrase it, or what else the message wanted — only whether one
+/// named piece of work is already on a list. Everything the extraction prompt
+/// says is a distraction here, and the measured failure is a model that
+/// decomposes well and cannot hold the board in view at the same time.
+pub const BOARD_MATCH_PROMPT: &str = r#"You are given ONE piece of work and a list of open tasks. Say whether one of the open tasks is already this work.
+
+Reply ONLY with JSON: {"coveredBy": "<id from the list>" or null, "why": "…"}
+
+Match on what the work IS, not on shared wording. The open task was titled by
+someone else and will use different words: "Assess Spark 1.3 against Flash" is
+the same work as "find out how Spark 1.3 compares", and "Ship the Desktop Tasks
+tab" is the same work as "get the tasks view out".
+
+Answer with an id when the open task and this work would be closed by the same
+piece of work being done. A status question about a listed task, a correction to
+it, or something to add to it are all the same work as the task itself.
+
+Answer null when no open task is this work — including when one is merely
+related, in the same area, or about the same project. Two different jobs on one
+project are two tasks."#;
 
 /// One record as the model produced it, before validation.
 ///
@@ -1622,7 +1810,14 @@ mod tests {
             reasoning_effort: None,
             attempts,
             temperature: 0.0,
+            // Off in the unit tests unless a test says otherwise: it is a
+            // second round-trip the stub endpoint would have to script.
+            board_match: false,
         }
+    }
+
+    fn match_cfg(endpoint: String) -> TaskExtractConfig {
+        TaskExtractConfig { board_match: true, ..cfg_for(endpoint, 1) }
     }
 
     #[tokio::test]
@@ -1711,6 +1906,124 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn the_board_match_pass_turns_a_duplicate_create_into_an_attach() {
+        // The failure this exists for: `2279229f` says outright "I know we
+        // already are running a comparison. Can we just add in Luna to that?"
+        // and the extraction scored 0 of 8 attach across every schema and
+        // prose variant. Asked as its own two-item question, it is answerable.
+        let extraction_reply = reply_with(
+            r#"{"items":[{"ask":"add Luna to the comparison","disposition":"create",
+                "subject":"Compare Luna, Flash and Spark","doneWhen":"a comparison exists"}]}"#,
+        );
+        let match_reply = reply_with(&format!(
+            r#"{{"coveredBy":"{}","why":"the Spark assessment is this comparison"}}"#,
+            "a".repeat(64)
+        ));
+        let (endpoint, bodies) = stub_endpoint(vec![extraction_reply, match_reply]).await;
+        let extraction = TaskExtractor::new(None, HashSet::new())
+            .extract(&match_cfg(endpoint), &input_with_board())
+            .await;
+
+        assert_eq!(extraction.verdict(), Verdict::Attach { count: 1 });
+        assert_eq!(extraction.rematched, 1);
+        match &extraction.tasks[0] {
+            TaskAction::Attach { attach_to, ask, .. } => {
+                assert_eq!(attach_to, &"a".repeat(64));
+                assert_eq!(ask, "add Luna to the comparison", "the ask survives the conversion");
+            }
+            other => panic!("expected an attach, got {other:?}"),
+        }
+
+        // The second call must be the NARROW question — one candidate and the
+        // board, with none of the extraction prompt's judgement in it.
+        let sent = bodies.lock().unwrap();
+        assert_eq!(sent.len(), 2);
+        let sys = sent[1].pointer("/messages/0/content").unwrap().as_str().unwrap();
+        assert!(sys.contains("whether one of the open tasks is already this work"));
+        assert!(!sys.contains("WHEN IN DOUBT"), "no extraction judgement here");
+        let user = sent[1].pointer("/messages/1/content").unwrap().as_str().unwrap();
+        assert!(user.contains("Compare Luna, Flash and Spark"));
+        assert!(user.contains(&"a".repeat(64)));
+    }
+
+    #[tokio::test]
+    async fn a_board_match_of_null_leaves_the_create_alone() {
+        let extraction_reply = reply_with(
+            r#"{"items":[{"ask":"a","disposition":"create","subject":"Something new","doneWhen":"x"}]}"#,
+        );
+        let (endpoint, _) = stub_endpoint(vec![
+            extraction_reply,
+            reply_with(r#"{"coveredBy":null,"why":"nothing on the board is this"}"#),
+        ])
+        .await;
+        let extraction = TaskExtractor::new(None, HashSet::new())
+            .extract(&match_cfg(endpoint), &input_with_board())
+            .await;
+        assert_eq!(extraction.verdict(), Verdict::Create { count: 1 });
+        assert_eq!(extraction.rematched, 0);
+    }
+
+    #[tokio::test]
+    async fn a_failed_board_match_keeps_the_task() {
+        // Fails soft on purpose, and in the safe direction: a duplicate is
+        // closeable, a lost task is the failure this module exists to remove.
+        let extraction_reply = reply_with(
+            r#"{"items":[{"ask":"a","disposition":"create","subject":"Something","doneWhen":"x"}]}"#,
+        );
+        let (endpoint, _) =
+            stub_endpoint(vec![extraction_reply, reply_with("I cannot answer that")]).await;
+        let extraction = TaskExtractor::new(None, HashSet::new())
+            .extract(&match_cfg(endpoint), &input_with_board())
+            .await;
+        assert_eq!(extraction.verdict(), Verdict::Create { count: 1 });
+        assert!(extraction.error.is_none(), "a soft failure is not an extraction failure");
+        assert_eq!(extraction.rematched, 0);
+    }
+
+    #[tokio::test]
+    async fn a_board_match_naming_an_id_off_the_board_is_ignored() {
+        let extraction_reply = reply_with(
+            r#"{"items":[{"ask":"a","disposition":"create","subject":"Something","doneWhen":"x"}]}"#,
+        );
+        let (endpoint, _) = stub_endpoint(vec![
+            extraction_reply,
+            reply_with(r#"{"coveredBy":"deadbeef","why":"invented"}"#),
+        ])
+        .await;
+        let extraction = TaskExtractor::new(None, HashSet::new())
+            .extract(&match_cfg(endpoint), &input_with_board())
+            .await;
+        assert_eq!(extraction.verdict(), Verdict::Create { count: 1 });
+        assert_eq!(extraction.rematched, 0);
+    }
+
+    #[tokio::test]
+    async fn an_empty_board_skips_the_second_pass_entirely() {
+        // Nothing to match against, so the call would be pure cost.
+        let mut input = input_with_board();
+        input.board.clear();
+        let (endpoint, bodies) = stub_endpoint(vec![reply_with(
+            r#"{"items":[{"ask":"a","disposition":"create","subject":"s","doneWhen":"x"}]}"#,
+        )])
+        .await;
+        let extraction =
+            TaskExtractor::new(None, HashSet::new()).extract(&match_cfg(endpoint), &input).await;
+        assert_eq!(extraction.verdict(), Verdict::Create { count: 1 });
+        assert_eq!(bodies.lock().unwrap().len(), 1, "one call, not two");
+    }
+
+    #[test]
+    fn the_board_match_prompt_asks_one_question_and_no_others() {
+        assert!(BOARD_MATCH_PROMPT.contains("coveredBy"));
+        assert!(BOARD_MATCH_PROMPT.contains("Match on what the work IS"));
+        assert!(BOARD_MATCH_PROMPT.contains("Two different jobs on one\nproject are two tasks"));
+        // None of the extraction judgement belongs here — mixing the two is
+        // what four earlier attempts did, and attach stayed on the floor.
+        assert!(!BOARD_MATCH_PROMPT.contains("doneWhen"));
+        assert!(!BOARD_MATCH_PROMPT.contains("WHEN IN DOUBT"));
+    }
+
     #[test]
     fn config_defaults_are_the_measured_ones() {
         let defaulted: TaskExtractConfig =
@@ -1719,6 +2032,7 @@ mod tests {
         assert_eq!(defaulted.attempts, 3);
         assert_eq!(defaulted.timeout_ms, 20_000);
         assert_eq!(defaulted.temperature, 0.0, "production wants the mode");
+        assert!(defaulted.board_match, "the second pass is on by default");
         // `low` cuts thinking 5x and costs the decomposition with it.
         assert!(defaulted.reasoning_effort.is_none());
     }
