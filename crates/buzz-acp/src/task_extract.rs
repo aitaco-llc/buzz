@@ -1567,6 +1567,14 @@ mod tests {
         assert!(SYSTEM_PROMPT.contains("Count matters"));
         // The asymmetry has to reach the count, not only the action: an
         // undercount fails the gate and an overcount passes it.
+        //
+        // This clause is as far as it can be pushed. A harder version — "count
+        // `asks`, count `tasks`, THESE ARE THE SAME NUMBER, never combine two
+        // entries" — was measured over eight replays: it did what it was
+        // written to do on the target utterance (`6bfd1e01` reached 3 or 4
+        // tasks in 4 of 7) and collapsed `9aee0484` from 7/8 to **0/7**, one
+        // task every single run, for four asks it had enumerated correctly.
+        // 60/82 against 81/87, and the gate went from 3 of 8 to 0 of 8.
         assert!(SYSTEM_PROMPT.contains("EMIT TWO"));
         // Enumeration is an output field, not an instruction the model may
         // skip; and the board is consulted BEFORE a create, not after.
