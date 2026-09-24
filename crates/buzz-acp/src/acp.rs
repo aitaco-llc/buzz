@@ -246,6 +246,38 @@ fn build_initialize_params() -> serde_json::Value {
     })
 }
 
+/// An outgoing ACP message as the `acp::wire` debug log may show it: every
+/// MCP server's `env` and `headers` values replaced. `session/new` carries the
+/// seat's `BUZZ_PRIVATE_KEY` in a stdio server's env and a bearer in an HTTP
+/// server's headers, and a debug log is not a place for either.
+pub(crate) fn wire_log_line<T: serde::Serialize>(msg: &T) -> String {
+    let mut value = match serde_json::to_value(msg) {
+        Ok(value) => value,
+        Err(_) => return String::new(),
+    };
+    if let Some(servers) = value
+        .get_mut("params")
+        .and_then(|params| params.get_mut("mcpServers"))
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for server in servers {
+            for field in ["env", "headers"] {
+                if let Some(entries) = server
+                    .get_mut(field)
+                    .and_then(serde_json::Value::as_array_mut)
+                {
+                    for entry in entries {
+                        if let Some(slot) = entry.get_mut("value") {
+                            *slot = serde_json::Value::String("<redacted>".into());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    value.to_string()
+}
+
 /// ACP client that owns an agent subprocess and communicates over its stdio.
 ///
 /// One `AcpClient` per agent process. Multiple sessions can be created on the
@@ -972,7 +1004,7 @@ impl AcpClient {
             "params": params,
         });
 
-        tracing::debug!(target: "acp::wire", "→ {}", &serde_json::to_string(&msg).unwrap_or_default());
+        tracing::debug!(target: "acp::wire", "→ {}", wire_log_line(&msg));
         if let Err(e) = self.write_ndjson(&msg).await {
             self.last_prompt_id = None;
             self.current_hard_deadline = None;
@@ -1312,7 +1344,7 @@ impl AcpClient {
             "params": params,
         });
 
-        tracing::debug!(target: "acp::wire", "→ {}", &serde_json::to_string(&msg).unwrap_or_default());
+        tracing::debug!(target: "acp::wire", "→ {}", wire_log_line(&msg));
 
         // Wrap write + read in a single timeout so a hung agent can't block forever.
         // We cannot use an async block that borrows `self` mutably across two awaits
@@ -1377,7 +1409,7 @@ impl AcpClient {
             "params": params,
         });
 
-        tracing::debug!(target: "acp::wire", "→ (notification) {}", &serde_json::to_string(&msg).unwrap_or_default());
+        tracing::debug!(target: "acp::wire", "→ (notification) {}", wire_log_line(&msg));
         self.write_ndjson(&msg).await?;
         Ok(())
     }
@@ -2620,6 +2652,32 @@ fn configure_no_window(cmd: &mut tokio::process::Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_wire_log_never_shows_an_mcp_secret() {
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "session/new",
+            "params": {"cwd": "/w", "mcpServers": [
+                {"name": "buzz", "command": "buzz-dev-mcp", "args": [],
+                 "env": [{"name": "BUZZ_PRIVATE_KEY", "value": "nsec1secret"}]},
+                {"type": "http", "name": "host", "url": "http://127.0.0.1:1/mcp",
+                 "headers": [{"name": "Authorization", "value": "Bearer tok3n"}]}
+            ]}
+        });
+        let line = wire_log_line(&msg);
+        assert!(
+            !line.contains("nsec1secret") && !line.contains("tok3n"),
+            "{line}"
+        );
+        assert!(
+            line.contains("BUZZ_PRIVATE_KEY") && line.contains("Authorization"),
+            "names stay: {line}"
+        );
+        assert!(line.contains("buzz-dev-mcp") && line.contains("session/new"));
+        let plain =
+            serde_json::json!({"jsonrpc": "2.0", "method": "session/prompt", "params": {"x": 1}});
+        assert_eq!(wire_log_line(&plain), plain.to_string());
+    }
 
     #[test]
     fn stop_reason_parses_all_known_values() {

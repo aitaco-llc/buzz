@@ -250,17 +250,36 @@ fn bearer_matches(presented: Option<&str>, expected: &str) -> bool {
         == 0
 }
 
-/// The JSON-RPC surface `of-mcp`'s Streamable HTTP client speaks. Anything else
-/// is `-32601`: a worker that asks for a capability we do not serve should fail
-/// its run rather than continue with a silent gap.
+/// JSON-RPC: the method does not exist.
+const METHOD_NOT_FOUND: i64 = -32601;
+/// JSON-RPC: the method exists and its params are wrong (an unknown tool name).
+const INVALID_PARAMS: i64 = -32602;
+
+/// MCP protocol versions this endpoint speaks, newest first. `initialize`
+/// answers with the client's version when it is one of these, and with the
+/// newest otherwise, as the spec asks — never with an arbitrary echo.
+const PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
+
+/// The version to answer `initialize` with.
+fn negotiated_version(requested: Option<&str>) -> &'static str {
+    requested
+        .and_then(|asked| PROTOCOL_VERSIONS.iter().find(|v| **v == asked))
+        .copied()
+        .unwrap_or(PROTOCOL_VERSIONS[0])
+}
+
+/// The JSON-RPC surface `of-mcp`'s Streamable HTTP client speaks. An unknown
+/// method is `-32601` and an unknown tool `-32602`: a worker that asks for a
+/// capability we do not serve should fail its run rather than continue with a
+/// silent gap.
 pub(crate) async fn dispatch(
     tools: &McpTools,
     method: &str,
     params: &Value,
-) -> Result<Value, String> {
+) -> Result<Value, (i64, String)> {
     match method {
         "initialize" => Ok(json!({
-            "protocolVersion": params["protocolVersion"].as_str().unwrap_or("2024-11-05"),
+            "protocolVersion": negotiated_version(params["protocolVersion"].as_str()),
             "capabilities": {"tools": {}},
             "serverInfo": {"name": "buzz-acp", "version": env!("CARGO_PKG_VERSION")},
         })),
@@ -273,7 +292,12 @@ pub(crate) async fn dispatch(
             let outcome = match name {
                 "search_messages" => tools.search(&args).await,
                 "read_thread" => tools.read_thread(&args).await,
-                other => return Err(format!("{other:?} is not a tool served here")),
+                other => {
+                    return Err((
+                        INVALID_PARAMS,
+                        format!("{other:?} is not a tool served here"),
+                    ))
+                }
             };
             // A refused call is the model's to read and retry, as any tool error
             // is — `isError` keeps it inside the turn instead of ending it.
@@ -286,7 +310,7 @@ pub(crate) async fn dispatch(
                 }
             })
         }
-        other => Err(format!("{other:?} is not served here")),
+        other => Err((METHOD_NOT_FOUND, format!("{other:?} is not served here"))),
     }
 }
 
@@ -316,9 +340,9 @@ async fn handle(
         Ok(result) => {
             axum::Json(json!({"jsonrpc": "2.0", "id": id, "result": result})).into_response()
         }
-        Err(message) => axum::Json(json!({
+        Err((code, message)) => axum::Json(json!({
             "jsonrpc": "2.0", "id": id,
-            "error": {"code": -32601, "message": message},
+            "error": {"code": code, "message": message},
         }))
         .into_response(),
     }
@@ -329,15 +353,28 @@ fn mint_token() -> String {
     format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
 }
 
-/// Start an endpoint on loopback and return its URL and bearer.
+/// The serving task of one endpoint. Dropping it stops the task and closes
+/// the listener, so the endpoint — its port, its bearer and the seat's signing
+/// client — lives exactly as long as the session that holds the guard. A bare
+/// `JoinHandle` would not do this: dropping one detaches the task, and every
+/// session would leave a live, authenticated listener behind until the
+/// process exits.
+pub(crate) struct EndpointGuard(tokio::task::JoinHandle<()>);
+
+impl Drop for EndpointGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Start an endpoint on loopback and return its URL, bearer and guard.
 ///
 /// The listener binds `127.0.0.1:0`: a port the kernel picks, reachable only
-/// from this machine. The returned handle owns the serving task, so dropping it
-/// closes the endpoint with the session it belongs to.
+/// from this machine. Dropping the returned [`EndpointGuard`] closes it.
 pub(crate) async fn serve(
     rest: RestClient,
     channel_id: Uuid,
-) -> Result<(String, String, tokio::task::JoinHandle<()>), std::io::Error> {
+) -> Result<(String, String, EndpointGuard), std::io::Error> {
     let token = mint_token();
     let endpoint = Arc::new(McpEndpoint {
         tools: Arc::new(McpTools::new(rest, channel_id)),
@@ -353,7 +390,7 @@ pub(crate) async fn serve(
             tracing::warn!(target: "mcp_host", "MCP endpoint stopped: {e}");
         }
     });
-    Ok((url, token, handle))
+    Ok((url, token, EndpointGuard(handle)))
 }
 
 #[cfg(test)]
@@ -460,12 +497,21 @@ mod tests {
     #[tokio::test]
     async fn an_unknown_method_is_method_not_found() {
         let tools = tools();
-        assert!(dispatch(&tools, "resources/list", &json!({}))
-            .await
-            .is_err());
-        assert!(dispatch(&tools, "tools/call", &json!({"name": "shell"}))
-            .await
-            .is_err());
+        assert_eq!(
+            dispatch(&tools, "resources/list", &json!({}))
+                .await
+                .unwrap_err()
+                .0,
+            METHOD_NOT_FOUND
+        );
+        assert_eq!(
+            dispatch(&tools, "tools/call", &json!({"name": "shell"}))
+                .await
+                .unwrap_err()
+                .0,
+            INVALID_PARAMS,
+            "the method exists; the tool name is the bad param"
+        );
         assert!(dispatch(&tools, "ping", &json!({})).await.is_ok());
         let initialized = dispatch(
             &tools,
@@ -534,6 +580,35 @@ mod tests {
             .await
             .expect("json body");
         assert_eq!(ok["result"]["tools"].as_array().unwrap().len(), 2);
-        handle.abort();
+
+        // Dropping the guard is what ends a session's endpoint: after it, the
+        // bearer that worked a moment ago reaches nothing.
+        drop(handle);
+        let mut closed = false;
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let after = client
+                .post(&url)
+                .header("Authorization", format!("Bearer {token}"))
+                .json(&body)
+                .timeout(std::time::Duration::from_millis(500))
+                .send()
+                .await;
+            if after.is_err() {
+                closed = true;
+                break;
+            }
+        }
+        assert!(
+            closed,
+            "the endpoint must stop serving once its guard is dropped"
+        );
+    }
+
+    #[test]
+    fn initialize_answers_with_a_version_it_speaks() {
+        assert_eq!(negotiated_version(Some("2025-03-26")), "2025-03-26");
+        assert_eq!(negotiated_version(Some("1999-01-01")), PROTOCOL_VERSIONS[0]);
+        assert_eq!(negotiated_version(None), PROTOCOL_VERSIONS[0]);
     }
 }
