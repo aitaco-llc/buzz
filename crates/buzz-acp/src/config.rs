@@ -389,6 +389,45 @@ pub struct CliArgs {
     #[arg(long, env = "BUZZ_ACP_SELF_WAKE_TAG", value_parser = parse_self_wake_tag)]
     pub self_wake_tag: Option<SelfWakeTag>,
 
+    /// Pubkeys whose messages are read for tasks before the turn is queued.
+    ///
+    /// Absent by default: with no authors listed, nothing is extracted and no
+    /// model call is made. Comma-separated 64-hex.
+    ///
+    /// Extraction runs at trigger receipt, **after the author gate and before
+    /// the subscription rules**, because the corpus says zero of the owner's
+    /// eleven readable utterances carry a `p` tag — he addresses people in
+    /// prose and posts top level. A seat that is not woken by a message still
+    /// has to capture the work in it.
+    ///
+    /// `hide_env_values` is not because these are secret — a pubkey is public,
+    /// and the seat's own allowlist prints. It is because
+    /// `secret_env_args_hide_their_values_in_help` matches `AUTH` inside
+    /// `AUTHORS`, and a blunt guard that occasionally over-hides is the right
+    /// trade against one that has to be argued with per-arg.
+    #[arg(long, env = "BUZZ_ACP_TASK_EXTRACT_AUTHORS", value_delimiter = ',',
+          value_parser = parse_hex64, hide_env_values = true)]
+    pub task_extract_authors: Vec<String>,
+
+    /// OpenAI-compatible endpoint for the task extractor.
+    #[arg(long, env = "BUZZ_ACP_TASK_EXTRACT_ENDPOINT")]
+    pub task_extract_endpoint: Option<String>,
+
+    /// Served model id for the task extractor.
+    #[arg(long, env = "BUZZ_ACP_TASK_EXTRACT_MODEL", default_value = "gemini-3.8-flash")]
+    pub task_extract_model: String,
+
+    /// Publish the extraction instead of only recording it.
+    ///
+    /// Off by default, and that is the rollout rather than an afterthought.
+    /// The extractor makes judgements — which asks are work, which are already
+    /// on the board — and the cheapest way to find out whether it makes them
+    /// well on real traffic is to let it decide in the open for a while
+    /// without writing anything anyone has to close. Turn it on once the
+    /// recorded decisions read right.
+    #[arg(long, env = "BUZZ_ACP_TASK_EXTRACT_PUBLISH")]
+    pub task_extract_publish: bool,
+
     /// Announce provider usage-limit warnings to this channel.
     ///
     /// A usage limit belongs to the account, so every seat on the box sees the
@@ -591,6 +630,15 @@ pub struct Config {
     pub ignore_self: bool,
     /// The one tag that lets a self-authored event through `ignore_self`.
     pub self_wake_tag: Option<SelfWakeTag>,
+    /// Pubkeys whose messages are read for tasks. Empty = extraction off.
+    pub task_extract_authors: HashSet<String>,
+    /// OpenAI-compatible endpoint for the extractor. `None` = extraction off
+    /// even when authors are listed: an extractor with nowhere to ask is a
+    /// per-message warning, not a feature.
+    pub task_extract_endpoint: Option<String>,
+    pub task_extract_model: String,
+    /// Publish the extraction, rather than only recording the decision.
+    pub task_extract_publish: bool,
     pub kinds_override: Option<Vec<u32>>,
     pub channels_override: Option<Vec<String>>,
     pub no_mention_filter: bool,
@@ -830,6 +878,22 @@ fn parse_self_wake_pair(raw: &str) -> Result<(String, String), String> {
         ));
     }
     Ok((name.to_owned(), value.to_owned()))
+}
+
+/// Parse one 64-hex pubkey from a CLI value, lowercased.
+///
+/// A malformed author here would silently extract nothing rather than fail
+/// loudly, and "the extractor is quiet" is indistinguishable from "nobody
+/// asked for anything" — so it is refused at startup instead.
+pub fn parse_hex64(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim().to_ascii_lowercase();
+    if trimmed.len() != 64 || !trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!(
+            "expected exactly 64 hex characters, got {raw:?} ({} chars)",
+            trimmed.chars().count()
+        ));
+    }
+    Ok(trimmed)
 }
 
 /// Validate and deduplicate allowlist entries: each must be exactly 64 hex chars.
@@ -1386,6 +1450,13 @@ impl Config {
             multiple_event_handling: args.multiple_event_handling,
             ignore_self: !args.no_ignore_self,
             self_wake_tag: args.self_wake_tag,
+            task_extract_authors: args.task_extract_authors.iter().cloned().collect(),
+            task_extract_endpoint: args
+                .task_extract_endpoint
+                .clone()
+                .filter(|e| !e.trim().is_empty()),
+            task_extract_model: args.task_extract_model.clone(),
+            task_extract_publish: args.task_extract_publish,
             kinds_override: args.kinds,
             channels_override: args.channels,
             no_mention_filter: args.no_mention_filter,
@@ -1809,10 +1880,30 @@ mod tests {
         assert!(!many.matches(&event(&["voice-bridge", "transcript"])));
     }
 
+    #[test]
+    fn a_malformed_extract_author_is_refused_at_startup() {
+        // A bad pubkey here would extract nothing and say nothing, and "the
+        // extractor is quiet" is indistinguishable from "nobody asked for
+        // anything". Fail at startup instead.
+        assert!(parse_hex64(&"a".repeat(64)).is_ok());
+        assert_eq!(parse_hex64(&"A".repeat(64)).unwrap(), "a".repeat(64), "lowercased");
+        assert!(parse_hex64(&"a".repeat(63)).is_err());
+        assert!(parse_hex64(&"a".repeat(65)).is_err());
+        assert!(parse_hex64(&"z".repeat(64)).is_err());
+        assert!(parse_hex64("npub1abc").is_err());
+        // A trimmed value is still valid: comma-separated env values arrive
+        // with spaces around them.
+        assert!(parse_hex64(&format!("  {}  ", "b".repeat(64))).is_ok());
+    }
+
     /// Build a minimal Config for testing without CLI parsing.
     fn test_config(mode: SubscribeMode) -> Config {
         Config {
             limit_warning_channel: None,
+            task_extract_authors: Default::default(),
+            task_extract_endpoint: None,
+            task_extract_model: "gemini-3.8-flash".to_string(),
+            task_extract_publish: false,
             keys: nostr::Keys::generate(),
             relay_url: "ws://localhost:3000".into(),
             agent_command: "goose".into(),
