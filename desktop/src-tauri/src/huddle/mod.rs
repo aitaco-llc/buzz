@@ -40,6 +40,7 @@ pub mod playout;
 pub mod pocket;
 pub mod preprocessing;
 pub mod reconnect;
+mod record;
 pub mod relay_api;
 pub mod state;
 pub mod stt;
@@ -629,6 +630,9 @@ pub async fn leave_huddle(app: tauri::AppHandle, state: State<'_, AppState>) -> 
             // This avoids the "cannot remove the last owner" relay error that
             // build_leave hits when the creator is the sole remaining member.
             eprintln!("buzz-desktop: last human left huddle — auto-ending");
+            // Before the archive and the agent removal: the transcript and the
+            // agent list are still readable, and the agents still members.
+            record::post_huddle_record(&parent_channel_id, &ephemeral_channel_id, &state).await;
             emit_end_and_archive(&parent_channel_id, &ephemeral_channel_id, &state).await;
         } else {
             // Other humans still in the huddle — just remove self from membership.
@@ -680,6 +684,7 @@ pub async fn end_huddle(
         )
     };
 
+    record::post_huddle_record(&parent_channel_id, &ephemeral_channel_id, &state).await;
     emit_end_and_archive(&parent_channel_id, &ephemeral_channel_id, &state).await;
 
     teardown_huddle(&state)?;
