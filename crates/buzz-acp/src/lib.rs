@@ -543,14 +543,34 @@ mod inbound_author_gate {
                 )
                 .await;
             if !decision.allowed {
-                tracing::debug!(
-                    channel_id = %buzz_event.channel_id,
-                    raw_author = %buzz_event.event.pubkey.to_hex(),
-                    effective_author = %decision.effective_author,
-                    mode = %respond_to,
-                    is_dm = decision.is_dm,
-                    "inbound author gate — dropping event"
-                );
+                // A message that addresses this agent and is dropped here is
+                // someone waiting on an answer that will never come — the
+                // sender sees no reaction, no reply and no error. That is the
+                // shape of an allowlist that forgot a service key (the fleet
+                // watchdog's eleven unheard wakes), so it is a warning, not a
+                // debug line. Ambient channel traffic from outsiders is not
+                // addressed to us and stays quiet.
+                if crate::addresses_agent(&buzz_event.event, &self.agent_pubkey_hex) {
+                    tracing::warn!(
+                        channel_id = %buzz_event.channel_id,
+                        event_id = %buzz_event.event.id.to_hex(),
+                        raw_author = %buzz_event.event.pubkey.to_hex(),
+                        effective_author = %decision.effective_author,
+                        mode = %respond_to,
+                        is_dm = decision.is_dm,
+                        "inbound author gate — dropping a message addressed to this agent; \
+                         add the author to the allowlist if it should be heard"
+                    );
+                } else {
+                    tracing::debug!(
+                        channel_id = %buzz_event.channel_id,
+                        raw_author = %buzz_event.event.pubkey.to_hex(),
+                        effective_author = %decision.effective_author,
+                        mode = %respond_to,
+                        is_dm = decision.is_dm,
+                        "inbound author gate — dropping event"
+                    );
+                }
                 return None;
             }
             Some(AuthorizedListenerEvent {
@@ -717,6 +737,18 @@ impl NormalListenerIngress {
             prompt_tag_for_steer,
         }
     }
+}
+
+/// True when `event` p-tags `agent_pubkey_hex`: a mention, or any event
+/// addressed to this agent. Case-insensitive, as tags written by hand are.
+fn addresses_agent(event: &nostr::Event, agent_pubkey_hex: &str) -> bool {
+    event.tags.iter().any(|tag| {
+        let parts = tag.as_slice();
+        parts.first().map(String::as_str) == Some("p")
+            && parts
+                .get(1)
+                .is_some_and(|pubkey| pubkey.eq_ignore_ascii_case(agent_pubkey_hex))
+    })
 }
 
 /// What the listener does with an event, by author, before the author gate.
@@ -3663,11 +3695,15 @@ async fn tokio_main() -> Result<()> {
                                 .map(|_| (buzz_event.event.clone(), buzz_event.channel_id));
                             let authorized = match (self_disposition, config.self_wake_tag.as_ref()) {
                                 (SelfEventDisposition::Wake, Some(tag)) => {
+                                    let matched = tag
+                                        .matching(&buzz_event.event)
+                                        .map(|(name, value)| format!("{name}={value}"))
+                                        .unwrap_or_default();
                                     tracing::info!(
                                         channel_id = %buzz_event.channel_id,
                                         event_id = %buzz_event.event.id.to_hex(),
-                                        self_wake_tag = %tag,
-                                        "admitting self-authored event that carries the self-wake tag"
+                                        self_wake_tag = %matched,
+                                        "admitting self-authored event that carries a self-wake tag"
                                     );
                                     author_gate_ctx.authorize_self_wake_event(buzz_event, tag)
                                 }
@@ -8787,6 +8823,35 @@ mod author_gate_tests {
             is_dm_channel(Uuid::new_v4(), &resolver(HashMap::new())).await,
             "an unresolvable channel type must be treated as a DM"
         );
+    }
+
+    #[test]
+    fn only_an_event_that_p_tags_this_agent_is_addressed_to_it() {
+        let me = nostr::Keys::generate().public_key().to_hex();
+        let other = nostr::Keys::generate().public_key().to_hex();
+        let author = nostr::Keys::generate();
+        let event = |tags: &[[&str; 2]]| {
+            let mut builder = nostr::EventBuilder::new(nostr::Kind::Custom(9), "x");
+            for tag in tags {
+                builder = builder.tag(nostr::Tag::parse(tag.to_vec()).expect("tag"));
+            }
+            builder.sign_with_keys(&author).expect("signed")
+        };
+        assert!(addresses_agent(&event(&[["p", &me]]), &me));
+        assert!(addresses_agent(
+            &event(&[["p", &me.to_ascii_uppercase()]]),
+            &me
+        ));
+        assert!(addresses_agent(
+            &event(&[["h", "c"], ["p", &other], ["p", &me]]),
+            &me
+        ));
+        assert!(!addresses_agent(&event(&[["p", &other]]), &me));
+        assert!(
+            !addresses_agent(&event(&[["e", &me]]), &me),
+            "only p tags address"
+        );
+        assert!(!addresses_agent(&event(&[]), &me));
     }
 
     fn self_wake_event(keys: &nostr::Keys, tags: &[[&str; 2]]) -> nostr::Event {
