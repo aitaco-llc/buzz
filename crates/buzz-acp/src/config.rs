@@ -380,11 +380,12 @@ pub struct CliArgs {
     #[arg(long, env = "BUZZ_ACP_NO_IGNORE_SELF")]
     pub no_ignore_self: bool,
 
-    /// Wake on a self-authored event only when it carries this tag, written
-    /// `name=value` (e.g. `voice-bridge=ask`). This lets a companion process
-    /// that signs with this agent's key, such as a voice bridge, hand the
-    /// agent work. Every other self-authored event is still dropped. Off by
-    /// default.
+    /// Wake on a self-authored event only when it carries one of these tags,
+    /// written `name=value` and comma-separated (e.g.
+    /// `voice-bridge=ask,job=done`). This lets a companion process that signs
+    /// with this agent's key — a voice bridge, or `buzz-wake` reporting that a
+    /// bench or CI run the agent started has finished — hand the agent work.
+    /// Every other self-authored event is still dropped. Off by default.
     #[arg(long, env = "BUZZ_ACP_SELF_WAKE_TAG", value_parser = parse_self_wake_tag)]
     pub self_wake_tag: Option<SelfWakeTag>,
 
@@ -759,31 +760,56 @@ fn compose_session_title_with_limit(
 /// (for example, ones a voice bridge sharing its key signs) may wake it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelfWakeTag {
-    pub name: String,
-    pub value: String,
+    /// Each accepted `(name, value)` pair, in configuration order, deduplicated.
+    pub pairs: Vec<(String, String)>,
 }
 
 impl SelfWakeTag {
-    /// True when `event` has a tag whose first two elements are exactly
-    /// `[name, value]`.
+    /// True when `event` has a tag whose first two elements are exactly one of
+    /// the configured `[name, value]` pairs.
     pub fn matches(&self, event: &nostr::Event) -> bool {
-        event.tags.iter().any(|tag| {
-            let parts = tag.as_slice();
-            parts.first().map(String::as_str) == Some(self.name.as_str())
-                && parts.get(1).map(String::as_str) == Some(self.value.as_str())
+        self.matching(event).is_some()
+    }
+
+    /// The configured pair `event` matched, for the admission log line.
+    pub fn matching(&self, event: &nostr::Event) -> Option<&(String, String)> {
+        self.pairs.iter().find(|(name, value)| {
+            event.tags.iter().any(|tag| {
+                let parts = tag.as_slice();
+                parts.first().map(String::as_str) == Some(name.as_str())
+                    && parts.get(1).map(String::as_str) == Some(value.as_str())
+            })
         })
     }
 }
 
 impl std::fmt::Display for SelfWakeTag {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}={}", self.name, self.value)
+        let joined: Vec<String> = self
+            .pairs
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect();
+        f.write_str(&joined.join(","))
     }
 }
 
-/// Parse `BUZZ_ACP_SELF_WAKE_TAG`. Single-letter names are refused: those are
-/// the relay-indexed tags (`p`, `e`, `h`, ...) that ordinary messages carry.
+/// Parse `BUZZ_ACP_SELF_WAKE_TAG`: one or more comma-separated `name=value`
+/// pairs. Single-letter names are refused: those are the relay-indexed tags
+/// (`p`, `e`, `h`, ...) that ordinary messages carry, and admitting one would
+/// wake the agent on its own ordinary posts.
 pub fn parse_self_wake_tag(raw: &str) -> Result<SelfWakeTag, String> {
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for part in raw.split(',').map(str::trim) {
+        let pair = parse_self_wake_pair(part)?;
+        if !pairs.contains(&pair) {
+            pairs.push(pair);
+        }
+    }
+    Ok(SelfWakeTag { pairs })
+}
+
+fn parse_self_wake_pair(raw: &str) -> Result<(String, String), String> {
     let (name, value) = raw
         .split_once('=')
         .ok_or_else(|| format!("self-wake tag must be name=value, got {raw:?}"))?;
@@ -803,10 +829,7 @@ pub fn parse_self_wake_tag(raw: &str) -> Result<SelfWakeTag, String> {
             "self-wake tag name must be at least two characters (single letters are relay-indexed tags), got {name:?}"
         ));
     }
-    Ok(SelfWakeTag {
-        name: name.to_owned(),
-        value: value.to_owned(),
-    })
+    Ok((name.to_owned(), value.to_owned()))
 }
 
 /// Validate and deduplicate allowlist entries: each must be exactly 64 hex chars.
@@ -1732,9 +1755,18 @@ mod tests {
     #[test]
     fn test_parse_self_wake_tag() {
         let tag = parse_self_wake_tag("voice-bridge=ask").expect("valid");
-        assert_eq!(tag.name, "voice-bridge");
-        assert_eq!(tag.value, "ask");
+        assert_eq!(
+            tag.pairs,
+            vec![("voice-bridge".to_owned(), "ask".to_owned())]
+        );
         assert_eq!(tag.to_string(), "voice-bridge=ask");
+        let many =
+            parse_self_wake_tag("voice-bridge=ask, job=done,voice-bridge=ask").expect("valid");
+        assert_eq!(
+            many.to_string(),
+            "voice-bridge=ask,job=done",
+            "trimmed and deduplicated"
+        );
         for bad in [
             "voice-bridge",
             "=ask",
@@ -1742,6 +1774,9 @@ mod tests {
             "p=ask",
             "voice bridge=ask",
             "a=b=c",
+            "voice-bridge=ask,",
+            "voice-bridge=ask,p=x",
+            "",
         ] {
             assert!(parse_self_wake_tag(bad).is_err(), "{bad:?} must be refused");
         }
@@ -1762,6 +1797,16 @@ mod tests {
         assert!(!tag.matches(&event(&["voice-bridge", "asked"])));
         assert!(!tag.matches(&event(&["voice-bridge", "transcript"])));
         assert!(!tag.matches(&event(&["t", "voice-bridge", "ask"])));
+
+        let many = parse_self_wake_tag("voice-bridge=ask,job=done").expect("valid");
+        assert!(many.matches(&event(&["voice-bridge", "ask"])));
+        assert!(many.matches(&event(&["job", "done"])));
+        assert_eq!(
+            many.matching(&event(&["job", "done"])),
+            Some(&("job".to_owned(), "done".to_owned()))
+        );
+        assert!(!many.matches(&event(&["job", "started"])));
+        assert!(!many.matches(&event(&["voice-bridge", "transcript"])));
     }
 
     /// Build a minimal Config for testing without CLI parsing.

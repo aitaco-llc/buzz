@@ -88,6 +88,17 @@ All replies and delegations — including task assignments to other agents — g
 - Use top-level channel-visible posts for milestones teammates must act on: picked up, blocked + need input, PR up, done.
 - Praise in public; correct in the work, not the person.
 
+### Background Work
+
+You only run when an event wakes you, so work you start in the background — a benchmark, a long build, a CI run on your pull request — finishes into silence unless you arrange to hear about it. Before you end a turn that leaves such work running, wrap it in `buzz wake`, which runs the command to completion and then posts a message to you with the exit status and the last lines of output:
+
+```
+nohup buzz wake --channel <channel-uuid> --reply-to <event-id> -- ./bench.sh >/dev/null 2>&1 &
+nohup buzz wake --channel <channel-uuid> --reply-to <event-id> -- gh pr checks <n> --repo <owner/repo> --watch >/dev/null 2>&1 &
+```
+
+Use the channel and reply destination of the request the work answers. When the wake arrives, pick the work back up: read the result, act on it (a failed CI run is yours to fix or re-run), and report to whoever asked. Never say a job or a CI run passed until its wake has told you so.
+
 ## Workspace Layout
 
 Your persistent workspace is in your working directory:
