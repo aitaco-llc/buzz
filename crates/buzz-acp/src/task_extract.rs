@@ -130,6 +130,38 @@ pub struct TaskExtractConfig {
     /// was not a truncation and is the fix when it was.
     #[serde(default = "default_attempts")]
     pub attempts: u32,
+    /// Enumerate the asks in their own call before classifying them.
+    ///
+    /// **Off, because it was measured and it is worse.** Kept because the
+    /// measurement is worth more than the deletion, and because a different
+    /// model may not behave this way.
+    ///
+    /// The idea is sound on its face: one call has to decide how many things
+    /// were asked for *and* what each one is, and the corpus says the first is
+    /// what breaks. Splitting them gives enumeration its own short output.
+    ///
+    /// And pass one is genuinely good. Asked only to enumerate, the model
+    /// returns the four asks of `9aee0484` verbatim and identically on repeat
+    /// trials, and five for `6bfd1e01` — an over-split the gate forgives.
+    ///
+    /// Pass two is what breaks. Handed a list and told to emit one entry per
+    /// ask, it stops deciding: `2279229f`, a message that says outright "I
+    /// know we already are running a comparison, can we just add Luna to
+    /// that?", went from 8/8 `attach` to 2/5 because three enumerated asks
+    /// read as three things to create. `63e0c989`, a status sweep that is
+    /// 8/8 `none` in one call, attached to a board item. And the utterance the
+    /// split existed to fix did not move: `6bfd1e01` scored 0 of 4 real
+    /// judgements against 4 of 7 in one call.
+    ///
+    /// Over eight and six replays, transport failures excluded from both
+    /// denominators: **81/87 (93%) in one call against 49/63 (78%) split.**
+    ///
+    /// The lesson is not "two passes are bad" — it is that an enumeration
+    /// handed over as input becomes an instruction to emit that many tasks,
+    /// which is the wrong contract for a classifier whose three answers
+    /// include "attach to something that already exists" and "nothing".
+    #[serde(default = "default_two_pass")]
+    pub two_pass: bool,
 }
 
 fn default_timeout_ms() -> u64 {
@@ -142,6 +174,10 @@ fn default_max_tokens() -> u32 {
 
 fn default_attempts() -> u32 {
     3
+}
+
+fn default_two_pass() -> bool {
+    false
 }
 
 /// The message being extracted from.
@@ -297,14 +333,31 @@ impl TaskExtractor {
     /// empty [`Extraction`] and a warn line, because capture is important and
     /// blocking a reply on it is not.
     pub async fn extract(&self, cfg: &TaskExtractConfig, input: &ExtractInput) -> Extraction {
-        let mut attempt = 0;
+        let attempts = cfg.attempts.max(1);
+
+        // Pass one. A failure here is not fatal: the classifier still emits its
+        // own `asks`, so falling back costs accuracy on multi-ask messages and
+        // loses nothing else. Losing the message would be worse than losing the
+        // enumeration.
+        let asks = if cfg.two_pass {
+            match self.decompose(cfg, input).await {
+                Ok(asks) => {
+                    debug!(asks = asks.len(), "decompose pass enumerated the asks");
+                    asks
+                }
+                Err(e) => {
+                    warn!(error = %e, "decompose pass failed — classifying in one call");
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
+
+        // Pass two.
         let mut budget = cfg.max_tokens;
         let mut last_error = String::from("no attempt was made");
-        let raw = loop {
-            attempt += 1;
-            if attempt > cfg.attempts.max(1) {
-                break Err(last_error);
-            }
+        for attempt in 1..=attempts {
             let try_cfg = TaskExtractConfig { max_tokens: budget, ..cfg.clone() };
             // First ask is greedy; a retry must take a DIFFERENT path through
             // the model or it is not a retry at all. Gemini's `RECITATION`
@@ -313,12 +366,31 @@ impl TaskExtractor {
             // measured on `46c1401d`, which lost all three attempts at
             // temperature 0 and answered on the first non-greedy one.
             let temperature = if attempt == 1 { 0.0 } else { 0.4 };
-            match self.ask(&try_cfg, input, temperature).await {
-                Ok(raw) => break Ok(raw),
+            match self.ask(&try_cfg, input, temperature, &asks).await {
+                Ok((model_asks, raw)) => {
+                    let mut extraction = validate(raw, input, &self.known_pubkeys);
+                    // The first pass's list wins when there is one: it is what
+                    // the classifier was told to work from.
+                    extraction.asks = if asks.is_empty() { model_asks } else { asks };
+                    for d in &extraction.dropped {
+                        warn!(
+                            index = d.index,
+                            reason = %d.reason,
+                            "task extraction dropped a task that failed validation"
+                        );
+                    }
+                    debug!(
+                        tasks = extraction.tasks.len(),
+                        dropped = extraction.dropped.len(),
+                        asks = extraction.asks.len(),
+                        "task extraction complete"
+                    );
+                    return extraction;
+                }
                 Err(e) => {
                     warn!(
                         attempt,
-                        of = cfg.attempts.max(1),
+                        of = attempts,
                         budget,
                         error = %e,
                         "task extraction attempt failed"
@@ -329,33 +401,65 @@ impl TaskExtractor {
                     budget = budget.saturating_mul(2);
                 }
             }
-        };
-        match raw {
-            Ok((asks, raw)) => {
-                if !asks.is_empty() {
-                    debug!(asks = asks.len(), "task extraction enumerated the asks");
-                }
-                let mut extraction = validate(raw, input, &self.known_pubkeys);
-                extraction.asks = asks;
-                for d in &extraction.dropped {
-                    warn!(
-                        index = d.index,
-                        reason = %d.reason,
-                        "task extraction dropped a task that failed validation"
-                    );
-                }
-                debug!(
-                    tasks = extraction.tasks.len(),
-                    dropped = extraction.dropped.len(),
-                    "task extraction complete"
-                );
-                extraction
-            }
-            Err(e) => {
-                warn!(error = %e, "task extraction failed — turn proceeds with no extraction");
-                Extraction::failed(e)
-            }
         }
+        warn!(error = %last_error, "task extraction failed — turn proceeds with no extraction");
+        Extraction::failed(last_error)
+    }
+
+    /// First pass: ask only for the enumeration.
+    async fn decompose(
+        &self,
+        cfg: &TaskExtractConfig,
+        input: &ExtractInput,
+    ) -> Result<Vec<String>, String> {
+        let text = input.message.as_ref().map(|m| m.text.as_str()).unwrap_or("");
+        let body = serde_json::json!({
+            "model": cfg.model,
+            "temperature": 0,
+            "max_tokens": cfg.max_tokens,
+            "messages": [
+                { "role": "system", "content": DECOMPOSE_PROMPT },
+                { "role": "user", "content": format!(
+                    "THE MESSAGE:\n{}",
+                    text.chars().take(MAX_CONTENT_CHARS).collect::<String>()
+                ) },
+            ],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "asks",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "asks": { "type": "array", "items": { "type": "string" } }
+                        },
+                        "required": ["asks"]
+                    }
+                }
+            }
+        });
+        let reply = self.post(cfg, body).await?;
+        #[derive(serde::Deserialize)]
+        struct Asks {
+            #[serde(default)]
+            asks: Vec<String>,
+        }
+        let trimmed = reply.trim();
+        let parsed: Asks = serde_json::from_str(trimmed).or_else(|_| {
+            let start = trimmed.find('{').ok_or("no JSON object in decompose reply")?;
+            let end = trimmed
+                .rfind('}')
+                .filter(|e| *e > start)
+                .ok_or("decompose reply looks truncated")?;
+            serde_json::from_str(&trimmed[start..=end]).map_err(|e| e.to_string())
+        })?;
+        Ok(parsed
+            .asks
+            .into_iter()
+            .map(|a| a.trim().to_string())
+            .filter(|a| !a.is_empty())
+            .take(32)
+            .collect())
     }
 
     async fn ask(
@@ -363,6 +467,7 @@ impl TaskExtractor {
         cfg: &TaskExtractConfig,
         input: &ExtractInput,
         temperature: f64,
+        asks: &[String],
     ) -> Result<(Vec<String>, Vec<RawTask>), String> {
         let mut body = serde_json::json!({
             "model": cfg.model,
@@ -370,7 +475,7 @@ impl TaskExtractor {
             "max_tokens": cfg.max_tokens,
             "messages": [
                 { "role": "system", "content": SYSTEM_PROMPT },
-                { "role": "user", "content": render_input(input) },
+                { "role": "user", "content": render_input(input, asks) },
             ],
             "response_format": {
                 "type": "json_schema",
@@ -385,6 +490,20 @@ impl TaskExtractor {
             );
         }
 
+        parse_tasks(&self.post(cfg, body).await?)
+    }
+
+    /// POST one chat completion and return `choices[0].message.content`.
+    ///
+    /// Every failure mode either pass can hit resolves here, and each is named
+    /// for what it actually is — a status, a truncation, a content filter —
+    /// because all three arrive downstream as "no tasks" and are otherwise
+    /// indistinguishable from a verdict.
+    async fn post(
+        &self,
+        cfg: &TaskExtractConfig,
+        body: serde_json::Value,
+    ) -> Result<String, String> {
         let url = format!("{}/chat/completions", cfg.endpoint.trim_end_matches('/'));
         let mut req = self
             .client
@@ -406,7 +525,7 @@ impl TaskExtractor {
         }
         let json: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
         // Check this BEFORE parsing. A reply cut off at the token budget is a
-        // half-written JSON object, and `parse_tasks` can only report that as
+        // half-written JSON object, and the parser can only report that as
         // malformed — which sends whoever reads the log hunting a model bug
         // instead of raising a budget. Name the real cause here.
         let finish = json
@@ -420,13 +539,12 @@ impl TaskExtractor {
                 cfg.max_tokens
             ));
         }
-        let message = json
-            .pointer("/choices/0/message/content")
+        json.pointer("/choices/0/message/content")
             .and_then(|v| v.as_str())
+            .map(str::to_string)
             .ok_or_else(|| {
                 format!("no choices[0].message.content in response (finish_reason={finish})")
-            })?;
-        parse_tasks(message)
+            })
     }
 }
 
@@ -660,7 +778,7 @@ fn is_known_pubkey(hex: &str, known: &HashSet<String>) -> bool {
 }
 
 /// Render the input the model reads.
-pub fn render_input(input: &ExtractInput) -> String {
+pub fn render_input(input: &ExtractInput, asks: &[String]) -> String {
     let mut s = String::new();
 
     if input.board.is_empty() {
@@ -691,6 +809,19 @@ pub fn render_input(input: &ExtractInput) -> String {
             s.push('\n');
         }
         None => s.push_str("THE MESSAGE:\n(missing)\n"),
+    }
+
+    // The first pass's enumeration, handed over as input rather than left as
+    // an intention. This is the whole point of the split: the classifier is
+    // told how many things it is classifying instead of having to decide that
+    // and the classification in one breath.
+    if !asks.is_empty() {
+        s.push_str("\nTHE ASKS IN THIS MESSAGE, already enumerated for you — emit one \
+                    `tasks` entry for each, in this order, and repeat this list verbatim \
+                    as `asks`:\n");
+        for (i, a) in asks.iter().enumerate() {
+            s.push_str(&format!("  {i}. {}\n", a.chars().take(240).collect::<String>()));
+        }
     }
     s
 }
@@ -800,6 +931,37 @@ return as one has the label right and the work wrong. The asymmetry applies
 here too: IF YOU ARE UNSURE WHETHER TWO CLAUSES ARE ONE TASK OR TWO, EMIT TWO.
 Splitting one task in half costs a click. Merging two into one loses work."#;
 
+/// The first pass: enumerate, and nothing else.
+///
+/// Deliberately short. It is not asked to classify, to consult the board, or to
+/// decide whether anything should exist — only to say how many distinct things
+/// were asked for and what each one is. Everything the classifier prompt says
+/// about `create`, `attach` and the empty list is a distraction here, and the
+/// measured failure is that a single call spends its attention on the judgement
+/// and under-counts the asks.
+pub const DECOMPOSE_PROMPT: &str = r#"You read one chat message from the team's owner and list the distinct things it asks for.
+
+Reply ONLY with JSON: {"asks": ["…", "…"]}
+
+Rules.
+
+- One entry per distinct thing. A single sentence often holds several: "move X,
+  get rid of Y, evict Z, and then once that is done look at W" is FOUR, not one.
+  Clauses joined by "and", "also", "as well as" or a comma are usually separate
+  asks.
+- Keep each entry short — a few words naming the thing, in the owner's own
+  terms. You are listing, not planning.
+- Preserve the order they were asked in.
+- Include an ask even if it sounds small, vague, or like something already
+  underway. Deciding what to do about it is someone else's job; your only job
+  is not to miss it.
+- If the message asks for nothing at all — it is a greeting, a status question
+  about everything, a challenge to an answer, or a note about how to work with
+  no thing to build — return an empty list.
+
+Missing an ask is the one failure that matters. If you are unsure whether two
+clauses are one thing or two, list two."#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -905,6 +1067,157 @@ mod tests {
         assert_eq!(defaulted.attempts, default_attempts());
     }
 
+    /// A stub endpoint replying with each of `replies` in turn, recording every
+    /// request body it was sent.
+    async fn stub_endpoint(
+        replies: Vec<String>,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>) {
+        let bodies: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = bodies.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut n = 0usize;
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else { return };
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                while let Ok(read) = sock.read(&mut chunk).await {
+                    if read == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..read]);
+                    if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        if let Ok(v) = serde_json::from_slice(&buf[pos + 4..]) {
+                            recorded.lock().unwrap().push(v);
+                            break;
+                        }
+                    }
+                }
+                let reply =
+                    replies.get(n).or_else(|| replies.last()).cloned().unwrap_or_default();
+                n += 1;
+                let body = reply.into_bytes();
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = sock.write_all(head.as_bytes()).await;
+                let _ = sock.write_all(&body).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+        (format!("http://{addr}"), bodies)
+    }
+
+    fn reply_with(content: &str) -> String {
+        serde_json::json!({
+            "choices": [{ "finish_reason": "stop", "message": { "content": content } }]
+        })
+        .to_string()
+    }
+
+    fn two_pass_cfg(endpoint: String) -> TaskExtractConfig {
+        TaskExtractConfig {
+            endpoint,
+            model: "m".into(),
+            timeout_ms: 5_000,
+            max_tokens: 100,
+            reasoning_effort: None,
+            attempts: 3,
+            two_pass: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn the_first_pass_asks_only_to_enumerate_and_hands_the_list_to_the_second() {
+        // The whole point of the split. One call has to decide how many things
+        // were asked for AND what each one is, and the corpus says the first is
+        // what breaks: `6bfd1e01` sat at 4 of 8 while every other utterance was
+        // at 7 or 8. Pass one's output must arrive as pass two's INPUT, not as
+        // an instruction pass two is trusted to follow.
+        let (endpoint, bodies) = stub_endpoint(vec![
+            reply_with(r#"{"asks":["move rock","delete rock2","evict memories"]}"#),
+            reply_with(
+                r#"{"asks":["move rock","delete rock2","evict memories"],"tasks":[
+                    {"action":"create","subject":"move rock"},
+                    {"action":"create","subject":"delete rock2"},
+                    {"action":"create","subject":"evict memories"}]}"#,
+            ),
+        ])
+        .await;
+        let extraction = TaskExtractor::new(None, HashSet::new())
+            .extract(&two_pass_cfg(endpoint), &input_with_board())
+            .await;
+
+        assert_eq!(extraction.verdict(), Verdict::Create { count: 3 });
+        let sent = bodies.lock().unwrap();
+        assert_eq!(sent.len(), 2, "one enumerate call, one classify call");
+
+        let first = sent[0].pointer("/messages/0/content").unwrap().as_str().unwrap();
+        assert!(first.contains("list the distinct things it asks for"));
+        assert!(!first.contains("attach"), "pass one must not be asked to classify");
+
+        let second_user = sent[1].pointer("/messages/1/content").unwrap().as_str().unwrap();
+        assert!(second_user.contains("already enumerated for you"));
+        assert!(second_user.contains("0. move rock"));
+        assert!(second_user.contains("2. evict memories"));
+    }
+
+    #[tokio::test]
+    async fn a_failed_first_pass_falls_back_rather_than_losing_the_message() {
+        // Losing the enumeration costs accuracy on multi-ask messages. Losing
+        // the message is the failure this module exists to remove, so the
+        // decompose pass is never allowed to be fatal.
+        let (endpoint, bodies) = stub_endpoint(vec![
+            reply_with("I can't help with that."),
+            reply_with(r#"{"asks":["one thing"],"tasks":[{"action":"create","subject":"one"}]}"#),
+        ])
+        .await;
+        let extraction = TaskExtractor::new(None, HashSet::new())
+            .extract(&two_pass_cfg(endpoint), &input_with_board())
+            .await;
+
+        assert_eq!(extraction.verdict(), Verdict::Create { count: 1 });
+        assert!(extraction.error.is_none());
+        let sent = bodies.lock().unwrap();
+        assert_eq!(sent.len(), 2);
+        let second_user = sent[1].pointer("/messages/1/content").unwrap().as_str().unwrap();
+        assert!(
+            !second_user.contains("already enumerated"),
+            "no list to hand over, so none is claimed"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_enumeration_is_carried_through_as_the_none_verdict() {
+        // Four of the eleven corpus utterances are this case, and pass one
+        // deciding "nothing was asked for" must not read as a failed call.
+        let (endpoint, _) = stub_endpoint(vec![
+            reply_with(r#"{"asks":[]}"#),
+            reply_with(r#"{"asks":[],"tasks":[]}"#),
+        ])
+        .await;
+        let extraction = TaskExtractor::new(None, HashSet::new())
+            .extract(&two_pass_cfg(endpoint), &input_with_board())
+            .await;
+        assert_eq!(extraction.verdict(), Verdict::None { count: 0 });
+        assert!(extraction.error.is_none());
+    }
+
+    #[test]
+    fn the_decompose_prompt_does_not_ask_for_a_judgement() {
+        // Everything the classifier knows about create/attach/none is a
+        // distraction in pass one, and mixing them is what the split undoes.
+        assert!(DECOMPOSE_PROMPT.contains("list the distinct things"));
+        assert!(DECOMPOSE_PROMPT.contains("FOUR, not one"));
+        assert!(DECOMPOSE_PROMPT.contains("Missing an ask is the one failure that matters"));
+        assert!(!DECOMPOSE_PROMPT.contains("attachTo"));
+        assert!(!DECOMPOSE_PROMPT.contains("doneWhen"));
+    }
+
     #[tokio::test]
     async fn a_failing_endpoint_is_asked_exactly_attempts_times_then_reported() {
         // The retry has to be bounded and the give-up has to be an `error`,
@@ -958,6 +1271,7 @@ mod tests {
             max_tokens: 100,
             reasoning_effort: None,
             attempts: 3,
+            two_pass: false,
         };
         let extraction = TaskExtractor::new(None, HashSet::new())
             .extract(&cfg, &input_with_board())
@@ -995,6 +1309,9 @@ mod tests {
         assert_eq!(defaulted.max_tokens, 8_000);
         assert_eq!(defaulted.attempts, 3);
         assert_eq!(defaulted.timeout_ms, 20_000);
+        // Measured worse: 49/63 split against 81/87 in one call. See
+        // `TaskExtractConfig::two_pass`.
+        assert!(!defaulted.two_pass, "the split is off until a model beats one call");
 
         let explicit: TaskExtractConfig = serde_json::from_str(
             r#"{"endpoint":"http://x/v1","model":"m","reasoning_effort":"high"}"#,
@@ -1190,7 +1507,7 @@ mod tests {
         // `attach` is undecidable without it: "where are we with spark 1.3?"
         // and "where are we with everything?" are the same sentence shape and
         // different answers, and only the board tells them apart.
-        let rendered = render_input(&input_with_board());
+        let rendered = render_input(&input_with_board(), &[]);
         assert!(rendered.contains("OPEN TASKS"));
         assert!(rendered.contains("Assess Spark 1.3 against Flash"));
         assert!(rendered.contains(&"a".repeat(64)));
@@ -1201,7 +1518,7 @@ mod tests {
     fn rendered_input_says_so_when_the_board_is_empty() {
         let mut input = input_with_board();
         input.board.clear();
-        assert!(render_input(&input).contains("OPEN TASKS: none."));
+        assert!(render_input(&input, &[]).contains("OPEN TASKS: none."));
     }
 
     #[test]
@@ -1218,7 +1535,7 @@ mod tests {
         input.thread_context = (0..MAX_CONTEXT_ENTRIES + 5).map(|i| format!("entry {i}")).collect();
         input.message.as_mut().unwrap().text = "z".repeat(MAX_CONTENT_CHARS + 500);
 
-        let rendered = render_input(&input);
+        let rendered = render_input(&input, &[]);
         assert!(rendered.contains(&format!("{:064}", MAX_BOARD_ENTRIES - 1)));
         assert!(!rendered.contains(&format!("{:064}", MAX_BOARD_ENTRIES)));
         assert!(rendered.contains(&format!("entry {}", MAX_CONTEXT_ENTRIES - 1)));

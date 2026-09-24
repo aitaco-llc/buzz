@@ -59,6 +59,7 @@ struct Args {
     endpoint: String,
     model: String,
     reasoning_effort: Option<String>,
+    two_pass: bool,
 }
 
 fn parse_args() -> Args {
@@ -69,6 +70,7 @@ fn parse_args() -> Args {
         "https://generativelanguage.googleapis.com/v1beta/openai".to_string();
     let mut model = "gemini-3.8-flash".to_string();
     let mut reasoning_effort: Option<String> = None;
+    let mut two_pass = false;
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
         match flag.as_str() {
@@ -79,6 +81,7 @@ fn parse_args() -> Args {
             "--model" => model = it.next().unwrap_or(model),
             // `none` sends no field at all, so the endpoint's own default
             // thinking budget applies.
+            "--two-pass" => two_pass = true,
             "--reasoning-effort" => {
                 reasoning_effort = it.next().filter(|v| v != "none");
             }
@@ -98,6 +101,7 @@ fn parse_args() -> Args {
         endpoint,
         model,
         reasoning_effort,
+        two_pass,
     }
 }
 
@@ -135,6 +139,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.endpoint,
         args.reasoning_effort.as_deref().unwrap_or("<endpoint default>")
     );
+    eprintln!(
+        "enumeration: {}",
+        if args.two_pass { "its own first pass" } else { "in the classify call" }
+    );
 
     let cfg = TaskExtractConfig {
         endpoint: args.endpoint,
@@ -143,6 +151,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_tokens: 8_000,
         reasoning_effort: args.reasoning_effort.clone(),
         attempts: 3,
+        two_pass: args.two_pass,
     };
     // No roster: the corpus has no pubkeys, and an empty known-set means the
     // extractor accepts any well-formed 64-hex assignee rather than rejecting
