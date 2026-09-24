@@ -153,6 +153,123 @@ struct PeerAudio {
     decode_errors: u64,
     /// PCM samples decoded and handed to Gemini at 16 kHz.
     pcm_samples: u64,
+    /// Continuity and timing of this peer's inbound stream. `silence_injections`
+    /// counts ticks on which nothing had arrived for 100 ms, which says *that*
+    /// audio stopped and nothing about whether it was lost or merely late, or
+    /// for how long. These answer both.
+    arrival: InboundArrival,
+}
+
+/// Sequence continuity and inter-arrival timing for one inbound peer.
+///
+/// Deliberately the same thresholds and the same wrap rule as the relay's
+/// `crates/buzz-relay/src/audio/stats.rs`, so a call's two sides can be read
+/// side by side without converting anything. The bridge is its own cargo
+/// workspace (it links libopus), so the logic is duplicated rather than shared;
+/// if one side's rule changes, the other has to change with it or the
+/// comparison stops meaning anything.
+#[derive(Debug, Default)]
+struct InboundArrival {
+    /// Discontinuities in `seq`.
+    gaps: u64,
+    /// Frames implied missing by those discontinuities — **lost**, as opposed
+    /// to the late-but-present frames a catch-up burst brings in.
+    missing: u64,
+    /// `seq` went backwards: reordering, or a sender that restarted.
+    regressions: u64,
+    /// `seq` repeated.
+    duplicates: u64,
+    /// Lengths of every inter-arrival gap of at least 100 ms, bucketed. A bare
+    /// count cannot tell 70 gaps of 110 ms from 7 stalls of 2 s, and those are
+    /// different faults.
+    histogram: GapHistogram,
+    /// Summed length of the gaps in the histogram.
+    total_ms: u64,
+    /// The worst single gap, including ones below the threshold.
+    worst_ms: u64,
+    last_seq: Option<u16>,
+    last_at: Option<Instant>,
+}
+
+/// Inter-arrival gaps at or past [`SILENCE_AFTER`], by length.
+#[derive(Debug, Default)]
+struct GapHistogram {
+    ms_100_250: u64,
+    ms_250_500: u64,
+    ms_500_1000: u64,
+    ms_1000_2000: u64,
+    ms_2000_plus: u64,
+}
+
+impl GapHistogram {
+    fn add(&mut self, ms: u64) {
+        match ms {
+            0..=249 => self.ms_100_250 += 1,
+            250..=499 => self.ms_250_500 += 1,
+            500..=999 => self.ms_500_1000 += 1,
+            1000..=1999 => self.ms_1000_2000 += 1,
+            _ => self.ms_2000_plus += 1,
+        }
+    }
+
+    fn snapshot(&self) -> Value {
+        json!({
+            "100_250ms": self.ms_100_250,
+            "250_500ms": self.ms_250_500,
+            "500_1000ms": self.ms_500_1000,
+            "1000_2000ms": self.ms_1000_2000,
+            "over_2000ms": self.ms_2000_plus,
+        })
+    }
+}
+
+/// A `seq` delta at or past this reads as the sequence going backwards rather
+/// than forwards over a pile of losses. `seq` is a u16 that wraps every 65536
+/// frames — about 22 minutes at 20 ms a frame — so a real forward gap is never
+/// close to half the space.
+const SEQ_REGRESSION_FROM: u16 = 1 << 15;
+
+impl InboundArrival {
+    /// Fold one accepted inbound frame in.
+    fn observe(&mut self, seq: u16, now: Instant) {
+        if let Some(previous) = self.last_at {
+            let gap = now.saturating_duration_since(previous);
+            let ms = gap.as_millis().min(u128::from(u64::MAX)) as u64;
+            self.worst_ms = self.worst_ms.max(ms);
+            if gap >= SILENCE_AFTER {
+                self.histogram.add(ms);
+                self.total_ms += ms;
+            }
+        }
+        self.last_at = Some(now);
+
+        if let Some(last) = self.last_seq {
+            match seq.wrapping_sub(last) {
+                0 => self.duplicates += 1,
+                1 => {}
+                d if d >= SEQ_REGRESSION_FROM => self.regressions += 1,
+                d => {
+                    self.gaps += 1;
+                    self.missing += u64::from(d) - 1;
+                }
+            }
+        }
+        // The reference moves even on a regression: holding the old one would
+        // report every later frame as another regression.
+        self.last_seq = Some(seq);
+    }
+
+    fn snapshot(&self) -> Value {
+        json!({
+            "seq_gaps": self.gaps,
+            "seq_missing": self.missing,
+            "seq_regressions": self.regressions,
+            "seq_duplicates": self.duplicates,
+            "gaps_over_100ms": self.histogram.snapshot(),
+            "gap_total_ms": self.total_ms,
+            "gap_worst_ms": self.worst_ms,
+        })
+    }
 }
 
 /// Running counts on both audio directions. Cumulative since `call_start`:
@@ -197,6 +314,13 @@ impl AudioStats {
     fn peer(&mut self, index: u8, pubkey: &str) -> &mut PeerAudio {
         let entry = self.inbound.entry(index).or_default();
         if entry.pubkey != pubkey {
+            // The relay reuses a departed peer's index. The frame counts stay
+            // cumulative per index, but sequence continuity belongs to one
+            // sender: carried over, the newcomer's first frame would read as
+            // a gap or a regression against a stream it never sent.
+            if !entry.pubkey.is_empty() {
+                entry.arrival = InboundArrival::default();
+            }
             entry.pubkey = pubkey.to_owned();
         }
         entry
@@ -211,6 +335,7 @@ impl AudioStats {
                 "opus_frames": peer.opus_frames,
                 "decode_errors": peer.decode_errors,
                 "pcm_samples_to_gemini": peer.pcm_samples,
+                "arrival": peer.arrival.snapshot(),
             })).collect::<Vec<_>>(),
             "to_gemini_errors": self.to_gemini_errors,
             "from_gemini": {
@@ -832,7 +957,7 @@ async fn run_call_inner(
                 };
                 match message {
                     Message::Binary(bytes) => {
-                        let Some((index, _header, opus_payload)) = wire::parse_relay_frame(&bytes) else {
+                        let Some((index, header, opus_payload)) = wire::parse_relay_frame(&bytes) else {
                             continue;
                         };
                         let Some(pubkey) = room.peers.get(&index) else { continue };
@@ -848,7 +973,14 @@ async fn run_call_inner(
                             *decoder = opus::Decoder::new(gemini::INPUT_RATE, opus::Channels::Mono)?;
                         }
                         let decoded = decoder.decode(opus_payload, &mut pcm_in, false);
-                        audio.peer(index, pubkey).opus_frames += 1;
+                        let peer = audio.peer(index, pubkey);
+                        peer.opus_frames += 1;
+                        // Before the decode result: a frame that arrived is a
+                        // frame that arrived, whether or not its Opus body was
+                        // usable. Counting only decodable frames would hide a
+                        // sender whose stream is intact and whose payloads are
+                        // not.
+                        peer.arrival.observe(header.seq, Instant::now());
                         match decoded {
                             Ok(n) if n > 0 => {
                                 audio.peer(index, pubkey).pcm_samples += n as u64;
@@ -1986,6 +2118,141 @@ mod tests {
         );
     }
 
+    /// A stream arriving one frame every 20 ms has nothing wrong with it, and
+    /// must say so. A counter that fires on a healthy call is worse than none.
+    #[test]
+    fn a_contiguous_inbound_stream_reports_nothing() {
+        let mut arrival = InboundArrival::default();
+        let t0 = Instant::now();
+        for (i, seq) in (500u16..=520).enumerate() {
+            arrival.observe(seq, t0 + Duration::from_millis(20 * i as u64));
+        }
+        let snap = arrival.snapshot();
+        assert_eq!(snap["seq_gaps"], 0);
+        assert_eq!(snap["seq_missing"], 0);
+        assert_eq!(snap["gap_total_ms"], 0, "20 ms spacing is not a gap");
+        assert_eq!(
+            snap["gap_worst_ms"], 20,
+            "but the worst spacing is reported"
+        );
+    }
+
+    /// The whole point of `seq`: a frame that never arrived is **lost**, and a
+    /// frame that arrived late is not. `silence_injections` cannot tell them
+    /// apart, which is why it could not answer call fbaba8a8.
+    #[test]
+    fn an_inbound_jump_counts_the_frames_that_never_arrived() {
+        let mut arrival = InboundArrival::default();
+        let t0 = Instant::now();
+        arrival.observe(40, t0);
+        arrival.observe(45, t0 + Duration::from_millis(20));
+        let snap = arrival.snapshot();
+        assert_eq!(snap["seq_gaps"], 1);
+        assert_eq!(snap["seq_missing"], 4, "41, 42, 43 and 44 never arrived");
+        assert_eq!(snap["seq_regressions"], 0);
+    }
+
+    /// `seq` wraps every 65536 frames, about 22 minutes at 20 ms a frame.
+    /// Reading a wrap as a 65535-frame loss would make every long call report
+    /// a catastrophe it did not have.
+    #[test]
+    fn an_inbound_wrap_is_continuity() {
+        let mut arrival = InboundArrival::default();
+        let t0 = Instant::now();
+        arrival.observe(u16::MAX, t0);
+        arrival.observe(0, t0 + Duration::from_millis(20));
+        let snap = arrival.snapshot();
+        assert_eq!(snap["seq_gaps"], 0);
+        assert_eq!(snap["seq_missing"], 0);
+        assert_eq!(snap["seq_regressions"], 0);
+    }
+
+    #[test]
+    fn an_inbound_regression_is_counted_once_and_does_not_cascade() {
+        let mut arrival = InboundArrival::default();
+        let t0 = Instant::now();
+        arrival.observe(900, t0);
+        arrival.observe(800, t0 + Duration::from_millis(20));
+        arrival.observe(801, t0 + Duration::from_millis(40));
+        arrival.observe(802, t0 + Duration::from_millis(60));
+        let snap = arrival.snapshot();
+        assert_eq!(snap["seq_regressions"], 1, "one regression, not three");
+        assert_eq!(snap["seq_gaps"], 0);
+    }
+
+    #[test]
+    fn a_repeated_inbound_sequence_number_is_a_duplicate() {
+        let mut arrival = InboundArrival::default();
+        let t0 = Instant::now();
+        arrival.observe(12, t0);
+        arrival.observe(12, t0 + Duration::from_millis(20));
+        let snap = arrival.snapshot();
+        assert_eq!(snap["seq_duplicates"], 1);
+        assert_eq!(snap["seq_gaps"], 0);
+        assert_eq!(snap["seq_regressions"], 0);
+    }
+
+    /// rock's ask, and the reason a count was not enough: 70 gaps of 110 ms
+    /// and 7 stalls of 2 s are different faults, and `silence_injections`
+    /// renders them as the same large number.
+    #[test]
+    fn inbound_gaps_are_bucketed_by_length_not_merely_counted() {
+        let mut arrival = InboundArrival::default();
+        let t0 = Instant::now();
+        let mut at = t0;
+        arrival.observe(1, at);
+        // 99 ms is below the threshold and must not appear anywhere; 100 ms
+        // is exactly on it and must, or `>=` and `>` are indistinguishable and
+        // the boundary is unpinned.
+        for (i, gap) in [99u64, 100, 120, 300, 700, 1500, 2600]
+            .into_iter()
+            .enumerate()
+        {
+            at += Duration::from_millis(gap);
+            arrival.observe(2 + i as u16, at);
+        }
+        let snap = arrival.snapshot();
+        let h = &snap["gaps_over_100ms"];
+        assert_eq!(
+            h["100_250ms"], 2,
+            "the 100 ms one, on the threshold, and the 120 ms one"
+        );
+        assert_eq!(h["250_500ms"], 1, "the 300 ms one");
+        assert_eq!(h["500_1000ms"], 1, "the 700 ms one");
+        assert_eq!(h["1000_2000ms"], 1, "the 1500 ms one");
+        assert_eq!(h["over_2000ms"], 1, "the 2600 ms one");
+        assert_eq!(
+            snap["gap_total_ms"], 5320,
+            "100+120+300+700+1500+2600; the 99 ms gap is not in it"
+        );
+        assert_eq!(snap["gap_worst_ms"], 2600);
+    }
+
+    /// The counters are worth nothing if a post-mortem cannot read them off a
+    /// call's `audio_stats` records, per peer.
+    #[test]
+    fn arrival_counters_reach_the_audio_stats_snapshot_per_peer() {
+        let mut audio = AudioStats::default();
+        let t0 = Instant::now();
+        let peer = audio.peer(1, "lloyd");
+        peer.arrival.observe(10, t0);
+        peer.arrival.observe(14, t0 + Duration::from_millis(800));
+        audio.peer(2, "rock").arrival.observe(1, t0);
+
+        let snapshot = audio.snapshot(Duration::from_millis(5000));
+        let inbound = snapshot["in"].as_array().expect("in");
+        assert_eq!(inbound.len(), 2);
+        assert_eq!(inbound[0]["pubkey"], "lloyd");
+        assert_eq!(inbound[0]["arrival"]["seq_gaps"], 1);
+        assert_eq!(inbound[0]["arrival"]["seq_missing"], 3);
+        assert_eq!(inbound[0]["arrival"]["gaps_over_100ms"]["500_1000ms"], 1);
+        assert_eq!(inbound[0]["arrival"]["gap_worst_ms"], 800);
+        assert_eq!(
+            inbound[1]["arrival"]["gap_worst_ms"], 0,
+            "a peer with one frame has no gap"
+        );
+    }
+
     #[test]
     fn audio_stats_count_both_directions_and_each_peer() {
         let mut audio = AudioStats::default();
@@ -2025,6 +2292,30 @@ mod tests {
         let snapshot = audio.snapshot(Duration::ZERO);
         assert_eq!(snapshot["in"][0]["pubkey"], "cd");
         assert_eq!(snapshot["in"][0]["opus_frames"], 2);
+    }
+
+    #[test]
+    fn a_new_sender_on_a_reused_index_starts_its_own_sequence() {
+        let t0 = Instant::now();
+        let mut audio = AudioStats::default();
+        audio.peer(1, "ab").arrival.observe(500, t0);
+        audio
+            .peer(1, "ab")
+            .arrival
+            .observe(501, t0 + Duration::from_millis(20));
+        // A different key takes index 1 and starts its own stream at 7.
+        audio
+            .peer(1, "cd")
+            .arrival
+            .observe(7, t0 + Duration::from_millis(40));
+        audio
+            .peer(1, "cd")
+            .arrival
+            .observe(8, t0 + Duration::from_millis(60));
+        let arrival = &audio.snapshot(Duration::ZERO)["in"][0]["arrival"];
+        assert_eq!(arrival["seq_gaps"], 0, "{arrival}");
+        assert_eq!(arrival["seq_regressions"], 0, "{arrival}");
+        assert_eq!(arrival["seq_missing"], 0, "{arrival}");
     }
 
     #[test]
