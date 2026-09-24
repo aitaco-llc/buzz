@@ -92,6 +92,12 @@ class ProtocolTests(unittest.TestCase):
                     if mode == 'off-schema':
                         answer = {'answer': 'SOLVED-fixture7'}
                     delta, finish = {'content': json.dumps(answer)}, 'stop'
+                if mode == 'empty-citations' and i == 2:
+                    # Answering while read_thread is still on offer: of-agent
+                    # sends that turn with tools and no response_format, so
+                    # nothing constrains it. This is what B9/B10 did on hip.
+                    delta = {'content': json.dumps({'answer': 'SOLVED-fixture7', 'source_ids': []})}
+                    finish = 'stop'
                 chunk = {'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish}]}
                 body = ('data: ' + json.dumps(chunk) + '\n\ndata: [DONE]\n\n').encode()
                 try:
@@ -160,7 +166,10 @@ class ProtocolTests(unittest.TestCase):
                         self.assertEqual(chats[1]['tools'][0]['function']['parameters']['properties']['event_id']['enum'], [ROOT])
                         self.assertNotIn('response_format', chats[0])
                         self.assertEqual(chats[2]['response_format']['type'], 'json_schema')
-                        self.assertEqual(chats[2]['response_format']['json_schema']['schema']['required'], ['answer', 'source_ids'])
+                        sent = chats[2]['response_format']['json_schema']['schema']
+                        self.assertEqual(sent['required'], ['answer', 'source_ids'])
+                        self.assertEqual(sent['properties']['source_ids']['minItems'], 1)
+                        self.assertEqual(sent['properties']['source_ids']['maxItems'], 5)
                         report = json.loads((d / 'result').read_text())['run']
                         self.assertEqual(report['loop'], 'rebrand-acp')
                         self.assertEqual(report['agent']['name'], 'rebrand-acp')
@@ -173,6 +182,14 @@ class ProtocolTests(unittest.TestCase):
                         proc.wait(timeout=20)
                         self.assertNotEqual(proc.returncode, 0)
                         self.assertTrue((d / 'result.run.json').exists() or mode == 'wrong-channel')
+                        if mode == 'empty-citations':
+                            # The turn that answered had a tool on offer, so it
+                            # carried no schema: an empty array cannot come
+                            # from a constrained decode.
+                            self.assertEqual(len(chats), 2)
+                            self.assertEqual([t['function']['name'] for t in chats[1]['tools']], ['read_thread'])
+                            self.assertNotIn('response_format', chats[1])
+                            self.assertIn('less than 1 item', json.loads((d / 'result.run.json').read_text())['error']['message'])
                         if mode == 'invented-code':
                             self.assertIn('SOLVED-123456', json.loads((d / 'result.run.json').read_text())['answer_text'])
                     self.assertTrue(all(q['#h'] == [CHANNEL] and q['kinds'] == [9, 40002] for q in queries))
@@ -202,6 +219,7 @@ class ProtocolTests(unittest.TestCase):
     def test_forged_citation(self): self.run_case('invented-citation')
     def test_invented_code_with_real_citation(self): self.run_case('invented-code')
     def test_answer_off_schema(self): self.run_case('off-schema')
+    def test_empty_citation_list_from_an_unconstrained_turn(self): self.run_case('empty-citations')
     def test_wrong_channel(self): self.run_case('wrong-channel')
     def test_model_error(self): self.run_case('model-error')
 
