@@ -14,6 +14,8 @@ mod relay;
 pub mod relevance;
 mod scope;
 mod setup_mode;
+pub mod task_board_source;
+pub mod task_extract;
 mod turn_log;
 mod usage;
 
@@ -336,6 +338,109 @@ fn effective_prompt_author(
 /// Encapsulation, not a test, is what closes that seam: `InboundAuthorGate {
 /// relay_self: None, .. }` is now a privacy error outside this module, and
 /// dropping the load inside it fails the construction regressions.
+/// The extractor's API key.
+///
+/// `BUZZ_ACP_TASK_EXTRACT_API_KEY` when set, otherwise `GEMINI_API_KEY` — which
+/// `deploy/buzz-agent-run` already fetches from Secret Manager at seat start
+/// for any seat whose adapter is `rebrand-acp --provider gemini`, the seat this
+/// runs on first.
+///
+/// The fallback is the point. That launcher's own comment says secrets are
+/// "fetched at start rather than stored in an EnvironmentFile", and adding a
+/// second variable for the same key to the same model would have meant writing
+/// one into `rock.env` to avoid touching a file this crate does not own.
+fn task_extract_api_key() -> Option<String> {
+    std::env::var("BUZZ_ACP_TASK_EXTRACT_API_KEY")
+        .ok()
+        .or_else(|| std::env::var("GEMINI_API_KEY").ok())
+        .filter(|k| !k.trim().is_empty())
+}
+
+/// Read one of the owner's messages for tasks, and record or publish what it
+/// found.
+///
+/// Runs detached from the turn. Every failure is a warn line and nothing else:
+/// a seat that cannot extract must still answer, and a task the harness is not
+/// sure about is better absent than published wrong — the same posture as the
+/// NIP-AR receipt.
+async fn task_extract_turn(
+    extractor: std::sync::Arc<task_extract::TaskExtractor>,
+    cfg: std::sync::Arc<task_extract::TaskExtractConfig>,
+    rest: relay::RestClient,
+    source: task_extract::SourceMessage,
+    publish: bool,
+) {
+    let board = match task_board_source::fetch(&rest, &source.channel).await {
+        Ok(board) => board,
+        Err(e) => {
+            // An empty board is not the same as no board: it turns every
+            // `attach` into a `create`, which is the duplicate the extractor
+            // exists to avoid. Say so rather than extracting blind.
+            tracing::warn!(
+                channel = %source.channel,
+                error = %e,
+                "task extraction could not read the board — skipping this message"
+            );
+            return;
+        }
+    };
+    let source_id = source.id.clone();
+    let channel = source.channel.clone();
+    let input = task_extract::ExtractInput {
+        message: Some(source),
+        thread_context: Vec::new(),
+        board,
+    };
+    let extraction = extractor.extract(&cfg, &input).await;
+    if let Some(error) = &extraction.error {
+        tracing::warn!(source = %source_id, %error, "task extraction produced nothing");
+        return;
+    }
+    if extraction.tasks.is_empty() {
+        tracing::info!(
+            source = %source_id,
+            %channel,
+            asks = extraction.asks.len(),
+            "task extraction: nothing to do"
+        );
+        return;
+    }
+    for task in &extraction.tasks {
+        match task {
+            task_extract::TaskAction::Create {
+                ask,
+                subject,
+                done_when,
+                ..
+            } => {
+                tracing::info!(
+                    source = %source_id, %channel, %subject, %done_when, %ask,
+                    published = publish,
+                    "task extraction: create"
+                );
+            }
+            task_extract::TaskAction::Attach { ask, attach_to, .. } => {
+                tracing::info!(
+                    source = %source_id, %channel, %attach_to, %ask,
+                    published = publish,
+                    "task extraction: attach"
+                );
+            }
+        }
+    }
+    if publish {
+        // Publication is the next commit. Reaching here with `publish` on is a
+        // configuration that promises more than the harness does, so it says so
+        // once per message rather than dropping the work silently.
+        tracing::warn!(
+            source = %source_id,
+            tasks = extraction.tasks.len(),
+            "BUZZ_ACP_TASK_EXTRACT_PUBLISH is set but publication is not wired yet — \
+             the extraction above was recorded, not written to the board"
+        );
+    }
+}
+
 mod inbound_author_gate {
     use super::{
         effective_prompt_author, is_dm_channel, is_owner_or_sibling, pool, refresh_relay_self,
@@ -364,6 +469,16 @@ mod inbound_author_gate {
     impl AuthorizedListenerEvent {
         pub(crate) fn into_parts(self) -> (relay::BuzzEvent, String) {
             (self.buzz_event, self.effective_author)
+        }
+
+        /// Borrow the verified event and its effective author.
+        ///
+        /// Task extraction reads the message before the subscription rules
+        /// decide whether this seat is woken by it, and it must not consume the
+        /// capability that the rest of the loop still needs. Read-only, so it
+        /// cannot be used to publish as the author.
+        pub(crate) fn parts(&self) -> (&relay::BuzzEvent, &str) {
+            (&self.buzz_event, &self.effective_author)
         }
     }
 
@@ -2866,6 +2981,58 @@ async fn tokio_main() -> Result<()> {
     // per-agent: each agent judges whether a message needs *it*, so a message
     // addressed to the whole team wakes everyone, which a central router
     // cannot get right. See `relevance`.
+    // Task extraction is off unless an author list AND an endpoint are both
+    // configured. Either alone is a misconfiguration that would otherwise
+    // announce itself as a warning on every message, or as silence.
+    let (task_extractor, task_extract_cfg) = match (
+        config.task_extract_authors.is_empty(),
+        config.task_extract_endpoint.clone(),
+    ) {
+        (false, Some(endpoint)) => {
+            let known: std::collections::HashSet<String> = config
+                .respond_to_allowlist
+                .iter()
+                .cloned()
+                .chain(std::iter::once(pubkey_hex.clone()))
+                .collect();
+            tracing::info!(
+                authors = config.task_extract_authors.len(),
+                model = %config.task_extract_model,
+                publish = config.task_extract_publish,
+                "task extraction enabled"
+            );
+            (
+                Some(std::sync::Arc::new(task_extract::TaskExtractor::new(
+                    task_extract_api_key(),
+                    known,
+                ))),
+                Some(task_extract::TaskExtractConfig {
+                    endpoint,
+                    model: config.task_extract_model.clone(),
+                    timeout_ms: 60_000,
+                    max_tokens: 8_000,
+                    reasoning_effort: None,
+                    attempts: 3,
+                    temperature: 0.0,
+                    board_match: true,
+                }),
+            )
+        }
+        (false, None) => {
+            tracing::warn!(
+                "BUZZ_ACP_TASK_EXTRACT_AUTHORS is set but BUZZ_ACP_TASK_EXTRACT_ENDPOINT is not — \
+                 extraction is off"
+            );
+            (None, None)
+        }
+        (true, _) => (None, None),
+    };
+    // Zipped so the hook site cannot hold one without the other.
+    let task_extraction: Option<(
+        std::sync::Arc<task_extract::TaskExtractor>,
+        std::sync::Arc<task_extract::TaskExtractConfig>,
+    )> = task_extractor.zip(task_extract_cfg.map(std::sync::Arc::new));
+
     let relevance_gate: Option<std::sync::Arc<relevance::RelevanceGate>> =
         if rules.iter().any(|r| r.relevance.is_some()) {
             match relevance::RelevanceGate::new(
@@ -3733,6 +3900,48 @@ async fn tokio_main() -> Result<()> {
                                 }
                                 continue;
                             };
+                            // Task extraction, BEFORE the subscription rules.
+                            //
+                            // Zero of the owner's eleven readable utterances in
+                            // the audit window carry a `p` tag — he addresses
+                            // people in prose and posts top level. A seat that
+                            // is not woken by a message still has to capture
+                            // the work in it, so this cannot sit downstream of
+                            // the rules that decide whether it was addressed.
+                            //
+                            // Spawned, not awaited: the extraction's only
+                            // output is relay writes, and nothing in the turn
+                            // depends on it. Blocking here would put a model
+                            // call in front of every matching message's
+                            // time-to-first-response for no gain, and a
+                            // detached task survives the same failure the
+                            // design cares about — the seat's own model turn
+                            // dying on budget exhaustion.
+                            if let Some((extractor, cfg)) = task_extraction.clone() {
+                                let (event, author) = authorized_event.parts();
+                                if config
+                                    .task_extract_authors
+                                    .contains(&author.to_ascii_lowercase())
+                                {
+                                    let source = task_extract::SourceMessage {
+                                        id: event.event.id.to_hex(),
+                                        channel: event.channel_id.to_string(),
+                                        author: author.to_ascii_lowercase(),
+                                        text: event.event.content.clone(),
+                                        thread_root: buzz_core::nip10::parse_thread_markers(
+                                            &event.event.tags,
+                                        )
+                                        .resolve()
+                                        .map(|(root, _)| root),
+                                    };
+                                    let rest = ctx.rest_client.clone();
+                                    let publish = config.task_extract_publish;
+                                    tokio::spawn(async move {
+                                        task_extract_turn(extractor, cfg, rest, source, publish)
+                                            .await;
+                                    });
+                                }
+                            }
                             let Some(ingress) =
                                 AuthorizedNormalListenerEvent(authorized_event)
                                     .match_subscription(&rules, &pubkey_hex, relevance_gate.as_deref())
@@ -10001,6 +10210,10 @@ mod build_mcp_servers_tests {
     fn test_config() -> Config {
         Config {
             limit_warning_channel: None,
+            task_extract_authors: Default::default(),
+            task_extract_endpoint: None,
+            task_extract_model: "gemini-3.8-flash".to_string(),
+            task_extract_publish: false,
             keys: nostr::Keys::generate(),
             relay_url: "ws://localhost:3000".into(),
             agent_command: "goose".into(),
@@ -10227,6 +10440,10 @@ mod error_outcome_emission_tests {
     fn test_config() -> Config {
         Config {
             limit_warning_channel: None,
+            task_extract_authors: Default::default(),
+            task_extract_endpoint: None,
+            task_extract_model: "gemini-3.8-flash".to_string(),
+            task_extract_publish: false,
             keys: nostr::Keys::generate(),
             relay_url: "ws://localhost:3000".into(),
             // `true` exits cleanly, so the async respawn fails fast and
