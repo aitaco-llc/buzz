@@ -82,7 +82,34 @@ class EndpointLaunchConfig:
     # buzz-dev-mcp beside it, is unchanged. `agent_command` is resolved under
     # the uploaded bin directory unless it is already absolute.
     agent_command: str = ""
+    # Passed as BUZZ_ACP_AGENT_ARGS, which buzz-acp splits on commas
+    # (crates/buzz-acp/src/config.rs), so write `--provider,gemini`, not
+    # `--provider gemini`.
     agent_args: str = ""
+    # Host path of the adapter binary to upload as `agent_command`. Required
+    # whenever `agent_command` is a bare name other than `buzz-agent`: the
+    # harness uploads what it runs rather than trusting the task image.
+    agent_binary: str = ""
+
+    def __post_init__(self) -> None:
+        command = self.agent_command
+        if command and not command.startswith("/") and command != "buzz-agent":
+            if "/" in command:
+                raise ValueError(
+                    f"agent_command {command!r} must be a bare name or an absolute path"
+                )
+            if not self.agent_binary:
+                raise ValueError(
+                    f"agent_command {command!r} names an adapter the harness must "
+                    "upload; set agent_binary to its host path"
+                )
+
+    def adapter_upload(self) -> tuple[str, str] | None:
+        """(host source, container name) for an adapter this endpoint uploads."""
+        command = self.agent_command
+        if not command or command.startswith("/") or command == "buzz-agent":
+            return None
+        return (self.agent_binary, command)
 
 
 @dataclass(slots=True)
@@ -283,6 +310,13 @@ class BuzzContainerRuntime:
             f"{REMOTE_BIN}/buzz-agent": self.buzz_agent_binary,
             f"{REMOTE_BIN}/buzz-dev-mcp": self.buzz_dev_mcp_binary,
         }
+        # Each adapter an endpoint names, uploaded beside buzz-agent so
+        # `_agent_command` resolves it to a binary the harness pinned.
+        for endpoint in self.endpoints.values():
+            adapter = endpoint.adapter_upload()
+            if adapter is not None:
+                source, name = adapter
+                uploads[f"{REMOTE_BIN}/{name}"] = source
         if self.relay_gateway:
             uploads[FORWARDER] = self.forwarder_binary
         for source in uploads.values():

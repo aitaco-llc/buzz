@@ -157,6 +157,39 @@ async def test_cli_runtime_construction_from_json(tmp_path, manifest_data):
     assert agent.runtime.buzz_cli_binary == "/pinned/buzz"
 
 
+async def test_endpoint_json_names_its_adapter(tmp_path, manifest_data):
+    adapter = tmp_path / "rebrand-acp"
+    adapter.write_text("#!binary")
+    endpoint_path = tmp_path / "endpoints.json"
+    endpoint_path.write_text(
+        '{"gemini-3.8-flash":{"provider":"gemini","api_key_env":"GEMINI_API_KEY",'
+        '"agent_command":"rebrand-acp","agent_args":"--provider,gemini",'
+        f'"agent_binary":"{adapter}"}}}}'
+    )
+    agent = BuzzOrchestraAgent(
+        logs_dir=tmp_path / "logs",
+        manifest=manifest_data,
+        artifact_root=tmp_path,
+        endpoint_config=endpoint_path,
+    )
+    endpoint = agent.runtime.endpoints["gemini-3.8-flash"]
+    assert endpoint.agent_command == "rebrand-acp"
+    assert endpoint.agent_args == "--provider,gemini"
+    assert endpoint.adapter_upload() == (str(adapter), "rebrand-acp")
+
+    endpoint_path.write_text(
+        '{"gemini-3.8-flash":{"provider":"gemini","api_key_env":"GEMINI_API_KEY",'
+        '"agent_command":"rebrand-acp"}}'
+    )
+    with pytest.raises(ValueError, match="agent_binary"):
+        BuzzOrchestraAgent(
+            logs_dir=tmp_path / "logs",
+            manifest=manifest_data,
+            artifact_root=tmp_path,
+            endpoint_config=endpoint_path,
+        )
+
+
 async def test_cli_construction_requires_complete_pairs(tmp_path, manifest_data):
     with pytest.raises(ValueError, match="artifact_root"):
         BuzzOrchestraAgent(

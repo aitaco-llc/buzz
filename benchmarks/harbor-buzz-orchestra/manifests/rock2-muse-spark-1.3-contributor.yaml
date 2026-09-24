@@ -1,9 +1,10 @@
-# rock2 bake-off, Gemini leg. One agent, the production base prompt from the
+# rock2 bake-off, Muse Spark leg. One agent, the production base prompt from the
 # checked-out source build, and the same persona byte-pin the buzz-native solo
 # conditions use — so this condition differs from those in exactly one axis:
 # the ACP adapter under buzz-acp, and therefore the model that answers.
 #
-# The adapter is deployment config, not manifest: see conditions/*.json.
+# The adapter is deployment config, not manifest: the endpoint config
+# names it with agent_command, agent_args and agent_binary.
 schema_version: "1"
 condition: rock2-rebrand-acp-muse-spark-1.3-contributor
 roster:

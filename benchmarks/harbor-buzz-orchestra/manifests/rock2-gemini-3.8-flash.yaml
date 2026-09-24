@@ -3,7 +3,8 @@
 # conditions use — so this condition differs from those in exactly one axis:
 # the ACP adapter under buzz-acp, and therefore the model that answers.
 #
-# The adapter is deployment config, not manifest: see conditions/*.json.
+# The adapter is deployment config, not manifest: the endpoint config
+# names it with agent_command, agent_args and agent_binary.
 schema_version: "1"
 condition: rock2-rebrand-acp-gemini-3.8-flash
 roster:
